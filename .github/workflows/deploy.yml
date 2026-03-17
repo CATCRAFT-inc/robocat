@@ -1,0 +1,25 @@
+name: Deploy Discord Bot
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VDS_IP }}
+          username: ${{ secrets.VDS_USER }}
+          key: ${{ secrets.VDS_SSH_KEY }}
+          port: ${{ secrets.VDS_PORT }}
+          passphrase: ${{ secrets.VDS_KEY_PASSPHRASE }}
+          script: |
+            cd /root/robocat
+            git pull origin main
+            pip3 install -r requirements.txt --break-system-packages -q
+            systemctl restart discord-bot
