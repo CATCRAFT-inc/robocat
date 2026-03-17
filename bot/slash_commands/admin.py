@@ -19,13 +19,20 @@ class AdminCommands(commands.Cog):
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def embedCommand(self, inter: disnake.ApplicationCommandInteraction,
                         embed_name: str,
-                        message: str = None):
+                        message: str = None,
+                        silent: bool = True):
         embed = getattr(Embeds, embed_name, None)
         if embed:
             if isinstance(embed, disnake.ui.Container):
-                await inter.send(components=[embed])
+                if silent:
+                    await inter.channel.send(components=[embed])
+                else:
+                    await inter.send(components=[embed])
             if isinstance(embed, disnake.Embed):
-                await inter.send(content=message, embed=embed)
+                if silent:
+                    await inter.channel.send(content=message, embed=embed)
+                else:
+                    await inter.send(content=message, embed=embed)
         else:
             await inter.send("Такого эмбеда/контейнера нет!", ephemeral=True)
 
