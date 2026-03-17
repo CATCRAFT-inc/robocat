@@ -142,9 +142,24 @@ random_stuff = {
     "kira_app": "Меня зовут Кира Йошикагэ. Мне 33 года. Мой дом находится в северо-восточной части Морио, в районе поместий. Работаю в офисе сети магазинов Kame Yu и домой возвращаюсь, самое позднее, в восемь вечера. Не курю, выпиваю изредка. Ложусь спать в 11 вечера и убеждаюсь, что получаю ровно восемь часов сна, несмотря ни на что. Перед сном я пью тёплое молоко, а также минут двадцать уделяю разминке, поэтому до утра сплю без особых проблем. Утром я просыпаюсь, не чувствуя ни усталости, ни стресса, словно младенец. На медосмотре мне сказали, что никаких проблем нет. Я пытаюсь донести, что я обычный человек, который хочет жить спокойной жизнью. Я не забиваю себе голову проблемами вроде побед или поражений, и не обзавожусь врагами, из-за которых не мог бы уснуть. Я знаю наверняка: в таком способе взаимодействия с обществом и кроется счастье. Хотя, если бы мне пришлось сражаться, я бы никому не проиграл."
 }
 
+@dataclass
+class ButtonData:
+    id: str
+    component: object
+
+
+class Buttons:
+    BUG_REPORT = ButtonData("bug_report", create_button(label="Сообщить о баге", custom_id="bug_report", style=disnake.ButtonStyle.danger))
+
 class Embeds:
-    bug_report_embed = create_embed(
-        title="Нашёл баг?", description="Сообщи о нём нам - мы пофиксим его в ближайшее время!"),
+    bug_report_embed = disnake.ui.Container(
+        disnake.ui.TextDisplay("❗️ ## Нашёл баг?"),
+        disnake.ui.Separator(),
+        disnake.ui.TextDisplay("**Чудесно!** Ну, *не очень*, но сообщи о нём нам кнопкой ниже и мы пофиксим его в кратчайшие сроки!"),
+        disnake.ui.ActionRow(
+            disnake.ui.Button(disnake.ButtonStyle.green, label="Сообщить о баге", custom_id=Buttons.BUG_REPORT.id)
+        )
+    )
     role_choose = disnake.ui.Container(
         disnake.ui.TextDisplay("# 📢 Роли уведомлений"),
         disnake.ui.Separator(),
@@ -196,13 +211,8 @@ class Embeds:
     )
 
 
-@dataclass
-class ButtonData:
-    id: str
-    component: object
 
-class Buttons:
-    BUG_REPORT = ButtonData("bug_report", create_button(label="Сообщить о баге", custom_id="bug_report", style=disnake.ButtonStyle.danger))
+
 
 class FAQStorage:
     getsockopt = '''
