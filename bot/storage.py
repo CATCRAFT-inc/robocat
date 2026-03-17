@@ -153,7 +153,7 @@ class Buttons:
 
 class Embeds:
     bug_report_embed = disnake.ui.Container(
-        disnake.ui.TextDisplay("❗️ ## Нашёл баг?"),
+        disnake.ui.TextDisplay("## ❗️ Нашёл баг?"),
         disnake.ui.Separator(),
         disnake.ui.TextDisplay("**Чудесно!** Ну, *не очень*, но сообщи о нём нам кнопкой ниже и мы пофиксим его в кратчайшие сроки!"),
         disnake.ui.ActionRow(
