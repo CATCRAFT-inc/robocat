@@ -25,13 +25,11 @@ class AdminCommands(commands.Cog):
         if embed:
             if isinstance(embed, disnake.ui.Container):
                 if silent:
-                    await inter.defer()
                     await inter.channel.send(components=[embed])
                 else:
                     await inter.send(components=[embed])
             if isinstance(embed, disnake.Embed):
                 if silent:
-                    await inter.defer()
                     await inter.channel.send(content=message, embed=embed)
                 else:
                     await inter.send(content=message, embed=embed)
