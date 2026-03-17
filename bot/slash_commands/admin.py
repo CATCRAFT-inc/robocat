@@ -24,15 +24,11 @@ class AdminCommands(commands.Cog):
         embed = getattr(Embeds, embed_name, None)
         if embed:
             if isinstance(embed, disnake.ui.Container):
-                if silent:
-                    await inter.channel.send(components=[embed])
-                else:
-                    await inter.send(components=[embed])
+                await inter.send(f"Container {embed_name} отправлен.", ephemeral=True) 
+                await inter.channel.send(components=[embed])
             if isinstance(embed, disnake.Embed):
-                if silent:
-                    await inter.channel.send(content=message, embed=embed)
-                else:
-                    await inter.send(content=message, embed=embed)
+                await inter.send(f"Embed {embed_name} отправлен.", ephemeral=True)    
+                await inter.channel.send(content=message, embed=embed)
         else:
             await inter.send("Такого эмбеда/контейнера нет!", ephemeral=True)
 
