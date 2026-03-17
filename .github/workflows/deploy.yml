@@ -3,7 +3,7 @@ name: Deploy Discord Bot
 on:
   push:
     branches:
-      - main
+      - master
 
 jobs:
   deploy:
@@ -20,6 +20,6 @@ jobs:
           passphrase: ${{ secrets.VDS_KEY_PASSPHRASE }}
           script: |
             cd /root/robocat
-            git pull origin main
+            git pull origin master
             pip3 install -r requirements.txt --break-system-packages -q
             systemctl restart discord-bot
