@@ -22,4 +22,4 @@ jobs:
             cd /root/robocat
             git pull origin master
             pip3 install -r requirements.txt --break-system-packages -q
-            systemctl restart discord-bot
+            systemctl restart robocat
