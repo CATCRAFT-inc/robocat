@@ -19,7 +19,7 @@ def load_extension():
         "handlers.role_select",
         "handlers.punishments",
         "handlers.get_help.admin_ticket",
-        "handlers.get_help.engine",
+        "handlers.get_help.engine"
 
         ### Other
         "utils",
