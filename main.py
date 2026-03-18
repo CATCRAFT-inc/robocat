@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-token = os.getenv("DISCORD_TOKEN")
+token = os.getenv("DISCO_TOKEN")
 
 def load_extension():
     extensions = [
