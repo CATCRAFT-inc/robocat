@@ -17,7 +17,7 @@ def load_extension():
         ### Handlers
         "handlers.bugs",
         "handlers.role_select",
-        "handlers.punishments",
+        "handlers.punishments"
         "handlers.get_help.admin_ticket"
         "handlers.get_help.engine"
 
