@@ -59,6 +59,14 @@ class AdminCommands(commands.Cog):
                         count += 1
                 await inter.edit_original_response(f"Успешно удалено сообщений: {count}\nНе получилось удалить: {error_count}")
 
+    @commands.slash_command(name='test_some_shit', description='Команда тестирования всякого... говна.')
+    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    async def testCommandAdminOnlyWarningVeryStrictDontTouch(self, inter: disnake.ApplicationCommandInteraction):
+        #await Flags().setFlag(inter.author, "expire_test", "privet PIDORASI", "5сек")
+        has_flag = await Flags().hasFlag(inter.author, "expire_test")
+        print(has_flag)
+
+
 
 
 

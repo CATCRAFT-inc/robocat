@@ -155,7 +155,6 @@ cython_debug/
 /old_disbot
 *.sqlite
 
-# Claude был задействован исключительно для код ревью, секьюрити ревью и обучения. Весь код написан человеческими руками.
 /.claude
 notify_failure.py
 /data/seasons

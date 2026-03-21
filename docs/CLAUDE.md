@@ -1,16 +1,5 @@
 # CLAUDE.md
 
-
-
-
-***
-Claude был задействован исключительно для код ревью, секьюрити ревью и обучения. Весь код написан человеческими руками.
-***
-
-
-
-
-
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Running the Bot

@@ -12,14 +12,6 @@ The bot is used in [CATCRAFT.ru Discord](https://discord.gg/6f3FwFRJWC)!
 - **Useful commands** such as FAQ, utilities, and moderation tools
 - And more in the future!
 
-## Claude Usage
-Claude (Code) was involved in this project for three purposes:
-- Code Review
-- Security Review
-- Learning
-
-Claude did not write a single line of code or provide ready-made solutions — it only reviewed what could be improved and gave hints.
-
 ## License
 
 This project is licensed under [AGPL-3.0](LICENSE).
@@ -60,14 +52,6 @@ This project is licensed under [AGPL-3.0](LICENSE).
 - **Выбор ролей** через Dropdown
 - **Полезные команды** по типу FAQ, утилит и для модерации
 - И ещё много всего в будущем!
-
-## Использование Claude
-В данном проекте был задействован Claude (Code) для трёх вещей:
-- Code Review
-- Security Review
-- Обучение
-
-Claude не написал ни одной строчки кода и не выдавал готовый код, лишь смотрел что можно подправить и давал наводки.
 
 ## Лицензия
 Данный проект защищён лицензией [AGPL-3.0](LICENSE).
