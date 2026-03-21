@@ -11,6 +11,7 @@ import os
 import sys
 
 from bot import storage
+from bot.flag_system.flag_system import Flags
 from bot.utils import create_embed
 from bot.storage import Messages
 
@@ -28,6 +29,7 @@ bot = commands.Bot(
     test_guilds=[1138425078493753366],
     owner_id=531208170098655233
 )
+bot.flags = Flags()
 
 @bot.event
 async def on_ready():

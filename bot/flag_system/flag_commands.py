@@ -16,7 +16,7 @@ class FlagCommands(commands.Cog):
     async def allFlagsCommand(self, inter: disnake.ApplicationCommandInteraction,
                             entity_type,
                             entity_id: str):
-        flagList = await self.flags.listAllFlags(entity_type,int(entity_id))
+        flagList = await self.flags.getAllFlags(entity_type,int(entity_id))
         if flagList is not None:
             await inter.send(flagList)
     
@@ -24,7 +24,7 @@ class FlagCommands(commands.Cog):
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def allUserFlagsCommand(self, inter: disnake.ApplicationCommandInteraction,
                             user: disnake.Member):
-        flag_list = await self.flags.listAllFlags(user,user.id)
+        flag_list = await self.flags.getAllFlags(user,user.id)
         if flag_list is not None:
             flag_str_list = []
             for flag in flag_list:
@@ -64,7 +64,7 @@ class FlagCommands(commands.Cog):
                                     channel: disnake.abc.GuildChannel = None):
         if channel is None:
             channel = inter.channel
-        flag_list = await self.flags.listAllFlags(channel,channel.id)
+        flag_list = await self.flags.getAllFlags(channel,channel.id)
         if flag_list is not None:
             flag_str_list = []
             for flag in flag_list:

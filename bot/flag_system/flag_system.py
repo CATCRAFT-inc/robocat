@@ -6,21 +6,24 @@ import pathlib
 import disnake
 
 from bot.utils import parse_duration
+import logging
 
+# TODO: написать норальные докстринги
 
-class Flags():
-
+class Flags:
+# о боже тут докстринги, эт о писал чатджибити
     def __init__(self):
         p = pathlib.Path(__file__).parent.parent.parent
         self.dbpath = p / "data" / "db.sqlite"
-        print(self.dbpath)
-        print(self.dbpath.exists())
+        self.logger = logging.getLogger("robocat.flags")
 
-    def defineEntityType(self, entity: str) -> str | None:
+    def _defineEntityType(self, entity: str) -> str | None:
         """Определяет строковый тип entity по объекту disnake или строке.
 
-        :param entity: Объект disnake (Thread, TextChannel и т.д.) или строка-тип.
+        :param entity: Объект disnake (Thread, TextChannel и т.д.) или строка.
         :returns: Строка типа ("thread", "member" и т.д.) или None, если тип не распознан.
+        
+        Ещо в этой системе есть абстрактный тип данных, прост флаг, который ни над чем не закреплен. вот.
         """
         if isinstance(entity, disnake.Thread):
             return "thread"
@@ -34,14 +37,40 @@ class Flags():
             return "category"
         elif isinstance(entity, disnake.ForumChannel):
             return "forumchannel"
-        elif isinstance(entity, str) and entity in ["thread","textchannel","voicechannel","member","category","forumchannel"]:
-            return entity
+        elif entity == "abstract":
+            return "abstract"
         else:
             return None
+        
+    def _resolveEntity(self, entity) -> tuple[str, int] | None:
+        """Резолвит Discord энтити, возвращая строковый тип энтити и его айди.
+        Всё в дискорде же имеет айди ёбана рот! Кроме абстракта, который я создал - там айди -1
+        Но это тоже айди... Ну не суть.
+
+        Args:
+            entity (disnake.Class | "abstract"): Discord entity | "abstract"
+
+        Returns:
+            tuple[str, int] | None: Возвращает либо entity_type + entity_id либо шиш с маслом! 
+        """
+        entity_type = self._defineEntityType(entity)
+        if entity_type is None:
+            print(f"Entity Type ''{entity}'' не найден.")
+            return None, None
+        elif entity_type == "abstract":
+            entity_id = -1
+        else:
+            entity_id = entity.id
+        return entity_type, entity_id
+    
+    def _isExpired(self, exp_time: int) -> bool:
+        now = time.time()
+        if now > exp_time: # если щяс больше секунд чем когда надо эээ флаг чтоб ну это .... чтоб он истёк
+            return True
+        return False
 
     async def setFlag(self,
-                    entity_type,
-                    entity_id: int,
+                    entity,
                     flag: str,
                     value = None,
                     expires_at: int = None):
@@ -51,17 +80,17 @@ class Flags():
         :param entity_id: Discord ID entity.
         :param flag: Название флага.
         :param value: Значение флага (опционально).
-        :param expires_at: Unix timestamp истечения флага (опционально).
+        :param expires_at: Unix timestamp | Строка формата "1д", "1ч" и прочее
         """
-        entity_type = self.defineEntityType(entity_type)
+        entity_type, entity_id = self._resolveEntity(entity)
         if entity_type is None:
-            print('='*30, 'entity_type НЕ НАЙДЕН! ТЫ ПЕРЕДАЛ КАКОЕ-ТО ГОВНО!', '='*30, sep='\n\n')
             return None
         if expires_at and isinstance(expires_at, str): # Если expires_at передано как "28д" и прочее
                 seconds = parse_duration(expires_at)
                 if seconds is not False:
                     now = int(time.time())
                     expires_at = now + seconds
+        
         async with aiosqlite.connect(self.dbpath) as db:
             cursor = await db.execute(
                 """
@@ -72,21 +101,21 @@ class Flags():
                 (entity_type,entity_id,flag,value,expires_at,value,expires_at)
             )
             await db.commit()
+        self.logger.info("[СОЗДАНИЕ] Флаг %s на энтити (%s, ID: %s) создан, expires_at: %s", flag, entity_type, entity_id, expires_at or "Нет")
 
     async def getFlag(self,
-                    entity_type,
-                    entity_id,
+                    entity,
                     flag: str):
         """Возвращает значение и expires_at конкретного флага у entity.
 
-        :param entity_type: Объект disnake или строка-тип entity.
+        :param entity_type: Объект disnake | abstract
+        .0
         :param entity_id: Discord ID entity.
         :param flag: Название флага.
         :returns: Кортеж (value, expires_at) или None, если флаг не найден.
         """
-        entity_type = self.defineEntityType(entity_type)
+        entity_type, entity_id = self._resolveEntity(entity)
         if entity_type is None:
-            print('='*30, 'entity_type НЕ НАЙДЕН! ТЫ ПЕРЕДАЛ КАКОЕ-ТО ГОВНО!', '='*30, sep='\n\n')
             return None
         async with aiosqlite.connect(self.dbpath) as db:
             cursor = await db.execute(
@@ -96,13 +125,42 @@ class Flags():
             )
             results = await cursor.fetchone()
             if results:
-                print(results)
-                return results
+                if results[1] and self._isExpired(results[1]):
+                    await self.removeFlag(entity,flag,"истёк")
+                    return None
+                else:
+                    return results
             return None
+        
+    # async def getFlagRaw(self,
+    #                 entity_type,
+    #                 entity_id: int,
+    #                 flag: str):
+    #     if not isinstance(entity_type, str):
+    #         entity_type = self._defineEntityType(entity_type)
+    #     if entity_type is None:
+    #         return None
+    #     if entity_type != "abstract":
+    #         entity_id = entity_type.id
+    #     else:
+    #         entity_id = -1
+    #     async with aiosqlite.connect(self.dbpath) as db:
+    #         cursor = await db.execute(
+    #             """
+    #             SELECT value, expires_at FROM flags WHERE entity_type = ? AND entity_id = ? AND flag = ?
+    #             """, (entity_type, entity_id, flag)
+    #         )
+    #         results = await cursor.fetchone()
+    #         if results:
+    #             if results[1] and self._isExpired(results[1]):
+    #                 await self.removeFlag(entity,flag)
+    #                 return None
+    #             else:
+    #                 return results
+    #         return None
 
     async def hasFlag(self,
-                    entity_type,
-                    entity_id,
+                    entity,
                     flag: str):
         """Проверяет, существует ли флаг у entity.
 
@@ -111,43 +169,80 @@ class Flags():
         :param flag: Название флага.
         :returns: True если флаг есть, False если нет, None при ошибке типа.
         """
-        entity_type = self.defineEntityType(entity_type)
+        entity_type, entity_id = self._resolveEntity(entity)
         if entity_type is None:
-            print('='*30, 'entity_type НЕ НАЙДЕН! ТЫ ПЕРЕДАЛ КАКОЕ-ТО ГОВНО!', '='*30, sep='\n\n')
             return None
         async with aiosqlite.connect(self.dbpath) as db:
             cursor = await db.execute(
                 """
-                SELECT value, expires_at FROM flags WHERE entity_type = ? AND entity_id = ? AND flag = ?
+                SELECT expires_at FROM flags WHERE entity_type = ? AND entity_id = ? AND flag = ?
                 """, (entity_type, entity_id, flag)
             )
             results = await cursor.fetchone()
             if results:
+                if self._isExpired(results[0]):
+                    await self.removeFlag(entity, flag, "истёк")
+                    return False
                 return True
             return False
         
-    async def listAllFlags(self,
-                    entity_type,
-                    entity_id):
+    # async def hasFlagRaw(self,
+    #                 entity_type,
+    #                 entity_id: int,
+    #                 flag: str):
+    #     """Проверяет, существует ли флаг у entity.
+
+    #     :param entity_type: Объект disnake или строка-тип entity.
+    #     :param entity_id: Discord ID entity.
+    #     :param flag: Название флага.
+    #     :returns: True если флаг есть, False если нет, None при ошибке типа.
+    #     """
+    #     entity_type = self._defineEntityType(entity_type)
+    #     if entity_type is None:
+    #         return None
+    #     if entity_type != "abstract":
+    #         entity_id = entity_type.id
+    #     else:
+    #         entity_id = -1
+    #     async with aiosqlite.connect(self.dbpath) as db:
+    #         cursor = await db.execute(
+    #             """
+    #             SELECT expires_at FROM flags WHERE entity_type = ? AND entity_id = ? AND flag = ?
+    #             """, (entity_type, entity_id, flag)
+    #         )
+    #         results = await cursor.fetchone()
+    #         if results:
+    #             if self._isExpired(results[0]):
+    #                 return False
+    #             return True
+    #         return False
+        
+    async def getAllFlags(self,
+                        entity):
         """Возвращает все флаги, установленные у entity.
 
         :param entity_type: Объект disnake или строка-тип entity.
         :param entity_id: Discord ID entity.
         :returns: Список названий флагов или None при ошибке типа.
         """
-        entity_type = self.defineEntityType(entity_type)
+        entity_type, entity_id = self._resolveEntity(entity)
         if entity_type is None:
-            print('='*30, 'entity_type НЕ НАЙДЕН! ТЫ ПЕРЕДАЛ КАКОЕ-ТО ГОВНО!', '='*30, sep='\n\n')
             return None
         async with aiosqlite.connect(self.dbpath) as db:
             cursor = await db.execute(
                 """
-                SELECT flag, value, expires_at FROM flags WHERE entity_type = ? AND entity_id = ?
+                SELECT flag, expires_at FROM flags WHERE entity_type = ? AND entity_id = ?
                 """, (entity_type, entity_id)
             )
             results = await cursor.fetchall()
             if results:
-                return results
+                not_expired_results = []
+                for res in results:
+                    if res[1] and self._isExpired(res[1]):
+                        await self.removeFlag(entity, res[0], "истёк")
+                    else:
+                        not_expired_results.append(res)
+                return not_expired_results
             return None
         
     async def getAllWithFlag(self,
@@ -160,28 +255,37 @@ class Flags():
         async with aiosqlite.connect(self.dbpath) as db:
             cursor = await db.execute(
                 """
-                SELECT entity_id, entity_type, expires_at FROM flags WHERE flag = ?
+                SELECT entity_type, entity_id, expires_at FROM flags WHERE flag = ?
                 """, (flag,)
             )
             results = await cursor.fetchall()
             if results:
-                return results
+                not_expired_results = []
+                for res in results:
+                    if res[2] and self._isExpired(res[2]):
+                        await self._removeFlagRaw(res[0],res[1], flag)
+                    else:
+                        not_expired_results.append(res)
+                return not_expired_results
             return None
         
     async def removeFlag(self,
-                    entity_type,
-                    entity_id: int,
-                    flag: str,):
+                    entity,
+                    flag: str,
+                    reason: str = None):
         """Удаляет флаг у entity.
 
         :param entity_type: Объект disnake или строка-тип entity.
         :param entity_id: Discord ID entity.
         :param flag: Название флага для удаления.
         """
-        entity_type = self.defineEntityType(entity_type)
+        entity_type, entity_id = self._resolveEntity(entity)
         if entity_type is None:
-            print('='*30, 'entity_type НЕ НАЙДЕН! ТЫ ПЕРЕДАЛ КАКОЕ-ТО ГОВНО!', '='*30, sep='\n\n')
             return None
+        self.logger.info("Удаляю флаг %s у энтити (%s, ID: %s), причина: %s", flag, entity_type, entity_id, reason or "Не указано")
+        await self._removeFlagRaw(entity_type, entity_id, flag)
+    
+    async def _removeFlagRaw(self, entity_type, entity_id: int, flag: str):
         async with aiosqlite.connect(self.dbpath) as db:
             cursor = await db.execute(
                 """
@@ -190,7 +294,8 @@ class Flags():
                 (entity_type,entity_id,flag)
             )
             await db.commit()
-            
+        
+
 
     # async def test(self):
     #     await self.setFlag("textchannel", 12345678, "GOVNO", "TEST TEST TEST TEST")
