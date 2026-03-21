@@ -125,7 +125,7 @@ class PunishmentsHanlder(commands.Cog):
     #                         ctx: commands.Context):
     #     flag = Flags()
     #     await flag.setFlag(ctx.author, ctx.author.id, "test_flag", "test_value", "10сек")
-    #     test_flag = await Flags().getFlag(ctx.author,ctx.author.id,"test_flag")       
+    #     test_flag = await Flags().getFlag(ctx.author,"test_flag")       
     #     await ctx.send(test_flag)
     
 

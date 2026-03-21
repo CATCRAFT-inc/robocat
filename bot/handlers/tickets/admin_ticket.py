@@ -44,27 +44,26 @@ class AdminTicket(commands.Cog):
                 name=bug_thread_name,
                 type=disnake.ChannelType.private_thread,
                 auto_archive_duration=10080,
-                reason=f"Новый баг-репорт от {nick}"
+                reason=f"Новый админ-тикет от {nick}"
             )
             bug_container = disnake.ui.Container(
                 disnake.ui.TextDisplay(
-                    content=f"# Репорт от {nick} ({inter.author.mention})"
+                    content=f"# Админ-тикет от {nick} ({inter.author.mention})"
                 ),
-                disnake.ui.Separator(),
                 disnake.ui.TextDisplay(
-                    content="## Жалоба"
+                    content="## Суть"
                 ),
                 disnake.ui.TextDisplay(
                     content=bug_description
                 ),
                 disnake.ui.TextDisplay(
-                    content=f"-# ||{inter.author.mention} <@&{Roles.st_admin}> <@&{Roles.admin}> <@&{Roles.developer}>||"
+                    content=f"-# ||<@{Roles.st_admin}> <@{Roles.admin}> <@{Roles.developer}>||"
                 ),
                 accent_colour=disnake.Color.from_hex(ColorStorage.main),
             )
             await bug_thread.send(components=[bug_container])
             await inter.send(f"Репорт админам создан! Перейди в него: <#{bug_thread.id}>", ephemeral=True)
-            await Flags().setFlag(inter.channel,inter.channel_id,"created_by",inter.author.id)
+            await Flags().setFlag(bug_thread,"created_by",inter.author.id)
             await inter.author.send(
                 components=create_container(
                     f"## Тред с админами ''{bug_thread_name}'' создан!",

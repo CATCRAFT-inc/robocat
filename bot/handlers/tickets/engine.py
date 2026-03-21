@@ -4,7 +4,7 @@ from disnake.ext import commands
 from bot.flag_system.flag_system import Flags
 from bot.storage import Channels, ColorStorage, Roles
 from .admin_ticket import AdminTicket
-from bot.handlers.bugs import BugHandler
+from bot.handlers.tickets.bugs import BugHandler
 from bot.utils import create_container, create_embed
 
 
@@ -16,6 +16,7 @@ class TicketEngine(commands.Cog):
     @commands.Cog.listener("on_dropdown")
     async def chooseTicket(self, inter: disnake.MessageInteraction):
         if inter.component.custom_id == "CHOOSE_TICKET":
+            
             match inter.resolved_values[0]:
                 case "TICKET_ADMIN":
                     await inter.response.send_modal(AdminTicket.AdminTicketModal())
@@ -89,7 +90,7 @@ class TicketEngine(commands.Cog):
                             )
                             if comment:
                                 bug_fixed_embed.add_field(name="Комментарий", value=comment)
-                            user_id = await Flags().getFlag(inter.channel,inter.channel_id,"created_by")
+                            user_id = await Flags().getFlag(inter.channel,"created_by")
                             member = await inter.guild.get_member(user_id[0]) if user_id else None
                             if member:
                                 await member.send(embed=bug_fixed_embed)
@@ -98,17 +99,19 @@ class TicketEngine(commands.Cog):
                         case Channels.support:
                             if not comment:
                                 await inter.send("Для админских тикетов нужно обязательно указать комментарий с итогом репорта или вынесеным решением!", ephemeral=True)
+                                return
                             # TODO: Сначала сделать логику багов
                             ticket_closed_embed = disnake.ui.Container(
-                                disnake.ui.TextDisplay("💫 Твой админский тикет закрыт!"),
+                                disnake.ui.TextDisplay("## 💫 Твой админский тикет закрыт!"),
                                 disnake.ui.Separator(),
-                                disnake.ui.TextDisplay(f"### Решение:\n{comment}\nЗакрыл: <@{inter.author.id}>")
+                                disnake.ui.TextDisplay(f"### Решение:\n{comment}\n-# Закрыл: <@{inter.author.id}>")
                             )
-                            user_id = await Flags().getFlag(inter.channel,inter.channel_id,"created_by")
-                            member = await inter.guild.get_member(user_id[0]) if user_id else None
+                            user_id = await Flags().getFlag(inter.channel, "created_by")
+                            member = inter.guild.get_member(int(user_id[0]))
                             if member:
-                                await member.send(embed=ticket_closed_embed)
+                                await member.send(components=ticket_closed_embed)
                             await inter.channel.delete(reason=f"Тикет закрыт {inter.author.id}")
+                            await Flags().removeFlag(inter.channel,"created_by")
                         case _:   
                             await inter.send("Команду можно прописывать только в тредах багов, идеей, тикетов или запросов!", ephemeral=True)
 

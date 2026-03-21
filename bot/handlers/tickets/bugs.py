@@ -20,7 +20,20 @@ class BugHandler(commands.Cog):
     @commands.Cog.listener("on_button_click")
     async def bugThreadCreate(self, inter: disnake.MessageInteraction):
         if inter.component.custom_id == Buttons.BUG_REPORT.id:
-            await inter.response.send_modal(modal=self.BugModal())
+            has_bug_cd = await self.bot.flags.hasFlag(inter.author,"create_bug_cooldown")
+            if has_bug_cd:
+                await inter.send("Ты отправлял(а) слишком много багов за короткое время! Отдохни и сообщи о них попозже =)", ephemeral=True)
+            else:  
+                created_bugs = await self.bot.flags.getFlag(inter.author,"created_bugs")
+                if created_bugs and int(created_bugs[0]) > 3:
+                    await inter.send("Воу-воу, котик! Мы очень ценим твою помощь, но твои действия смахивают на спам тикетами... Я вынужден дать тебе КД, попробуй попозже.")
+                    await self.bot.flags.setFlag(inter.author,"create_bug_cooldown", "true","15мин")
+                    return
+                elif created_bugs:
+                    await self.bot.flags.setFlag(inter.author, "created_bugs", int(created_bugs[0]) + 1, expires_at="15мин")
+                else:
+                    await self.bot.flags.setFlag(inter.author, "created_bugs", 1, expires_at="15мин")
+                await inter.response.send_modal(modal=self.BugModal())
 
     class BugModal(disnake.ui.Modal):
         def __init__(self):
@@ -60,7 +73,7 @@ class BugHandler(commands.Cog):
     
         # The callback received when the user input is completed.
         async def callback(self, inter: disnake.ModalInteraction):
-            channel = inter.channel
+            channel = inter.guild.get_channel(Channels.bugs)
             modal = inter.resolved_values
             nick = modal["Никнейм"]
             bug_description = modal["Описание бага"]
@@ -74,9 +87,8 @@ class BugHandler(commands.Cog):
             )
             bug_container = disnake.ui.Container(
                 disnake.ui.TextDisplay(
-                    content=f"# Новый баг репорт от {nick} ({inter.author.mention})"
+                    content=f"# Баг! \nОт {nick} ({inter.author.mention})"
                 ),
-                disnake.ui.Separator(),
                 disnake.ui.TextDisplay(
                     content="## Описание бага"
                 ),
@@ -88,12 +100,12 @@ class BugHandler(commands.Cog):
                     content=f"Критичность бага:  {priority or "Не указана"}"
                 ),
                 disnake.ui.TextDisplay(
-                    content=f"-# ||{inter.author.mention} <@&{Roles.st_admin}> <@&{Roles.admin}> <@&{Roles.developer}>||"
+                    content=f"-# || <@{Roles.st_admin}> <@{Roles.admin}> <@{Roles.developer}>||"
                 ),
                 accent_colour=disnake.Color.from_hex(ColorStorage.main),
             )
             await bug_thread.send(components=[bug_container])
-            await inter.send(f"Баг-тред создан! Перейди в него: <#{bug_thread.id}>", ephemeral=True)
+            await inter.send(f"Баг-репорт создан! Перейди в него: <#{bug_thread.id}>", ephemeral=True)
             await inter.author.send(
                 components=create_container(
                     f"## Спасибо за репорт бага ''{bug_thread_name}''!",
@@ -101,7 +113,7 @@ class BugHandler(commands.Cog):
                     "Треды пропадают через некоторое время, но эта ссылка позволяет тебе в любой момент вернуться!"
                 )
             )
-            await Flags().setFlag(inter.channel,inter.channel_id,"created_by",inter.author.id)
+            await self.bot.flags.setFlag(bug_thread,"created_by",inter.author.id)
             if 'getsockopt' in bug_description or 'гетсокопт' in bug_description:
                 await bug_thread.send(components=create_container(
                     "## Авто-ответ по частой проблеме: `getsockopt`",
