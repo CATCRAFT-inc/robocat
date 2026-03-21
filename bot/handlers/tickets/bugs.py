@@ -107,7 +107,7 @@ class BugHandler(commands.Cog):
             await bug_thread.send(components=[bug_container])
             await inter.send(f"Баг-репорт создан! Перейди в него: <#{bug_thread.id}>", ephemeral=True)
             await inter.author.send(
-                components=create_container(
+                components=create_container( 
                     f"## Спасибо за репорт бага ''{bug_thread_name}''!",
                     f"Сохраню канал баг-репорта здесь: https://discord.com/channels/{inter.guild_id}/{inter.channel_id}",
                     "Треды пропадают через некоторое время, но эта ссылка позволяет тебе в любой момент вернуться!"
