@@ -4,7 +4,7 @@
 
 
 ***
-CLAUDE CODE БЫЛ ИСПОЛЬЗОВАН ТОЛЬКО ДЛЯ КОД РЕВЬЮ, СЕКЬЮРИТИ РЕВЬЮ И ОБУЧЕНИИ, НО НЕ НАПИСАНИИ КОДА. ВЕСЬ КОД НАПИСАН РУКАМИ - НЕ ПЕРЕПИСАН ИЗ ЧАТА, НЕ СОЗДАН НЕЙРОСЕТЬЮ.
+Claude был задействован исключительно для код ревью, секьюрити ревью и обучения. Весь код написан человеческими руками.
 ***
 
 
@@ -105,7 +105,7 @@ Three entry points, all converging through `Embeds.choose_help_ticket` dropdown 
 
 ### Flag System
 
-`Flags` class in `flag_system/flag_system.py` provides async `setFlag`, `getFlag`, `hasFlag`, `listAllFlags`, `getAllWithFlag`, `removeFlag`. The DB path is resolved via `pathlib` relative to the file itself — safe to call from any CWD. Currently used to store `"created_by"` on bug and admin ticket threads.
+`Flags` class in `flag_system/flag_system.py` provides async `setFlag`, `getFlag`, `hasFlag`, `getAllFlags`, `getAllWithFlag`, `removeFlag`. The DB path is resolved via `pathlib` relative to the file itself — safe to call from any CWD. Currently used to store `"created_by"` on bug and admin ticket threads.
 
 ### UI Components
 

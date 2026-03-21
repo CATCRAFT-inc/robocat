@@ -2,7 +2,7 @@
 
 ## Система флагов
 
-Скопировал систему флагов из Денизен - `setFlag, hasFlag, removeFlag, listAllFlags, listAllWithFlag, getFlag`. Записывается в единую БД `db.sqlite`, позволяет легко брать различные данные.
+Скопировал систему флагов из Денизен - `setFlag, hasFlag, removeFlag, getAllFlags, getAllWithFlag, getFlag`. Записывается в единую БД `db.sqlite`, позволяет легко брать различные данные.
 
 ## Команды
 
