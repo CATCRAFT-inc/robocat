@@ -95,7 +95,7 @@ class TicketEngine(commands.Cog):
                             if member:
                                 await member.send(embed=bug_fixed_embed)
                             await inter.channel.delete(reason=f"Баг закрыт {inter.author.id}")
-                            
+                            await Flags().removeFlag(inter.channel,"created_by")
                         case Channels.support:
                             if not comment:
                                 await inter.send("Для админских тикетов нужно обязательно указать комментарий с итогом репорта или вынесеным решением!", ephemeral=True)
@@ -107,7 +107,7 @@ class TicketEngine(commands.Cog):
                                 disnake.ui.TextDisplay(f"### Решение:\n{comment}\n-# Закрыл: <@{inter.author.id}>")
                             )
                             user_id = await Flags().getFlag(inter.channel, "created_by")
-                            member = inter.guild.get_member(int(user_id[0]))
+                            member = inter.guild.get_member(int(user_id[0])) if user_id else None
                             if member:
                                 await member.send(components=ticket_closed_embed)
                             await inter.channel.delete(reason=f"Тикет закрыт {inter.author.id}")
