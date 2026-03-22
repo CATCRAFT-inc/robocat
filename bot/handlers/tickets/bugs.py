@@ -73,6 +73,7 @@ class BugHandler(commands.Cog):
     
         # The callback received when the user input is completed.
         async def callback(self, inter: disnake.ModalInteraction):
+            await inter.response.defer(ephemeral=True)
             channel = inter.guild.get_channel(Channels.bugs)
             modal = inter.resolved_values
             nick = modal["Никнейм"]
@@ -100,12 +101,12 @@ class BugHandler(commands.Cog):
                     content=f"Критичность бага:  {priority or "Не указана"}"
                 ),
                 disnake.ui.TextDisplay(
-                    content=f"-# || <@&{Roles.st_admin}> <@&{Roles.admin}> <@&{Roles.developer}>||"
+                    content=f"-# || <@{Roles.st_admin}> <@{Roles.admin}> <@{Roles.developer}>||"
                 ),
                 accent_colour=disnake.Color.from_hex(ColorStorage.main),
             )
             await bug_thread.send(components=[bug_container])
-            await inter.send(f"Баг-репорт создан! Перейди в него: <#{bug_thread.id}>", ephemeral=True)
+            await inter.edit_original_response(f"Баг-репорт создан! Перейди в него: <#{bug_thread.id}>")
             await inter.author.send(
                 components=create_container( 
                     f"## Спасибо за репорт бага ''{bug_thread_name}''!",

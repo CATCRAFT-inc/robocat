@@ -35,6 +35,7 @@ class AdminTicket(commands.Cog):
     
         # The callback received when the user input is completed.
         async def callback(self, inter: disnake.ModalInteraction):
+            await inter.response.defer(ephemeral=True)
             channel = inter.channel
             modal = inter.resolved_values
             nick = modal["Никнейм"]
@@ -51,22 +52,22 @@ class AdminTicket(commands.Cog):
                     content=f"# Админ-тикет от {nick} ({inter.author.mention})"
                 ),
                 disnake.ui.TextDisplay(
-                    content="## Суть"
+                    content="### Суть"
                 ),
                 disnake.ui.TextDisplay(
                     content=bug_description
                 ),
                 disnake.ui.TextDisplay(
-                    content=f"-# ||<@&{Roles.st_admin}> <@&{Roles.admin}> <@&{Roles.developer}>||"
+                    content=f"-# ||<@{Roles.st_admin}> <@{Roles.admin}> <@{Roles.developer}>||"
                 ),
                 accent_colour=disnake.Color.from_hex(ColorStorage.main),
             )
             await bug_thread.send(components=[bug_container])
-            await inter.send(f"Репорт админам создан! Перейди в него: <#{bug_thread.id}>", ephemeral=True)
+            await inter.edit_original_response(f"Репорт админам создан! Перейди в него: <#{bug_thread.id}>")
             await Flags().setFlag(bug_thread,"created_by",inter.author.id)
             await inter.author.send(
                 components=create_container(
-                    f"## Тред с админами ''{bug_thread_name}'' создан!",
+                    f"## Тред админ-тикета ''{bug_thread_name}'' создан!",
                     f"Сохраню тред здесь: https://discord.com/channels/{inter.guild_id}/{inter.channel_id}",
                     "Треды пропадают через некоторое время, но эта ссылка позволяет тебе в любой момент вернуться!"
                 )
