@@ -41,8 +41,8 @@ class FAQ(commands.Cog):
             disnake.ui.TextDisplay(
 """
 ```ansi
-[2;36m[2;41m[2;45m[2;37mplay.catcraftmc.ru[0m[2;36m[2;45m[0m[2;36m[2;41m[0m[2;36m[0m - основной
-[0;34mplay.catcraft.ru[0m[0m[2;45m[2;45m[0m[2;45m[0m - запасной
+[2;36m[2;41m[2;45m[2;37mplay.catcraft.ru[0m[2;36m[2;45m[0m[2;36m[2;41m[0m[2;36m[0m - основной
+[0;34mplay.catcraftmc.ru[0m[0m[2;45m[2;45m[0m[2;45m[0m - запасной
 ```
                 """
                 
