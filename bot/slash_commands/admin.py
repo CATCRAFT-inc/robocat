@@ -1,4 +1,3 @@
-import aiosqlite
 import disnake
 from disnake.ext import commands
 
@@ -21,6 +20,7 @@ class AdminCommands(commands.Cog):
                         embed_name: str,
                         message: str = None,
                         silent: bool = True):
+        # TODO: реализовать silent. Хотя мб не нужно.
         embed = getattr(Embeds, embed_name, None)
         if embed:
             if isinstance(embed, disnake.ui.Container):
@@ -44,7 +44,7 @@ class AdminCommands(commands.Cog):
             if message:
                 await inter.response.defer(ephemeral=True)
                 messages = await inter.channel.history(limit=50, after=message.created_at).flatten()
-                messages = [msg for msg in messages if msg.id != inter.id]
+                messages = [msg for msg in messages]
                 count = 0
                 error_count = 0
                 for mes in messages:
@@ -52,8 +52,8 @@ class AdminCommands(commands.Cog):
                         break
                     try:
                         await mes.delete()
-                    except:
-                        await inter.send(f"Не удалось удалить сообщение {mes.id}", ephemeral=True)
+                    except Exception as e:
+                        await inter.send(f"Не удалось удалить сообщение {mes.id} - {e}", ephemeral=True)
                         error_count += 1
                     else:
                         count += 1
@@ -63,8 +63,9 @@ class AdminCommands(commands.Cog):
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def testCommandAdminOnlyWarningVeryStrictDontTouch(self, inter: disnake.ApplicationCommandInteraction):
         #await Flags().setFlag(inter.author, "expire_test", "privet PIDORASI", "5сек")
-        has_flag = await Flags().hasFlag(inter.author, "expire_test")
-        print(has_flag)
+        # has_flag = await Flags().hasFlag(inter.author, "expire_test")
+        # print(has_flag)
+        print(inter.guild.member_count, len(inter.guild.members))
 
 
 
