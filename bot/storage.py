@@ -150,6 +150,7 @@ class ButtonData:
 
 class Buttons:
     BUG_REPORT = ButtonData("bug_report", create_button(label="Сообщить о баге", custom_id="bug_report", style=disnake.ButtonStyle.danger))
+    GET_A_JOB = ButtonData("show_vacansies", create_button(label="Посмотреть доступные вакансии"), custom_id="show_vacansies", style=disnake.ButtonStyle.green)
 
 class Embeds:
     bug_report_embed = disnake.ui.Container(
