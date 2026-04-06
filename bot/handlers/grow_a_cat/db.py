@@ -25,12 +25,20 @@ class CatGameDB:
                 color INTEGER NOT NULL,
                 gender TEXT NOT NULL,
                 name TEXT NOT NULL,
+                balance INTEGER NOT NULL,
                 attack INTEGER NOT NULL,
+                max_attack INTEGER NOT NULL,
                 defense INTEGER NOT NULL,
+                max_defense INTEGER NOT NULL,
                 endurance INTEGER NOT NULL,
+                max_endurance INTEGER NOT NULL,
                 hp INTEGER NOT NULL,
+                max_hp INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                cosmetics TEXT NOT NULL,
+                items TEXT NOT NULL,
                 custom_data TEXT)
-                """)
+                """) # FIXME FIXME FIXME FIXME
             await db.commit()
         
     async def newCat(self, discord_id: int):
