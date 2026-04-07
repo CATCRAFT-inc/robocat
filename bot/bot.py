@@ -47,39 +47,38 @@ async def on_ready():
 #     sys.exit(0)
 
 
-# @bot.listen()
-# async def on_message(message: disnake.Message):
-#     """
-#     Функция на добавление реакций и создания треда под каждым постом в заданных каналах
-#     + пишет, если игрок ошибся при написании Робокотику, а не Робокотику SRV
-#     """
-#     if message.author.bot:
-#         return
-#     elif isinstance(message.channel, DMChannel):
-#         # Если сообщение — ровно 4 цифры
-#         if re.fullmatch(r'\d{4}', message.content):
-#             # Отправляем ответ
-#             await message.channel.send("Привет, я не тот **Робокотик**! Тебе нужен <@1149912580358422560> =)")
-#     else:
-#         channels_to_check = [1139036448201392218, 1215338737286914109, 1139036637519683584]
+@bot.listen()
+async def on_message(message: disnake.Message):
+    """
+    Функция на добавление реакций и создания треда под каждым постом в заданных каналах
+    + пишет, если игрок ошибся при написании Робокотику, а не Робокотику SRV
+    """
+    if message.author.bot:
+        return
+    elif isinstance(message.channel, DMChannel):
+        # Если сообщение — ровно 4 цифры
+        if re.fullmatch(r'\d{4}', message.content):
+            # Отправляем ответ
+            await message.channel.send("Привет, я не тот **Робокотик**! Тебе нужен <@1149912580358422560> =)")
+    else:
+        channels_to_check = [1139036448201392218, 1215338737286914109, 1139036637519683584] # TODO: убрать хардкод
 
-#         if message.channel.id in channels_to_check:
-#             reactions = ['❤️', '👍', '👎']
-#             for reaction in reactions:
-#                 await message.add_reaction(reaction)
-#                 await asyncio.sleep(1)
+        if message.channel.id in channels_to_check:
+            reactions = ['❤️', '👍', '👎']
+            for reaction in reactions:
+                await message.add_reaction(reaction)
+                await asyncio.sleep(1)
+            await message.create_thread(name="Обсуждение", reason="Тред на новую новость")
 
-#             await message.create_thread(name="Обсуждение")
 
-
-# @bot.listen()
-# async def on_member_join(inter: disnake.Member):
-#     """
-#     Кидает случайное сообщение о входе юзера и выдаёт роли, если они были
-#     """
-#     if inter.guild.id == 1138425078493753366:
-#         channel = bot.get_channel(1138425079231938683)
-#         await channel.send(random.choice(Messages.join).replace("%1", f"<@{inter.id}>"))
+@bot.listen()
+async def on_member_join(inter: disnake.Member):
+    """
+    Кидает случайное сообщение о входе юзера и выдаёт роли, если они были
+    """
+    if inter.guild.id == 1138425078493753366:
+        channel = bot.get_channel(1138425079231938683) # TODO: убрать хардкод
+        await channel.send(random.choice(Messages.join).replace("%1", f"<@{inter.id}>"))
 
 # #TODO: не работает?
 # @bot.listen()
