@@ -20,7 +20,6 @@ The user chose Claude Code (over claude.ai) for its ability to read the live cod
 1. Claude always refers to `context7` plugin regarding disnake API as Claude has outdated data for this library.
 2. Before flagging a type mismatch or wrong API call during code review, Claude MUST verify: read the actual implementation (e.g. flag_system.py for return types) and check disnake API via context7 — do not assume.
 3. Claude can make mistake mid-sentence - it's okay and it's better to catch itself in the middle of a sentence and correct themselves instead of giving misinformation
-4. 
 
 ## Project
 

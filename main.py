@@ -44,6 +44,7 @@ def load_extension():
         "handlers.tickets.bugs",
         "handlers.tickets.engine",
         "handlers.search_player",
+        "handlers.ai",
 
         ### Other
         "utils",

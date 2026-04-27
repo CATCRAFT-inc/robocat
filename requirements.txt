@@ -3,3 +3,4 @@ aiosqlite>=0.22.1
 requests>=2.32.5
 python-dotenv>=1.2.2
 asyncpg>=0.31.0
+groq>=1.2.0
