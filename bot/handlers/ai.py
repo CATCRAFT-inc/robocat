@@ -96,15 +96,15 @@ class RobocatAI(commands.Cog):
         )
         return answer.choices[0].message.content
     
-    @commands.Cog.listener("on_message")
-    async def parseForPings(self, message: disnake.Message):
-        if message.author.bot:
-            return
-        if self.bot.user.mentioned_in(message):
-            text = message.clean_content.replace("@Робокотик", "")
-            async with message.channel.typing():
-                reply = await self.generateAnswer(text)
-            await message.reply(reply)
+    # @commands.Cog.listener("on_message")
+    # async def parseForPings(self, message: disnake.Message):
+    #     if message.author.bot:
+    #         return
+    #     if self.bot.user.mentioned_in(message):
+    #         text = message.clean_content.replace("@Робокотик", "")
+    #         async with message.channel.typing():
+    #             reply = await self.generateAnswer(text)
+    #         await message.reply(reply)
 
 def setup(bot: commands.Bot):
     bot.add_cog(RobocatAI(bot))
