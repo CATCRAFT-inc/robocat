@@ -305,3 +305,5 @@ class Flags:
         # await self.setFlag("textchannel", 12345678, "GOVNO228", "AAAAAAAAAAAAAAAAAAAAAAA")
         # print(await self.getFlag("textchannel", 1234567, "GOVNO"))
         # print(await self.getAllWithFlag("GOVNO"))
+
+flags = Flags()
