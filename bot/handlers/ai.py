@@ -241,6 +241,8 @@ class RobocatAI(commands.Cog):
     async def parseForPings(self, message: disnake.Message):
         if message.author.bot:
             return
+        if message.clean_content[0] == "!":
+            return
         if message.reference:
             if message.reference.resolved.author == self.bot.user:
                 text = message.clean_content.replace("@Робокотик", "")
