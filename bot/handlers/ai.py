@@ -1,4 +1,5 @@
 from datetime import datetime
+import logging
 import os
 
 import disnake
@@ -17,6 +18,7 @@ class RobocatAI(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.logger = logging.getLogger("robocat.ai")
         self.system_prompt = """
         [CONTEXT]
         You are Робокотик — Q&A chat bot in Discord server Кошкокрафт (Catcraft) for Minecraft Vanilla+ RPG-ish server (1.21.x).
@@ -226,6 +228,9 @@ class RobocatAI(commands.Cog):
             await self._getNewClient()
             mes = await self.generateAnswer(text, nickname, prev_message)
             return mes
+        except Exception as e:
+            self.logger.warning("Ошибка ебаной нейросети: %s", e)
+            return "*У Робокотика полетели гайки...*"
         print(answer.usage.total_tokens)
         print(answer)
         await self._statistics(answer.usage.total_tokens)
