@@ -3,20 +3,19 @@ from disnake.ext import commands
 
 from bot.storage import Roles
 
-from .flag_system import Flags
+from .flag_system import flags
 
 class FlagCommands(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.flags = Flags()
 
     @commands.slash_command(name='raw_list_flags', description="Сырой вызов - показать все флаги определенного типа и определенного айди")
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def allFlagsCommand(self, inter: disnake.ApplicationCommandInteraction,
                             entity_type,
                             entity_id: str):
-        flagList = await self.flags.getAllFlags(entity_type,int(entity_id))
+        flagList = await flags.getAllFlags(entity_type,int(entity_id))
         if flagList is not None:
             await inter.send(flagList)
     
@@ -24,7 +23,8 @@ class FlagCommands(commands.Cog):
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def allUserFlagsCommand(self, inter: disnake.ApplicationCommandInteraction,
                             user: disnake.Member):
-        flag_list = await self.flags.getAllFlags(user,user.id)
+        flag_list = await flags.getAllFlags(user)
+        print(flag_list)
         if flag_list is not None:
             flag_str_list = []
             for flag in flag_list:
@@ -33,6 +33,7 @@ class FlagCommands(commands.Cog):
                 flag_expires = flag[2]
                 flag_str_list.append(f"**{flag_key}**\n`{flag_value}`\n**Истекает** <t:{flag_expires}:R>\n")
             # flag_list = [flag[0] for flag in flag_list]
+            print(flag_str_list)
             await inter.send(components=disnake.ui.Container(
                 disnake.ui.TextDisplay(f"Флаги пользователя {user.mention}"),
                 disnake.ui.Separator(),
@@ -46,7 +47,7 @@ class FlagCommands(commands.Cog):
     async def getUserFlagCommand(self, inter: disnake.ApplicationCommandInteraction,
                             flag: str,
                             user: disnake.Member):
-        flag_info = await self.flags.getFlag(user,user.id,flag)
+        flag_info = await flags.getFlag(user,flag)
         if flag_info:
             value, expires_at = flag_info
             value_str = f"Значение: `{value}`\nИстекает: <t:{expires_at}:R>" if expires_at else f"Значение: `{flag_info[0]}`"
@@ -64,7 +65,7 @@ class FlagCommands(commands.Cog):
                                     channel: disnake.abc.GuildChannel = None):
         if channel is None:
             channel = inter.channel
-        flag_list = await self.flags.getAllFlags(channel,channel.id)
+        flag_list = await flags.getAllFlags(channel)
         if flag_list is not None:
             flag_str_list = []
             for flag in flag_list:
@@ -89,7 +90,7 @@ class FlagCommands(commands.Cog):
                             value = None,
                             expires_at = None):
         if member:
-            await self.flags.setFlag(member,member.id,flag,value,expires_at)
+            await flags.setFlag(member,flag,value,expires_at)
         else:
             await inter.send("Такого пользователя нет!", ephemeral=True)
 
@@ -101,7 +102,7 @@ class FlagCommands(commands.Cog):
                             value = None,
                             expires_at = None):
         if channel:
-            await self.flags.setFlag(channel,channel.id,flag,value,expires_at)
+            await flags.setFlag(channel,flag,value,expires_at)
         else:
             await inter.send("Такого канала нет!", ephemeral=True)
 

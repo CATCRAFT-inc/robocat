@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 import openai
 from openai import AsyncClient
 
+from bot.storage import Roles
+
 load_dotenv()
 
 class RobocatAI(commands.Cog):
@@ -226,7 +228,7 @@ class RobocatAI(commands.Cog):
             return mes
         print(answer.usage.total_tokens)
         print(answer)
-       # await self._statistics(answer.usage.total_tokens)
+        await self._statistics(answer.usage.total_tokens)
         return answer.choices[0].message.content.replace("@", "*собака*")
     
     async def _statistics(self, token_used: int):
@@ -237,29 +239,87 @@ class RobocatAI(commands.Cog):
             current_tokens = int(current_tokens[0])
             await flags.setFlag("abstract", "token_used", current_tokens + token_used)
 
+    async def _reachedLimit(self, user: disnake.User, guild: disnake.Guild):
+        """Ограничен ли юзер по лимиту запросов нейросети
+
+        Args:
+            user (disnake.User): _description_
+        """
+        # User - 15 RPD
+        # Admins, K+, Boosters - inf RPD
+        if Roles.ai_cd_bypass & {r.id for r in user.roles}:
+            return False
+        reqs = await flags.getFlag(user,"ai_requests")
+        if reqs:
+            if int(reqs[0]) <= 15:
+                return False
+            return True
+        return False
+
+    async def _limiter(self, user: disnake.User, guild: disnake.Guild):
+        if Roles.ai_cd_bypass & {r.id for r in user.roles}:
+            return
+        current_req = await flags.getFlag(user, "ai_requests")
+        if not current_req:
+            await flags.setFlag(user, "ai_requests", 1)
+        else:
+            current_req = int(current_req[0])
+            await flags.setFlag(user, "ai_requests", current_req + 1)
+        return
+
     @commands.Cog.listener("on_message")
     async def parseForPings(self, message: disnake.Message):
+        #await self._reachedLimit(message.author, message.guild)
         if message.author.bot:
             return
         if message.clean_content[0] == "!":
             return
         if message.reference:
+            messages = []
             if message.reference.resolved.author == self.bot.user:
                 text = message.clean_content.replace("@Робокотик", "")
+                if await self._reachedLimit(message.author, message.guild):
+                    await message.reply("К сожалению у тебя закончился лимит ежедневных запросов! Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
+                    return
                 async with message.channel.typing():
                     if message.attachments:
                         reply = await self.generateAnswerImage(text, message.author.nick, message.attachments[0].url)
                     else:
                         reply = await self.generateAnswer(text, message.author.nick, message.reference.resolved.content)
-                await message.reply(reply)
+                    if len(reply) > 3096:
+                        messages = [reply[i:i+3900] for i in range(0, len(reply), 3900)]
+                if messages:
+                    for mes in messages:
+                        await message.reply(mes)
+                    await self._limiter(message.author, message.guild)
+                else:
+                    await message.reply(reply)
+                    await self._limiter(message.author, message.guild)
         elif self.bot.user.mentioned_in(message):
+            messages = []
             text = message.clean_content.replace("@Робокотик ", "")
+            if await self._reachedLimit(message.author, message.guild):
+                await message.reply("К сожалению у тебя закончился лимит ежедневных запросов! Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
+                return
             async with message.channel.typing():
                 if message.attachments:
-                        reply = await self.generateAnswerImage(text, message.author.nick, message.attachments[0].url)
+                    reply = await self.generateAnswerImage(text, message.author.nick, message.attachments[0].url)
                 else:
                     reply = await self.generateAnswer(text, message.author.nick)
-            await message.reply(reply)
+                if len(reply) > 3096:
+                    messages = [reply[i:i+3900] for i in range(0, len(reply), 3900)]
+            if messages:
+                for mes in messages:
+                    await message.reply(mes)
+                await self._limiter(message.author, message.guild)
+            else:
+                await message.reply(reply)
+                await self._limiter(message.author, message.guild)
+
+    @commands.slash_command(name='aiinfo', description="посмотреть инфу о ии")
+    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    async def aiInfo(self, inter: disnake.MessageCommandInteraction):
+        return
 
 
 def setup(bot: commands.Bot):

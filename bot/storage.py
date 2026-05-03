@@ -86,10 +86,11 @@ class Roles:
     gksb = 1141404357988995133 # ГКСБ
     ## MISC
     no_respect = 1221184379397738657 # Потеря благословления
-    accepted = 1242389208669229137 # Не знаю
     no_apps = 1216910429737980065 # Запрет заявок
     parlament = 1141404858268782705 # Парламентёр
     player = 1242389208669229137 # Котик
+    kotikplus = 1138425078917369946
+    booster = 1145672632335876166
     ## Notifications
     rp = 1139039308678963250
     events = 1139038901500133446
@@ -97,6 +98,7 @@ class Roles:
     media = 1139039063127621762
     server_updates = 1154962203007533168
     site_updates = 1216088841761329252
+    ai_cd_bypass = frozenset({owner,st_admin,admin,developer,moderator,kotikplus,booster})
 
 class Users:
     szarkan = 531208170098655233

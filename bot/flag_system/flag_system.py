@@ -65,7 +65,7 @@ class Flags:
     
     def _isExpired(self, exp_time: int) -> bool:
         now = time.time()
-        if now > exp_time: # если щяс больше секунд чем когда надо эээ флаг чтоб ну это .... чтоб он истёк
+        if now > float(exp_time): # если щяс больше секунд чем когда надо эээ флаг чтоб ну это .... чтоб он истёк
             return True
         return False
 
@@ -231,18 +231,19 @@ class Flags:
         async with aiosqlite.connect(self.dbpath) as db:
             cursor = await db.execute(
                 """
-                SELECT flag, expires_at FROM flags WHERE entity_type = ? AND entity_id = ?
+                SELECT flag, value, expires_at FROM flags WHERE entity_type = ? AND entity_id = ?
                 """, (entity_type, entity_id)
             )
             results = await cursor.fetchall()
             if results:
-                not_expired_results = []
-                for res in results:
-                    if res[1] and self._isExpired(res[1]):
-                        await self.removeFlag(entity, res[0], "истёк")
-                    else:
-                        not_expired_results.append(res)
-                return not_expired_results
+                # not_expired_results = []
+                # for res in results:
+                #     if res[1] and self._isExpired(res[1]):
+                #         await self.removeFlag(entity, res[0], "истёк")
+                #     else:
+                #         not_expired_results.append(res)
+                # return not_expired_results
+                return results
             return None
         
     async def getAllWithFlag(self,
