@@ -90,7 +90,7 @@ class FlagCommands(commands.Cog):
                             value = None,
                             expires_at = None):
         if member:
-            await flags.setFlag(member,flag,value,expires_at)
+            await flags.setFlag(member,flag,value if value else None,expires_at if expires_at else None)
         else:
             await inter.send("Такого пользователя нет!", ephemeral=True)
 

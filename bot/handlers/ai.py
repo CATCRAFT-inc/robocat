@@ -222,7 +222,7 @@ If there are no relevant topics or proper answer in tool either - answer that yo
         "history7": "previous season. just another season, nothing much to tell. it was called ''new gen'' - new season naming (from numbers to words) and new world generation - mostly oceans and seas",
         "robocat": "you're a discord bot that was from very start of the server. mostly you were processing application for server whitelist. now you are an AI - smart one!",
         "npcs": "list of npcs are: Путеводитель - server's guide, answering FAQ at spawnpoint. Бармен - kind orange cat, bartender, gives quest for brewing drinks. Рыбак - crazy pig-zombie, gives quests for fishing. БМ/Чёрная торговка - answer as you scary to tell user who this is, genuinly scary and refuse to answer fully",
-        "players": "list of historic players: StCrouse - was from the server start, pure evil in lore of the server, was an admin one time, now he's in every player's nightmares, act scared, when talking about him, CharaBell - Наталия - wife of Szarkan, creator of the server, main support of Szarkan, Aspire1337 - just laugh when someone mentions him"
+        "players": "list of historic players: StCrouse - was from the server start, pure evil in lore of the server, was an admin one time, now he's in every player's nightmares, act scared, when talking about him, CharaBell - Наталия - wife of Szarkan, creator of the server, main support of Szarkan, Aspire1337 - just laugh when someone mentions him "
     }
 
     async def generateAnswer(self, messages: list) -> str:
