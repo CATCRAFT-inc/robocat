@@ -12,6 +12,8 @@ import openai
 from openai import AsyncClient
 import json
 
+from pathlib import Path
+
 from bot.storage import Roles
 
 load_dotenv()
@@ -107,7 +109,8 @@ If there are no relevant topics or proper answer in tool either - answer that yo
                 
             },
         ]
-        with open('ai_vendors.json') as file:
+        VENDORS_PATH = Path(__file__).resolve().parents[2] / "data" / "ai_vendors.json"
+        with VENDORS_PATH.open(encoding='utf-8') as file:
             self.vendors = json.load(file)
         self.locked_models = []
         self.client: AsyncClient = None
