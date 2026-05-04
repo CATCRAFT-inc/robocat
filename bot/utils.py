@@ -95,7 +95,7 @@ def parse_duration(duration_str):
     if unit in time_multipliers:
         return number * time_multipliers[unit]
     else:
-        return False
+        raise ValueError("Неправильный формат времени!")
 
 def duration_to_text(dur_str):
     """

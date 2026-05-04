@@ -1,5 +1,7 @@
+from dataclasses import dataclass
 import time
 import datetime
+from typing import Any, Optional
 import aiosqlite
 import pathlib 
 
@@ -10,6 +12,24 @@ import logging
 
 # TODO: написать норальные докстринги
 
+@dataclass
+class FlagRow:
+    entity_type: str
+    entity_id: int
+    flag: str
+    value: Optional[Any] = None
+    expires_at: Optional[int] = None
+
+    @classmethod
+    def from_row(cls, row, entity_type: str, entity_id: int, flag: str):
+        value, expires_at = row
+        return cls(entity_type, entity_id, flag, value, expires_at)
+    
+    @property
+    def is_expired(self) -> bool:
+        return self.expires_at is not None and self.expires_at < int(time.time())
+
+    
 class Flags:
 # о боже тут докстринги, эт о писал чатджибити
     def __init__(self):
@@ -86,26 +106,105 @@ class Flags:
         if entity_type is None:
             return None
         if expires_at and isinstance(expires_at, str): # Если expires_at передано как "28д" и прочее
-                seconds = parse_duration(expires_at)
-                if seconds is not False:
-                    now = int(time.time())
-                    expires_at = now + seconds
+            seconds = parse_duration(expires_at)
+            now = int(time.time())
+            expires_at = now + seconds
         
-        async with aiosqlite.connect(self.dbpath) as db:
-            cursor = await db.execute(
-                """
-                INSERT INTO flags VALUES
-                (?,?,?,?,?) ON CONFLICT(entity_type, entity_id, flag)
-                DO UPDATE SET value = ?, expires_at = ?
-                """,
-                (entity_type,entity_id,flag,value,expires_at,value,expires_at)
-            )
-            await db.commit()
-        self.logger.info("[СОЗДАНИЕ] Флаг %s на энтити (%s, ID: %s) создан, expires_at: %s", flag, entity_type, entity_id, expires_at or "Нет")
+        # Операция сложения/вычитания флага с цифрами
+        if isinstance(value, str) and value.startswith(('+', '-')):
+            if value[1:].isdigit():
+                current_flag = await self.getFlag(entity, flag)
+                if current_flag:
+                    try:
+                        current_value = int(current_flag.value)
+                        match value[0]:
+                            case "+":
+                                value = current_value + int(value[1:])
+                            case "-":
+                                value = current_value - int(value[1:])
+                    except (ValueError, TypeError):
+                        self.logger.warning("Флаг %s не является числом, +/- операция (%s) невозможна", flag, value)
+                        return None
+                else:
+                    match value[0]:
+                        case "+":
+                            value = int(value[1:])
+                        case "-":
+                            value = -int(value[1:])
+
+        if value is not None and expires_at:    
+            async with aiosqlite.connect(self.dbpath) as db:
+                await db.execute(
+                    """
+                    INSERT INTO flags (entity_type, entity_id, flag, value, expires_at) VALUES
+                    (:entity_type, :entity_id, :flag, :value, :expires_at) ON CONFLICT(entity_type, entity_id, flag)
+                    DO UPDATE SET value = :value, expires_at = :expires_at
+                    """,
+                    {
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "flag": flag,
+                        "value": value,
+                        "expires_at": expires_at,
+                    }
+                )
+                await db.commit()
+            self.logger.info("[ОБНОВЛЕНИЕ] Флаг %s на энтити (%s, ID: %s) создан, expires_at: %s", flag, entity_type, entity_id, expires_at or "Нет")
+        elif value is not None:
+            async with aiosqlite.connect(self.dbpath) as db:
+                await db.execute(
+                    """
+                    INSERT INTO flags (entity_type, entity_id, flag, value) VALUES
+                    (:entity_type, :entity_id, :flag, :value) ON CONFLICT(entity_type, entity_id, flag)
+                    DO UPDATE SET value = :value
+                    """,
+                    {
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "flag": flag,
+                        "value": value,
+                    }
+                )
+                await db.commit()
+            self.logger.info("[ОБНОВЛЕНИЕ] На флаге %s на энтити (%s, ID: %s) обновлён value: %s", flag, entity, entity_id, value)
+        elif expires_at:
+            async with aiosqlite.connect(self.dbpath) as db:
+                await db.execute(
+                    """
+                    INSERT INTO flags (entity_type, entity_id, flag, expires_at) VALUES
+                    (:entity_type, :entity_id, :flag, :expires_at) ON CONFLICT(entity_type, entity_id, flag)
+                    DO UPDATE SET expires_at = :expires_at
+                    """,
+                    {
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "flag": flag,
+                        "expires_at": expires_at
+                    }
+                )
+                await db.commit()
+            self.logger.info("[ОБНОВЛЕНИЕ] На флаге %s на энтити (%s, ID: %s) обновлён expires_at: %s", flag, entity, entity_id, expires_at)
+        else:
+            async with aiosqlite.connect(self.dbpath) as db:
+                await db.execute(
+                    """
+                    INSERT INTO flags (entity_type, entity_id, flag, expires_at) VALUES
+                    (:entity_type, :entity_id, :flag)
+                    """,
+                    {
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "flag": flag,
+                    }
+                )
+                await db.commit()
+            self.logger.info("[ОБНОВЛЕНИЕ] На флаге %s на энтити (%s, ID: %s) создан флаг без значений", flag, entity, entity_id)
+
+        
 
     async def getFlag(self,
                     entity,
-                    flag: str):
+                    flag: str) -> FlagRow:
         """Возвращает значение и expires_at конкретного флага у entity.
 
         :param entity_type: Объект disnake | abstract
@@ -123,13 +222,14 @@ class Flags:
                 SELECT value, expires_at FROM flags WHERE entity_type = ? AND entity_id = ? AND flag = ?
                 """, (entity_type, entity_id, flag)
             )
-            results = await cursor.fetchone()
-            if results:
-                if results[1] and self._isExpired(results[1]):
+            result = await cursor.fetchone()
+            row = FlagRow.from_row(result, entity_type, entity_id, flag) if result else None
+            if row:
+                if row.is_expired:
                     await self.removeFlag(entity,flag,"истёк")
                     return None
                 else:
-                    return results
+                    return row
             return None
         
     # async def getFlagRaw(self,

@@ -26,12 +26,23 @@ async def dbInit():
                 ideas_added INTEGER
             )
         """)
-        await db.execute("CREATE TABLE IF NOT EXISTS flags (entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, flag TEXT NOT NULL, value TEXT, expires_at INTEGER, PRIMARY KEY (entity_type, entity_id, flag))")
+        await db.execute("CREATE TABLE IF NOT EXISTS flags "
+        "(entity_type TEXT NOT NULL, " \
+        "entity_id INTEGER NOT NULL, " \
+        "flag TEXT NOT NULL, " \
+        "value TEXT, " \
+        "expires_at INTEGER, " \
+        "PRIMARY KEY (entity_type, entity_id, flag))")
         await db.commit()
 
 async def dbCommit():
     async with aiosqlite.connect("db.sqlite") as db:
-        await db.execute("CREATE TABLE IF NOT EXISTS flags (entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, flag TEXT NOT NULL, value TEXT, expires_at INTEGER, PRIMARY KEY (entity_type, entity_id, flag))")
+        await db.execute("CREATE TABLE IF NOT EXISTS flags "
+        "(entity_type TEXT NOT NULL, " \
+        "entity_id INTEGER NOT NULL, " \
+        "flag TEXT NOT NULL, value TEXT, " \
+        "expires_at INTEGER, " \
+        "PRIMARY KEY (entity_type, entity_id, flag))")
         await db.commit()
 
 async def test():

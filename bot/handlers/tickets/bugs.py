@@ -25,7 +25,7 @@ class BugHandler(commands.Cog):
                 await inter.send("Ты отправлял(а) слишком много багов за короткое время! Отдохни и сообщи о них попозже =)", ephemeral=True)
             else:  
                 created_bugs = await self.bot.flags.getFlag(inter.author,"created_bugs")
-                if created_bugs and int(created_bugs[0]) > 3:
+                if created_bugs and int(created_bugs.value) > 3:
                     await inter.send("Воу-воу, котик! Мы очень ценим твою помощь, но твои действия смахивают на спам тикетами... Я вынужден дать тебе КД, попробуй попозже.")
                     await self.bot.flags.setFlag(inter.author,"create_bug_cooldown", "true","15мин")
                     return

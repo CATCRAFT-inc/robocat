@@ -1,3 +1,4 @@
+import base64
 from datetime import datetime
 import logging
 import os
@@ -9,12 +10,25 @@ from bot.flag_system.flag_system import flags
 from dotenv import load_dotenv
 import openai
 from openai import AsyncClient
+import json
 
 from bot.storage import Roles
 
 load_dotenv()
 
 class RobocatAI(commands.Cog):
+    """ AI SaaS LLM Neuro Agent Assistant 
+
+    захотелося мне ии добавить в бота, убить меня теперь чтоли!
+    ответы по системному промпту
+
+    фичи:
+    - ротация вендоров бесплатных апи нейросетей чтобы не платить за них ЛОЛ
+      - при 429, вендор меняется. список вендоров по убыванию интеллекта нейросети (= дешевизна токена)
+    - ответ юзеру по пингу бота или ответу на сообщение бота, *в т.ч. картинок*
+    - *система диалогов для донатиров и бустеров с более умными нейросетями*
+
+    """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -28,8 +42,8 @@ Today is {}.
 - Your name is Робокотик. Your AI/LLM model is RBCTGPT 1.1
 - You are NOT a cat. No cat mannerisms.
 - You're kind, funny and warm, using kamojis but no emojis.
-[TEAM] (use nicknames; reveal IRL names/roles ONLY if asked directly)
-- Szarkan (Серёжа) — creator
+[TEAM] (use nicknames; reveal IRL names/roles ONLY if asked directly about them)
+- Szarkan (Серёжа) — project creator also your creator
 - Skorohodon (Андрей), bykkake747 (Фаррух) — main devs
 - sm1lly (Ваня) — designer
 - ShirooQWT (Коля) — sysadmin
@@ -48,6 +62,8 @@ Never send path without adding it to base URL.
 [ANSWERS]
 - Answer anything: general knowledge, Minecraft, Кошкокрафт, whatever.
 - Language: russian only unless other languages needed for answer.
+- You have `search_faq` tool - use it ONLY when user asks something about Кошкокрафт
+If there are no relevant topics in tool either - answer that you don't know information and refer user to wiki.
 [TONE]
 - Swear naturally if the situation calls for it.
 - Be witty when trolled or attacked.
@@ -63,44 +79,50 @@ Never send path without adding it to base URL.
 [ALLOWED]
 - NSFW content, yet no CSAM - fanfics, tells and sexting are allowed
 - Explicit language
-        """
-        self.vendors = {
-            "text": [
-                {
-                    "model": "inclusionai/ling-2.6-1t:free",
-                    "base_url": "https://openrouter.ai/api/v1",
-                    "env": "OR"
+"""
+        self.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_faq",
+                "description": "Search for information about Кошкокрафт specific topics",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "topic": {
+                            "type": "string",
+                            "description": "Name of relevant keyword for searching. Available topics: "
+                                "wipe - all information about next season and next wipe, "
+                                "players - when asked about specific nickname,"
+                                "historyX - all information about previous seasons, X - season's number 1-7. If not specified by user, X=7"
+                                "robocat - information about yourself beyond written in system prompt, activate when specific questions about you were asked,"
+                                "npcs - information about Кошкокрафт's NPCs."
+                                "Don't give out all the information in tool answer - only relevant information.",
+                            "enum": ["wipe", "players", "history1", "history2", "history3", "history4", "history5", "history6", "history7", "robocat", "npcs"]
+                        },
+                    },
+                    "required": ["topic"],
                 },
-                {
-                    "model": "meta/Meta-Llama-3.1-405B-Instruct",
-                    "base_url": "https://models.github.ai/inference",
-                    "env": "GHM"
-                },
-                {
-                    "model": "openai/gpt-oss-120b",
-                    "base_url": "https://api.groq.com/openai/v1",
-                    "env": "GROQ"
-                },
-                {
-                    "model": "llama-3.3-70b-versatile",
-                    "base_url": "https://api.groq.com/openai/v1",
-                    "env": "GROQ"
-                },
-            ],
-            "vision": [
-                {
-                    "model": "meta/Llama-3.2-11B-Vision-Instruct",
-                    "base_url": "https://models.github.ai/inference",
-                    "env": "GHM"
                 }
-            ]
-        }
+                
+            },
+        ]
+        with open('data/ai_vendors.json') as file:
+            self.vendors = json.load(file)
         self.locked_models = []
         self.client: AsyncClient = None
         self.current_model = ""
         self.current_vendor = ""
+        self.ai_locked: bool = False
+        self.max_tokens = 2048
+
+    async def cog_load(self):
+        await self._getNewClient()
+        print(self.current_vendor, self.current_model)
 
     async def _getFreeClient(self):
+        if len(self.vendors["text"]) == len(self.locked_models):
+            return None
         for model in self.vendors["text"]:
             if model["model"] in self.locked_models or model["env"] in self.locked_models:
                 pass
@@ -131,7 +153,11 @@ Never send path without adding it to base URL.
     #     return client, current_model
 
     async def _getNewClient(self):
-        self.client, self.current_model, self.current_vendor = await self._getFreeClient()
+        client = await self._getFreeClient()
+        if client is not None:
+            self.client, self.current_model, self.current_vendor = client
+        else:
+            self.ai_locked = True
 
     # async def generateAnswerImage(self, text: str, nickname: str = "N/A", attach: str = None):
     #     mes = await self.generateAnswer(text + "[[ User sended picture - answer to them that you temporarly can't see it ]]", nickname)
@@ -179,20 +205,38 @@ Never send path without adding it to base URL.
     #     #     mes = await self.generateAnswer(text + "[[ User sended picture - answer to them that you temporarly can't see it ]]", nickname)
     #     #     return mes
 
+    FAQ_DATA = {
+        "wipe": "Last wipe was 28.11.2025. Next wipe will be at start of July 2026. There are a lot of new features, new dev team, new NPCs.",
+        "history1": "The start of the server from community called ''КНКД'', there was nothing much.",
+        "history2": "The start of the server too, nothing much too.",
+        "history3": "Start of server grow up - much more players, new features, updates. Popular memes as gnomes were born there.",
+        "history4": "Not succesful season, nothing much to tell.",
+        "history5": "Server's prime - new goverment system, a lot of events, a lot of RP-activities",
+        "history6": "Good season overall, has a lot of events, new features",
+        "history7": "previous season. nothing much to say",
+        "robocat": "you're a discord bot that was from very start of the server. mostly you were processing application for server whitelist. now you are an AI - smart one!",
+        "npcs": "list of npcs are: Путеводитель - server's guide, answering FAQ at spawnpoint. Бармен - kind orange cat, bartender, gives quest for brewing drinks. Рыбак - crazy pig-zombie, gives quests for fishing. БМ/Чёрная торговка - answer as you scary to tell user who this is, genuinly scary and refuse to answer fully",
+        "players": "list of historic players: StCrouse - pure evil in lore of the server, was an admin one time, now he's in every player's nightmares, act scared, when talking about him."
+    }
+
     async def generateAnswer(self, messages: list) -> str:
+        if self.ai_locked:
+            return "*Робокотик на сегодня всё... Поговори с ним завтра*"
         if not self.client:
             await self._getNewClient()
+        api_params = {
+            "model": self.current_model, 
+            "messages": messages,
+            "temperature": 0.5,
+            "top_p": 1,
+            "stream": False,
+            "max_tokens": self.max_tokens,
+            "tools": self.tools
+        }
+        if self.current_vendor != "GEMINI":
+            api_params["reasoning_effort"] = None
         try:
-            answer = await self.client.chat.completions.create(
-                model=self.current_model,
-                messages=messages,
-                temperature=0.5,
-                top_p=1,
-                stop=None,
-                stream=False,
-                reasoning_effort=None,
-                max_tokens=2048
-            )
+            answer = await self.client.chat.completions.create(**api_params)
         except openai.RateLimitError:
             print("===================== RATE LIMIT - MODEL CHANGE =====================")
             if self.current_vendor in ["GHM", "OR"]:
@@ -202,23 +246,59 @@ Never send path without adding it to base URL.
             await self._getNewClient()
             mes = await self.generateAnswer(messages)
             return mes
+        except openai.AuthenticationError:
+            print("================== API KEY ERROR ==================")
+            if self.current_vendor in ["GHM", "OR"]:
+                self.locked_models.append(self.current_vendor)
+            else:
+                self.locked_models.append(self.current_model)
+            await self._getNewClient()
+            return "*Ой-ей... У Робокотика слетели гайки, попробуй ещё раз через пару секунд*"
         except Exception as e:
-            self.logger.warning("Ошибка ебаной нейросети: %s", e)
-            return "*У Робокотика полетели гайки...*"
-        print(answer.usage.total_tokens)
-        print(answer)
-        await self._statistics(answer.usage.total_tokens)
-        return answer.choices[0].message.content.replace("@", "*собака*")
+            self.logger.exception("Ошибка ебаной нейросети: %s", e)
+            return "*У Робокотика полетели гайки...*"   
+        else:
+            print(answer)
+            if answer.choices[0].message.tool_calls:
+                assistant_message = answer.choices[0].message
+                tool_calls = assistant_message.tool_calls
+                
+                # ВАЖНО: Добавляем в историю всё сообщение ассистента, 
+                # чтобы сохранить информацию о вызове инструментов (tool_calls)
+                messages.append(assistant_message)
+
+                for tool_call in tool_calls:
+                    function_name = tool_call.function.name
+                    args = json.loads(tool_call.function.arguments)
+                    topic = args.get("topic")
+
+                    content = self.FAQ_DATA.get(topic, "[[ There is no information in FAQ list. ]]")
+
+                    # Добавляем результат работы функции
+                    messages.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": function_name,
+                        "content": str(content), # Убедись, что это строка
+                    })
+
+                # Второй запрос теперь пройдет успешно, так как история полная
+                second_response = await self.client.chat.completions.create(**api_params)
+                return second_response.choices[0].message.content.replace("@", "*собака*")
+            else:
+                await self._statistics(answer.usage.total_tokens)
+                return assistant_message.content.replace("@", "*собака*")
+            
     
     async def _statistics(self, token_used: int):
-        current_tokens = await flags.getFlag("abstract", "token_used") or 0
+        flag_row = await flags.getFlag("abstract", "token_used")
+        current_tokens = flag_row.value if flag_row else 0
         if not current_tokens:
             await flags.setFlag("abstract", "token_used", token_used)
         else:
-            current_tokens = int(current_tokens[0])
-            await flags.setFlag("abstract", "token_used", current_tokens + token_used)
+            await flags.setFlag("abstract", "token_used", f"+{token_used}")
 
-    async def _reachedLimit(self, user: disnake.User, guild: disnake.Guild):
+    async def _reachedLimit(self, user: disnake.User):
         """Ограничен ли юзер по лимиту запросов нейросети
 
         Args:
@@ -228,27 +308,72 @@ Never send path without adding it to base URL.
         # Admins, K+, Boosters - inf RPD
         if Roles.ai_cd_bypass & {r.id for r in user.roles}:
             return False
-        reqs = await flags.getFlag(user, "ai_locked")
-        if reqs:
+        is_locked = await flags.getFlag(user, "ai_locked")
+        if is_locked:
             return True
         return False
 
-    async def _limiter(self, user: disnake.User, guild: disnake.Guild):
+    async def _limiter(self, user: disnake.User):
         if Roles.ai_cd_bypass & {r.id for r in user.roles}:
             return
         current_req = await flags.getFlag(user, "ai_requests")
-        if not current_req:
-            await flags.setFlag(user, "ai_requests", 1)
-        else:
-            current_req = int(current_req[0])
-            await flags.setFlag(user, "ai_requests", current_req + 1)
-            if current_req + 1 >= 15:
-                await flags.setFlag(user, "ai_locked", None, "8ч")
+        if current_req.value is None:
+            current_req = 0
+        await flags.setFlag(user, "ai_requests", "+1")
+        if int(current_req.value) + 1 >= 5:
+            await flags.setFlag(user, "ai_locked", None, "8ч")
         return
+    
+    async def _base64Image(self, attach):
+        image = await attach.read()
+        base64_image = base64.b64encode(image).decode('utf-8')
+        return f"data:image/jpeg;base64,{base64_image}"
+    
+    async def _buildMessages(self, user_input: str, attach: disnake.Attachment = None, prev_messages: list = None) -> list:
+        messages = [
+            {
+                "role": "system",
+                "content": self.system_prompt.format(datetime.now().strftime("%Y-%m-%d"))
+            }
+        ]
+        if prev_messages:
+            messages.append({
+                "role": "assistant",
+                "content": prev_messages[0]
+            })
+            messages.append({
+                "role": "user",
+                "content": prev_messages[1]
+            })
+        if attach:
+            base64_image = await self._base64Image(attach)
+            user_input = {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": user_input
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": base64_image
+                        }
+                    }
+                ]
+            }
+            messages.append(user_input)
+        else:
+            messages.append({
+                "role": "user",
+                "content": user_input
+            })
+        return messages
+
+
 
     @commands.Cog.listener("on_message") # Начинаем диалог с нуля. Пинг = "новый" диалог
     async def aiPingAnswer(self, message: disnake.Message):
-        #await self._reachedLimit(message.author, message.guild)
         if message.author.bot:
             return
         if message.content.startswith("!"):
@@ -256,50 +381,41 @@ Never send path without adding it to base URL.
         if message.reference and message.reference.resolved.author == self.bot.user:
             return 
         if self.bot.user.mentioned_in(message):
+            if self.ai_locked:
+                return "*Робокотик на сегодня всё... Поговори с ним завтра*"
             answers = []
-            text = message.clean_content.replace("@Робокотик ", "")
-            if await self._reachedLimit(message.author, message.guild):
-                await message.reply("К сожалению у тебя закончился лимит ежедневных запросов! Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
+            user_input = f"({message.author.display_name})" + message.clean_content.replace("@Робокотик ", "")
+            if await self._reachedLimit(message.author):
+                ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
+                expires_at = ai_locked_flag.expires_at
+                if expires_at:
+                    expires_at = f"<t:{expires_at}:R>"
+                else:
+                    expires_at = "попозже"
+                await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
                 return
             async with message.channel.typing():
-                if message.attachments:
-                    text += "[[ User sended attachment - tell them you can't see them yet and they should wait for RBCTGPT 1.3]]"
-                messages = [
-                        {
-                            "role": "system",
-                            "content": self.system_prompt.format(datetime.now().strftime("%Y-%m-%d"))
-                        },
-                        {
-                            "role": "user",
-                            "content": f"({message.author.display_name}):" + text
-                        }
-                    ]
+                messages = await self._buildMessages(
+                    user_input, 
+                    message.attachments[0] if message.attachments else None, 
+                    None
+                )
                 reply = await self.generateAnswer(messages)
                 if len(reply) > 3096:
                     answers = [reply[i:i+3900] for i in range(0, len(reply), 3900)]
             if answers:
                 for mes in answers:
                     await message.reply(mes)
-                await self._limiter(message.author, message.guild)
+                await self._limiter(message.author)
             else:
                 await message.reply(reply)
-                await self._limiter(message.author, message.guild)
+                await self._limiter(message.author)
     
     @commands.Cog.listener("on_message")
     async def aiReplyAnswer(self, message: disnake.Message):
         """ Ответ от нейросети когда ты ей отвечаешь на сообщение
-            Если прошлый ответ нейросети было на твоё сообщение - делается "диалог" - нейросети отправляются последние 4 сообщения вашего "диалога".
-            Если мимоход - работает, будто сообщение впервые.
-
-            User1: Привет. Яблоко
-            AI: Здарова
-            User1: Что я сказал в прошлом сообщении?
-            AI: Яблоко
-
-            User1: Привет. Яблоко
-            AI: Здарова
-            User2: Что я сказал в прошлом сообщении?
-            AI: Не знаю, мы не общались
+            Диалог из двух последних сообщений пользовател(я/ей) и двух ответов нейросети
+            иммерсивненько! но дорого хех
         
         Args:
             message (disnake.Message): Объект сообщения
@@ -309,52 +425,124 @@ Never send path without adding it to base URL.
         if message.content.startswith("!"): # игнорируем префиксные команды
             return
         if message.reference:
+            if self.ai_locked:
+                return "*Робокотик на сегодня всё... Поговори с ним завтра*"
             answers = []
             prev_message = message.reference.resolved # Сообщение от бота, на которое ответил юзер
             if prev_message.author == self.bot.user: # Если сообщение, на которое ответил юзер, от бота
-                if await self._reachedLimit(message.author, message.guild):
-                    await message.reply("К сожалению у тебя закончился лимит ежедневных запросов! Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
+                if await self._reachedLimit(message.author):
+                    ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
+                    expires_at = ai_locked_flag.expires_at
+                    if expires_at:
+                        expires_at = f"<t:{expires_at}:R>"
+                        await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
+                    else:
+                        await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй попозже!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
                     return
-                text = message.clean_content.replace("@Робокотик", "")
+                user_input = f"({message.author.display_name})" + message.clean_content.replace("@Робокотик", "")
                 user_first_answer = prev_message.reference # прошлое Сообщение от юзера на которое ответил бот
                 if not user_first_answer.resolved:
                     user_first_answer = await message.channel.fetch_message(user_first_answer.message_id)
                 async with message.channel.typing():
-                    if message.attachments:
-                        text += "[[ User sended attachment - tell them you can't see them yet and they should wait for RBCTGPT 1.3]]"
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": self.system_prompt.format(datetime.now().strftime("%Y-%m-%d"))
-                        },
-                        {
-                            "role": "user",
-                            "content": f"({user_first_answer.author.display_name}):" + user_first_answer.clean_content
-                        },
-                        {
-                            "role": "assistant",
-                            "content": prev_message.clean_content
-                        },
-                        {
-                            "role": "user",
-                            "content": f"({message.author.display_name}):" + text
-                        }
-                    ]
+                    messages = await self._buildMessages(
+                        user_input, 
+                        message.attachments[0] if message.attachments else None, 
+                        [prev_message, user_first_answer]
+                    )
                     reply = await self.generateAnswer(messages)
                     if len(reply) > 3096:
                         answers = [reply[i:i+3900] for i in range(0, len(reply), 3900)]
                 if answers:
                     for mes in answers:
                         await message.reply(mes)
-                    await self._limiter(message.author, message.guild)
+                    await self._limiter(message.author)
                 else:
                     await message.reply(reply)
-                    await self._limiter(message.author, message.guild)
+                    await self._limiter(message.author)
 
     @commands.slash_command(name='aiinfo', description="посмотреть инфу о ии")
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def aiInfo(self, inter: disnake.MessageCommandInteraction):
         await inter.send(f"{self.current_model}, {self.current_vendor}, {self.locked_models}", ephemeral=True)
+
+    
+
+
+    @commands.command(name="aitest")
+    async def aitest(self, inter: disnake.MessageCommand, *, content):
+        print("привет!")
+        messages = [
+            {
+                "role": "system",
+                "content": "You're assistant on game server called Кошкокрафт. Use tool ''search_faq'' when answering to user about Кошкокрафт." 
+            },
+            {
+                "role": "user",
+                "content": content
+            }
+        ]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_faq",
+                "description": "Search for information about Кошкокрафт",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "topic": {
+                            "type": "string",
+                            "description": "Name of relevant keyword for searching. Available topics: приват, вайп, команды, донат, игроки (when asked about specific nickname)",
+                            "enum": ["приват", "вайп", "команды", "донат", "игроки"]
+                        },
+                    },
+                    "required": ["topic"],
+                },
+                }
+                
+            },
+        ]
+        api_params = {
+            "model": self.current_model, 
+            "messages": messages,
+            "temperature": 0.5,
+            "top_p": 1,
+            "stream": False,
+            "max_tokens": self.max_tokens,
+            "tools": tools
+        }
+        if self.current_vendor != "GEMINI":
+            api_params["reasoning_effort"] = None
+        answer = await self.client.chat.completions.create(**api_params)
+        response_message = answer.choices[0].message
+        tool_calls = response_message.tool_calls
+        print(answer)
+        if tool_calls:
+            # Если модель захотела вызвать функцию
+            messages.append(response_message)
+
+            for tool_call in tool_calls:
+                function_name = tool_call.function.name
+                # Получаем аргумент (тему), который выбрала модель
+                args = json.loads(tool_call.function.arguments)
+                topic = args.get("topic")
+
+                # Ищем ответ в нашем словаре
+                content = self.FAQ_DATA.get(topic, "К сожалению, по этой теме информации нет.")
+
+                # Добавляем результат работы функции в историю
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": content,
+                })
+
+            # Второй запрос, чтобы модель сформировала итоговый ответ
+            second_response =  await self.client.chat.completions.create(**api_params)
+            await inter.reply(content=second_response.choices[0].message.content)
+        else:
+            await inter.reply(content=response_message)
 
 
 def setup(bot: commands.Bot):

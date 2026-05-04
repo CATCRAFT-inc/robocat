@@ -158,3 +158,4 @@ cython_debug/
 /.claude
 notify_failure.py
 /data/seasons
+data/ai_vendors.json

@@ -90,7 +90,7 @@ class TicketEngine(commands.Cog):
                                 description=description
                             )
                             user_id = await Flags().getFlag(inter.channel,"created_by")
-                            member = inter.guild.get_member(user_id[0]) if user_id else None
+                            member = inter.guild.get_member(int(user_id.value)) if user_id else None
                             if member:
                                 await member.send(components=bug_fixed_embed)
                             await inter.channel.delete(reason=f"Баг закрыт {inter.author.id}")
@@ -106,7 +106,7 @@ class TicketEngine(commands.Cog):
                                 disnake.ui.TextDisplay(f"### Решение:\n{comment}\n-# Закрыл: <@{inter.author.id}>")
                             )
                             user_id = await Flags().getFlag(inter.channel, "created_by")
-                            member = inter.guild.get_member(int(user_id[0])) if user_id else None
+                            member = inter.guild.get_member(int(user_id.value)) if user_id else None
                             if member:
                                 await member.send(components=ticket_closed_embed)
                             await inter.channel.delete(reason=f"Тикет закрыт {inter.author.id}")
@@ -166,7 +166,7 @@ class TicketEngine(commands.Cog):
                                 description = f"Огромное спасибо за репорт бага, но он был отклонён...\n**Причина:** {reason}"
                             )
                             user_id = await Flags().getFlag(inter.channel,"created_by")
-                            member = inter.guild.get_member(user_id[0]) if user_id else None
+                            member = inter.guild.get_member(user_id.value) if user_id else None
                             if member:
                                 await member.send(components=bug_fixed_embed)
                             await inter.channel.delete(reason=f"Баг закрыт {inter.author.id}")

@@ -1,0 +1,19 @@
+{
+    # Ascending list based on priority. To me - based on intellegence
+    # А зачем я комы на английском пишу лол
+
+    "text": [ # Text AI, no vision
+        {
+            "model": "MODEL NAME",
+            "base_url": "API BASE URL",
+            "env": "ENV KEY (and also api provider name)"
+        }
+    ],
+    "vision": [ # Vision + text AIs
+        {
+            "model": "MODEL NAME",
+            "base_url": "API BASE URL",
+            "env": "ENV KEY (and also api provider name)"
+        }
+    ]
+}

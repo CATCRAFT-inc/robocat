@@ -49,7 +49,7 @@ class FlagCommands(commands.Cog):
                             user: disnake.Member):
         flag_info = await flags.getFlag(user,flag)
         if flag_info:
-            value, expires_at = flag_info
+            value, expires_at = flag_info.value, flag_info.expires_at
             value_str = f"Значение: `{value}`\nИстекает: <t:{expires_at}:R>" if expires_at else f"Значение: `{flag_info[0]}`"
             await inter.send(components=disnake.ui.Container(
                 disnake.ui.TextDisplay(f"Флаг `{flag}` пользователя {user.mention}"),
