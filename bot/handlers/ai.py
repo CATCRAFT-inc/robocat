@@ -322,13 +322,15 @@ If there are no relevant topics or proper answer in tool either - answer that yo
     async def _limiter(self, user: disnake.User):
         if Roles.ai_cd_bypass & {r.id for r in user.roles}:
             return
-        current_req = await flags.getFlag(user, "ai_requests")
+        current_req = await flags.getFlag(user, "airequests")
         if current_req.value is None:
-            current_req = 0
-        await flags.setFlag(user, "ai_requests", "+1")
-        if int(current_req.value) + 1 >= 5:
+            await flags.setFlag(user, "airequests", 1, expires_at="8ч")
+        else:
+            await flags.setFlag(user, "airequests", "+1")
+        if int(current_req.value) + 1 >= 25:
             await flags.setFlag(user, "ai_locked", None, "8ч")
         return
+        
     
     async def _base64Image(self, attach):
         image = await attach.read()
