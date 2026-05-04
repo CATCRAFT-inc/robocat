@@ -39,7 +39,7 @@ You are Робокотик — Q&A chat bot in Discord server Кошкокраф
 Currently in mid-season break. Last season: Season 7 "New Gen". Next season starts July 2026.
 Today is {}.
 [IDENTITY]
-- Your name is Робокотик. Your AI/LLM model is RBCTGPT 1.1
+- Your name is Робокотик. Your AI/LLM model is RBCTGPT 1.2
 - You are NOT a cat. No cat mannerisms.
 - You're kind, funny and warm, using kamojis but no emojis.
 [TEAM] (use nicknames; reveal IRL names/roles ONLY if asked directly about them)
@@ -62,8 +62,8 @@ Never send path without adding it to base URL.
 [ANSWERS]
 - Answer anything: general knowledge, Minecraft, Кошкокрафт, whatever.
 - Language: russian only unless other languages needed for answer.
-- You have `search_faq` tool - use it ONLY when user asks something about Кошкокрафт
-If there are no relevant topics in tool either - answer that you don't know information and refer user to wiki.
+- You have `search_faq` tool - use it ONLY when user asks something about Кошкокрафт - mechanics, features, players, rules and etc
+If there are no relevant topics or proper answer in tool either - answer that you don't know information and refer user to wiki.
 [TONE]
 - Swear naturally if the situation calls for it.
 - Be witty when trolled or attacked.
@@ -158,6 +158,9 @@ If there are no relevant topics in tool either - answer that you don't know info
             self.client, self.current_model, self.current_vendor = client
         else:
             self.ai_locked = True
+    
+    async def _getSpecificClient(self):
+        return
 
     # async def generateAnswerImage(self, text: str, nickname: str = "N/A", attach: str = None):
     #     mes = await self.generateAnswer(text + "[[ User sended picture - answer to them that you temporarly can't see it ]]", nickname)
@@ -259,20 +262,20 @@ If there are no relevant topics in tool either - answer that you don't know info
             return "*У Робокотика полетели гайки...*"   
         else:
             print(answer)
-            if answer.choices[0].message.tool_calls:
-                assistant_message = answer.choices[0].message
+            assistant_message = answer.choices[0].message
+            if assistant_message.tool_calls:
                 tool_calls = assistant_message.tool_calls
                 
                 # ВАЖНО: Добавляем в историю всё сообщение ассистента, 
                 # чтобы сохранить информацию о вызове инструментов (tool_calls)
-                messages.append(assistant_message)
+                messages.append(assistant_message.model_dump(exclude_none=True))
 
                 for tool_call in tool_calls:
                     function_name = tool_call.function.name
                     args = json.loads(tool_call.function.arguments)
                     topic = args.get("topic")
 
-                    content = self.FAQ_DATA.get(topic, "[[ There is no information in FAQ list. ]]")
+                    content = self.FAQ_DATA.get(topic, "[[ There is no information in FAQ list. Tell user you don't know the answer and refer them to wiki. ]]")
 
                     # Добавляем результат работы функции
                     messages.append({
@@ -339,11 +342,11 @@ If there are no relevant topics in tool either - answer that you don't know info
         if prev_messages:
             messages.append({
                 "role": "assistant",
-                "content": prev_messages[0]
+                "content": prev_messages[0].content
             })
             messages.append({
                 "role": "user",
-                "content": prev_messages[1]
+                "content": prev_messages[1].content
             })
         if attach:
             base64_image = await self._base64Image(attach)
@@ -464,85 +467,9 @@ If there are no relevant topics in tool either - answer that you don't know info
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def aiInfo(self, inter: disnake.MessageCommandInteraction):
         await inter.send(f"{self.current_model}, {self.current_vendor}, {self.locked_models}", ephemeral=True)
-
-    
-
-
-    @commands.command(name="aitest")
-    async def aitest(self, inter: disnake.MessageCommand, *, content):
-        print("привет!")
-        messages = [
-            {
-                "role": "system",
-                "content": "You're assistant on game server called Кошкокрафт. Use tool ''search_faq'' when answering to user about Кошкокрафт." 
-            },
-            {
-                "role": "user",
-                "content": content
-            }
-        ]
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "search_faq",
-                "description": "Search for information about Кошкокрафт",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "topic": {
-                            "type": "string",
-                            "description": "Name of relevant keyword for searching. Available topics: приват, вайп, команды, донат, игроки (when asked about specific nickname)",
-                            "enum": ["приват", "вайп", "команды", "донат", "игроки"]
-                        },
-                    },
-                    "required": ["topic"],
-                },
-                }
-                
-            },
-        ]
-        api_params = {
-            "model": self.current_model, 
-            "messages": messages,
-            "temperature": 0.5,
-            "top_p": 1,
-            "stream": False,
-            "max_tokens": self.max_tokens,
-            "tools": tools
-        }
-        if self.current_vendor != "GEMINI":
-            api_params["reasoning_effort"] = None
-        answer = await self.client.chat.completions.create(**api_params)
-        response_message = answer.choices[0].message
-        tool_calls = response_message.tool_calls
-        print(answer)
-        if tool_calls:
-            # Если модель захотела вызвать функцию
-            messages.append(response_message)
-
-            for tool_call in tool_calls:
-                function_name = tool_call.function.name
-                # Получаем аргумент (тему), который выбрала модель
-                args = json.loads(tool_call.function.arguments)
-                topic = args.get("topic")
-
-                # Ищем ответ в нашем словаре
-                content = self.FAQ_DATA.get(topic, "К сожалению, по этой теме информации нет.")
-
-                # Добавляем результат работы функции в историю
-                messages.append({
-                    "tool_call_id": tool_call.id,
-                    "role": "tool",
-                    "name": function_name,
-                    "content": content,
-                })
-
-            # Второй запрос, чтобы модель сформировала итоговый ответ
-            second_response =  await self.client.chat.completions.create(**api_params)
-            await inter.reply(content=second_response.choices[0].message.content)
-        else:
-            await inter.reply(content=response_message)
+        token_used = await flags.getFlag("abstract", "token_used")
+        if token_used:
+            await inter.send(f"Token used: {token_used}t")
 
 
 def setup(bot: commands.Bot):
