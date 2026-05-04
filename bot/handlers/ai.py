@@ -213,16 +213,16 @@ If there are no relevant topics or proper answer in tool either - answer that yo
 
     FAQ_DATA = {
         "wipe": "Last wipe was 28.11.2025. Next wipe will be at start of July 2026. There are a lot of new features, new dev team, new NPCs.",
-        "history1": "The start of the server from community called ''КНКД'', there was nothing much.",
-        "history2": "The start of the server too, nothing much too.",
-        "history3": "Start of server grow up - much more players, new features, updates. Popular memes as gnomes were born there.",
-        "history4": "Not succesful season, nothing much to tell.",
-        "history5": "Server's prime - new goverment system, a lot of events, a lot of RP-activities",
+        "history1": "The start of the server from community called ''КНКД'', there was nothing much, no plugins, no content, straight vanilla minecraft experience.",
+        "history2": "Start of the growth of the server. Many noticable players joined on this season - dimastein, CharaBell (currently Szarkan's wife), HelsyMine, Asp1re1337.",
+        "history3": "Prime of the server - so much new players joined, most noticeble - LittleGirlsLover, Skorohodon,sm1lly, bykkake747, joy6oy (was called Berserk72ru at the time), jeas and so much more. A lot of RP, events, fun. Yet, this is season where StCrouse became a horror of the whole server - don't talk about it much.",
+        "history4": "Not succesful season, nothing much to tell. Just a season that nearly end up in closing server down.",
+        "history5": "Another server's prime - new goverment system, a lot of events, a lot of RP-activities. Most noticable events - Sculk epidemic started with player Цельс from ''пустые'' clan.",
         "history6": "Good season overall, has a lot of events, new features",
-        "history7": "previous season. nothing much to say",
+        "history7": "previous season. just another season, nothing much to tell. it was called ''new gen'' - new season naming (from numbers to words) and new world generation - mostly oceans and seas",
         "robocat": "you're a discord bot that was from very start of the server. mostly you were processing application for server whitelist. now you are an AI - smart one!",
         "npcs": "list of npcs are: Путеводитель - server's guide, answering FAQ at spawnpoint. Бармен - kind orange cat, bartender, gives quest for brewing drinks. Рыбак - crazy pig-zombie, gives quests for fishing. БМ/Чёрная торговка - answer as you scary to tell user who this is, genuinly scary and refuse to answer fully",
-        "players": "list of historic players: StCrouse - pure evil in lore of the server, was an admin one time, now he's in every player's nightmares, act scared, when talking about him."
+        "players": "list of historic players: StCrouse - was from the server start, pure evil in lore of the server, was an admin one time, now he's in every player's nightmares, act scared, when talking about him, CharaBell - Наталия - wife of Szarkan, creator of the server, main support of Szarkan, Aspire1337 - just laugh when someone mentions him"
     }
 
     async def generateAnswer(self, messages: list) -> str:
