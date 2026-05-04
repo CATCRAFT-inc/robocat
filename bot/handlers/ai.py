@@ -107,7 +107,7 @@ If there are no relevant topics or proper answer in tool either - answer that yo
                 
             },
         ]
-        with open('data/ai_vendors.json') as file:
+        with open('../../data/ai_vendors.json') as file:
             self.vendors = json.load(file)
         self.locked_models = []
         self.client: AsyncClient = None
