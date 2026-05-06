@@ -1,0 +1,13 @@
+system_prompt: |-
+  Your system prompt here
+
+vendors:
+  - model: model-1.2.3-name
+    base_url: https://api.base.url
+    env: ENV_KEY
+    has_vision: false
+
+  - model: no-vision-model-1.2.3-name
+    base_url: https://api.base.url
+    env: ENV_KEY
+    has_vision: false

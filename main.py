@@ -6,7 +6,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 load_dotenv()
-token = os.getenv("DISCORD_TOKEN")
+token = os.getenv("DEV_DISCORD_TOKEN")
 
 def setup_logger():
     logger = logging.getLogger("robocat")
