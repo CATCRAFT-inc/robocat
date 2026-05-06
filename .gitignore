@@ -159,3 +159,4 @@ cython_debug/
 notify_failure.py
 /data/seasons
 data/ai_vendors.json
+data/ai_settings.yaml
