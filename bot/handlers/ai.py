@@ -69,24 +69,24 @@ class RobocatAI(commands.Cog):
                 }
                 
             },
-            {
-                "type": "function",
-                "function": {
-                    "name": "generate_image",
-                "description": "Generating an AI image",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "prompt": {
-                            "type": "string",
-                            "description": "When generating images, expand the user's request into a detailed English prompt with style, lighting, and composition details."
-                        },
-                    },
-                    "required": ["prompt"],
-                },
-                }
+            # {
+            #     "type": "function",
+            #     "function": {
+            #         "name": "generate_image",
+            #     "description": "Generating an AI image",
+            #     "parameters": {
+            #         "type": "object",
+            #         "properties": {
+            #             "prompt": {
+            #                 "type": "string",
+            #                 "description": "When generating images, expand the user's request into a detailed English prompt with style, lighting, and composition details."
+            #             },
+            #         },
+            #         "required": ["prompt"],
+            #     },
+            #     }
                 
-            },
+            # },
             {
                 "type": "function",
                 "function": {
