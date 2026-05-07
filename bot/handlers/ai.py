@@ -237,7 +237,7 @@ class RobocatAI(commands.Cog):
                                     ]
                             })
                         else:
-                            content += "[[ User provided attachment that you can't process. Tell them about that politely. ]]"
+                            content += "[[ User provided attachment that you can't process. Tell them about that politely.]]"
                     conversation.append({
                         "role": role,
                         "content": content
