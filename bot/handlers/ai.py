@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 import yaml
 from PIL import Image
+from .wiki_search import wiki
 
 from bot.storage import Channels, Roles
 
@@ -46,25 +47,17 @@ class RobocatAI(commands.Cog):
             {
                 "type": "function",
                 "function": {
-                    "name": "search_faq",
-                "description": "Search for information about Кошкокрафт specific topics",
+                    "name": "search_wiki",
+                "description": "Search for information about Кошкокрафт from server's wiki via embedding",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "topic": {
+                        "query": {
                             "type": "string",
-                            "description": "Name of relevant keyword for searching. Available topics: "
-                                "wipe - all information about next season and next wipe, "
-                                "players - when asked about specific nickname, use it only for reference,"
-                                "historyX - all information about previous seasons, X - season's number 1-7. If not specified by user, X=7"
-                                "robocat - information about yourself beyond written in system prompt, activate when specific questions about you were asked,"
-                                "npcs - information about Кошкокрафт's NPCs,"
-                                "donate - all paid features on the server as Котик+, skins, etc"
-                                "NEVER give out ALL the information in tool answer - ONLY relevant information.",
-                            "enum": ["wipe", "players", "history1", "history2", "history3", "history4", "history5", "history6", "history7", "robocat", "npcs", "donate"]
+                            "description": "Give a query for embedding model - either a raw user request or part of user request for embedding."
                         },
                     },
-                    "required": ["topic"],
+                    "required": ["query"],
                 },
                 }
                 
@@ -94,7 +87,6 @@ class RobocatAI(commands.Cog):
                 "description": "Get current's user discord info (right now - only their roles)",
                 "parameters": {}
                 }
-                
             },
         ]
         
@@ -302,12 +294,14 @@ class RobocatAI(commands.Cog):
                     function_name = tool_call.function.name
                     args = json.loads(tool_call.function.arguments)
                     match function_name:
-                        case "search_faq":
-                            topic = args.get("topic")
-                            content = self.FAQ_DATA.get(
-                                topic,
-                                "[[ No info in FAQ. Tell user you don't know and refer to wiki. ]]"
-                            )
+                        case "search_wiki":
+                            try:
+                                results = wiki.search(args.get("query"))
+                            except:
+                                content = "[[ Embedding raised an error - tell user that you can't find info right now and they should try later ]]"
+                            else:
+                                if results:
+                                    content = wiki.build_context(results)
                         case "generate_image":
                             prompt = args.get("prompt")
                             attachment = await self._generateImage(prompt)
