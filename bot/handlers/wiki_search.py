@@ -3,11 +3,10 @@ import math
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from google.genai import Client, types
 
 load_dotenv()
-client = genai.Client(api_key=os.getenv("GEMINI"))
+client = Client(api_key=os.getenv("GEMINI"))
 
 class WikiSearcher:
     def __init__(self):
