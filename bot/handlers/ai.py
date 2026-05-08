@@ -1,5 +1,5 @@
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 import logging
 import os
@@ -86,6 +86,27 @@ class RobocatAI(commands.Cog):
                     "name": "user_info",
                 "description": "Get current's user discord info (right now - only their roles)",
                 "parameters": {}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "mute_user",
+                "description": "Mute user if they misbehave, annoying or you just feel like it",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "duration": {
+                            "type": "integer",
+                            "description": "duration of mute in seconds. Max duration - 1209600s (14 days)"
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Reason of mute"
+                        },
+                    },
+                    "required": ["duration", "reason"],
+                },
                 }
             },
         ]
@@ -191,13 +212,10 @@ class RobocatAI(commands.Cog):
             files.append(disnake.File(buf, filename=f"image_{i}.png"))
         return files
     
-    async def _getHistory(self, init_message: disnake.Message) -> list[disnake.Message]:
-        return
-    
     async def _buildConverstaion(self, messages: list[disnake.Message]) -> list[dict]:
         conversation = [{
             "role": "system",
-            "content": self.system_prompt or "You're helpful assistant."
+            "content": self.system_prompt.format(datetime.now().date()) or "You're helpful assistant."
         }]
         print([i.content for i in messages])
         for mes in messages:
@@ -244,7 +262,7 @@ class RobocatAI(commands.Cog):
                     })
         return conversation
         
-    async def generateAnswer(self, conversation: list, user: disnake.Member):
+    async def generateAnswer(self, conversation: list, user_message: disnake.Message):
         if not self.client:
             await self._getNewClient()
         if self.ai_locked:
@@ -264,28 +282,28 @@ class RobocatAI(commands.Cog):
             print("===================== RATE LIMIT =====================")
             self.vendors.pop(0) # В теории код сюда не дойдёт, если список уже пуст. Верно ведь?
             await self._getNewClient()
-            mes, image_files = await self.generateAnswer(conversation, user)
-            return mes, image_files
+            mes, image_files = await self.generateAnswer(conversation, user_message)
+            return mes, image_files, None
         except openai.AuthenticationError:
             print("================== API KEY ERROR ==================")
             self.logger.exception("Слетел какой-то API: %s", e)
             self.vendors.pop(0)
             await self._getNewClient()
-            mes, image_files = await self.generateAnswer(conversation, user)
-            return mes, image_files
+            mes, image_files = await self.generateAnswer(conversation, user_message)
+            return mes, image_files, None
         except Exception as e:
             self.logger.exception("Ошибка нейросети: %s", e)
-            return "*У Робокотика полетели гайки...*", None
+            return "*У Робокотика полетели гайки...*", None, None
         else:
-            print(response)
             print(f""" 
-            Answer: {response.choices[0].message.content},
+            Answer: {response.choices[0].message.content[:100]},
             Stop Reason: {response.choices[0].finish_reason}
             Usage: {response.usage.total_tokens},
             Model: {response.model}
             """) 
             answer = response.choices[0].message
             attachment = None
+            bot_thinking_message = None
             if answer.tool_calls:
                 tool_calls = answer.tool_calls
                 conversation.append(answer.model_dump(exclude_none=True))
@@ -295,6 +313,7 @@ class RobocatAI(commands.Cog):
                     args = json.loads(tool_call.function.arguments)
                     match function_name:
                         case "search_wiki":
+                            bot_thinking_message = await user_message.reply(":book: Ищу по вики...")
                             try:
                                 results = wiki.search(args.get("query"))
                             except:
@@ -303,11 +322,22 @@ class RobocatAI(commands.Cog):
                                 if results:
                                     content = wiki.build_context(results)
                         case "generate_image":
+                            bot_thinking_message = await user_message.reply(":paintbrush: Создаю картинку...")
                             prompt = args.get("prompt")
                             attachment = await self._generateImage(prompt)
                             content = "[[ Image generated successfully. Tell user their image is ready. ]]"
                         case "user_info":
-                            content = [i.name for i in user.roles]
+                            content = [i.name for i in user_message.author.roles]
+                        case "mute_user":
+                            duration = args.get("duration")
+                            reason = args.get("reason")
+                            try:
+                                await user_message.author.timeout(duration=duration, reason=reason)
+                            except Exception as e:
+                                print(e)
+                                content = "[[ Can't mute this user for some reason ]]"
+                            else:
+                                content = "[[ User is muted succesfully ]]"
                         case _:
                             content = "[[ Unknown tool called ]]"
                         
@@ -321,12 +351,15 @@ class RobocatAI(commands.Cog):
 
                 # Второй запрос теперь пройдет успешно, так как история полная
                 second_response = await self.client.chat.completions.create(**api_params)
+                print(second_response)
+                print(json.dumps(conversation, indent=4, ensure_ascii=False))
                 final_answer = second_response.choices[0].message.content
             else:
                 final_answer = answer.content
             await self._statistics(response.usage.total_tokens)
             final_answer = re.sub(r'<thought>.*?</thought>\s*', '', final_answer, flags=re.DOTALL).strip()
-            return final_answer.replace("@", "🐶"), attachment
+            return final_answer.replace("@", "🐶"), attachment, bot_thinking_message
+
 
     @commands.Cog.listener("on_message")
     async def robocatAI(self, message: disnake.Message):
@@ -368,7 +401,9 @@ class RobocatAI(commands.Cog):
                 conversation = await self._buildConverstaion(messages)
 
                 async with message.channel.typing():
-                    reply, attachment = await self.generateAnswer(conversation, message.author)
+                    reply, attachment, thinking_message = await self.generateAnswer(conversation, message)
+                    if thinking_message:
+                        await thinking_message.delete()
                     if len(reply) > 1999:
                         answers = [reply[i:i+1999] for i in range(0, len(reply), 1999)]
                         for mes in answers:
