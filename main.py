@@ -45,6 +45,7 @@ def load_extension():
         "handlers.tickets.engine",
         "handlers.search_player",
         "handlers.ai",
+        "handlers.catcraft_fm",
 
         ### Other
         "utils",
