@@ -161,3 +161,4 @@ notify_failure.py
 data/ai_vendors.json
 #data/ai_settings.yaml
 /playground
+/data/catcraftfm
