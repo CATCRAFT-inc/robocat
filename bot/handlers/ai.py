@@ -293,8 +293,6 @@ class RobocatAI(commands.Cog):
             return mes, image_files, None
         except openai.InternalServerError as e:
             self.logger.exception("Internal server error: %s", e)
-            self.vendors.pop(0)
-            await self._getNewClient()
             mes, image_files = await self.generateAnswer(conversation, user_message)
             return mes, image_files, None
         except Exception as e:
