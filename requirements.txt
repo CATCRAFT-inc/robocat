@@ -9,3 +9,4 @@ pyyaml>=6.0.3
 pillow>=12.2.0
 google-genai>=1.75.0
 pynacl>=1.6.2
+tinytag>=2.2.1
