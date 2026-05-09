@@ -129,22 +129,31 @@ class CatcraftFM(commands.Cog):
 
             try:
                 self.vc.play(disnake.FFmpegPCMAudio(str(path)), after=_after)
-                self.current_track = self._getTrackInfo(str(path))
-                self.current_track_path = str(path)
-                
-                embed = disnake.ui.Container(
-                    disnake.ui.TextDisplay(f"🎵 Сейчас играет: **{self.current_track}**"),
-                    disnake.ui.Separator(),
-                    disnake.ui.TextDisplay(f"-# Следующий трек: {self._getTrackInfo(self.music_path / self.music_files[0])}"),
-                    accent_colour=disnake.Color.from_hex(ColorStorage.main)
-                )
-                await self.channel.send(components=embed)
             except Exception as e:
                 print(f"Failed to start playback for {track}: {e}")
                 await asyncio.sleep(1)
-                continue
+                continue  # только здесь continue — _after не зарегистрирован нормально
 
-            await done.wait()
+            # Всё что ниже — уже не может прервать done.wait()
+            self.current_track = self._getTrackInfo(str(path))
+            self.current_track_path = str(path)
+
+            next_info = (
+                self._getTrackInfo(self.music_path / self.music_files[0])
+                if self.music_files else "—"
+            )
+            embed = disnake.ui.Container(
+                disnake.ui.TextDisplay(f"🎵 Сейчас играет: **{self.current_track}**"),
+                disnake.ui.Separator(),
+                disnake.ui.TextDisplay(f"-# Следующий трек: {next_info}"),
+                accent_colour=disnake.Color.from_hex(ColorStorage.main)
+            )
+            try:
+                await self.channel.send(components=embed)
+            except Exception as e:
+                print(f"Failed to send now-playing: {e}")
+
+            await done.wait()  # всегда ждём окончания трека
 
     def cog_unload(self):
         if self._task and not self._task.done():

@@ -60,8 +60,6 @@ async def on_message(message: disnake.Message):
             await message.add_reaction(reaction)
             await asyncio.sleep(1)
         await message.create_thread(name="Обсуждение", reason="Тред на новую новость")
-    elif message.author.bot:
-        return
     elif isinstance(message.channel, DMChannel):
         # Если сообщение — ровно 4 цифры
         if re.fullmatch(r'\d{4}', message.content):

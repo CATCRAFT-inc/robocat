@@ -119,6 +119,7 @@ class RobocatAI(commands.Cog):
 
         # killswitch (когда все модели 429 или просто так)
         self.ai_locked: bool = False
+        self.ai_locked_bypass_user_ids = [531208170098655233]
 
         # AI Info
         self.max_tokens = 4096
@@ -144,7 +145,7 @@ class RobocatAI(commands.Cog):
         env = vendor["env"]
         self.current_vendor = env
         self.current_model = vendor["model"]
-        self.has_vision = vendor.get("model", False)
+        self.has_vision = vendor.get("has_vision", False)
         self.thinking = vendor.get("thinking", None)
         self.client = AsyncClient(
             base_url=base_url,
@@ -166,7 +167,7 @@ class RobocatAI(commands.Cog):
         Args:
             user (disnake.User): _description_
         """
-        # User - 15 RPD
+        # User - 35 RPD
         # Admins, K+, Boosters - inf RPD
         if Roles.ai_cd_bypass & {r.id for r in user.roles}:
             return False
@@ -179,14 +180,13 @@ class RobocatAI(commands.Cog):
         if Roles.ai_cd_bypass & {r.id for r in user.roles}:
             return
         current_req = await flags.getFlag(user, "airequests")
+        print(current_req)
         if current_req is None:
             await flags.setFlag(user, "airequests", 1, expires_at="8ч")
         else:
             await flags.setFlag(user, "airequests", "+1")
-        if int(current_req.value) + 1 >= 35:
-            await flags.setFlag(user, "ai_locked", None, "8ч")
-        return
-        
+            if int(current_req.value) + 1 >= 35:
+                await flags.setFlag(user, "ai_locked", None, "8ч")
     
     async def _base64Image(self, attach: disnake.Attachment):
         image = await attach.read()
@@ -282,19 +282,23 @@ class RobocatAI(commands.Cog):
             print("===================== RATE LIMIT =====================")
             self.vendors.pop(0) # В теории код сюда не дойдёт, если список уже пуст. Верно ведь?
             await self._getNewClient()
-            mes, image_files = await self.generateAnswer(conversation, user_message)
+            mes, image_files, _ = await self.generateAnswer(conversation, user_message)
             return mes, image_files, None
         except openai.AuthenticationError:
             print("================== API KEY ERROR ==================")
             self.logger.exception("Слетел какой-то API: %s", e)
             self.vendors.pop(0)
             await self._getNewClient()
-            mes, image_files = await self.generateAnswer(conversation, user_message)
+            mes, image_files, _ = await self.generateAnswer(conversation, user_message)
             return mes, image_files, None
         except openai.InternalServerError as e:
             self.logger.exception("Internal server error: %s", e)
-            mes, image_files = await self.generateAnswer(conversation, user_message)
+            self.client = None
+            mes, image_files, _ = await self.generateAnswer(conversation, user_message)
             return mes, image_files, None
+        except openai.RateLimitError as e:
+            self.logger.exception("Rate Limit: %s", e)
+            return "*Пш-ш-ш-ш... Процессор робокотика перегрет от такого количества запросов! Попробуй поговорить с ним через минутку*", None, None
         except Exception as e:
             self.logger.exception("Ошибка нейросети: %s", e)
             return "*У Робокотика полетели гайки...*", None, None
@@ -373,7 +377,7 @@ class RobocatAI(commands.Cog):
             return
         if message.channel.id in [Channels.for_bots, Channels.secret]: # Отслеживаем сообщения только в двух чатах - для ботов и для теста
             if self.bot.user.mentioned_in(message) or (message.reference and message.reference.resolved.author == self.bot.user): # Если робокотика пинганули или ответили ему на сообщение
-                if self.ai_locked:
+                if self.ai_locked and message.author.id not in self.ai_locked_bypass_user_ids:
                     return "*Робокотик остужает свой процессор... Поговори с ним попозже.*"
                 if await self._reachedLimit(message.author):
                     ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
@@ -412,7 +416,8 @@ class RobocatAI(commands.Cog):
                         answers = [reply[i:i+1999] for i in range(0, len(reply), 1999)]
                         for mes in answers:
                             await message.reply(mes)
-                        await message.reply(file=attachment)
+                        if attachment:
+                            await message.reply(file=attachment)
                     else:
                         await message.reply(reply, file=attachment)
                     await self._limiter(message.author)
