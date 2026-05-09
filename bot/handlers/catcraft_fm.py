@@ -129,7 +129,7 @@ class CatcraftFM(commands.Cog):
 
             try:
                 self.vc.play(disnake.FFmpegPCMAudio(str(path)), after=_after)
-                self.current_track(self._getTrackInfo(str(path)))
+                self.current_track = self._getTrackInfo(str(path))
                 embed = disnake.ui.Container(
                     disnake.ui.TextDisplay(f"🎵 Сейчас играет: **{self.current_track}**"),
                     disnake.ui.Separator(),
