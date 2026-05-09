@@ -1,15 +1,19 @@
 import asyncio
 import os
+
 from pathlib import Path
-from random import randint
+from random import randint, shuffle
+from tinytag import TinyTag
 
 import disnake
 from disnake.ext import commands
 
+from bot.storage import ColorStorage
+
 
 class CatcraftFM(commands.Cog):
     GUILD_ID = 1138425078493753366
-    CHANNEL_ID = 1138425079483609224
+    CHANNEL_ID = 1502616927695015986
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -19,12 +23,39 @@ class CatcraftFM(commands.Cog):
         self._started = False
         self._task: asyncio.Task | None = None
 
+        self.music_files = []
+        self.current_track = []
+        self.current_track_path: str = None
+
+        self.vc: disnake.VoiceClient = None
+
     @commands.Cog.listener()
     async def on_ready(self):
         if self._started:
             return
         self._started = True
         self._task = asyncio.create_task(self._start_radio())
+
+    @commands.command(name="очередь")
+    async def musicQueue(self, command: disnake.MessageCommand):
+        print(TinyTag.get(str(self.current_track_path)))
+        queue = ''.join([f"{self._getTrackInfo(self.music_path / i)}\n" for i in self.music_files[:4]])
+        queue_message = f"**-> {self.current_track}**\n{queue}"
+        embed = disnake.ui.Container(
+                disnake.ui.TextDisplay(f"Текущий трек: {self.current_track}"),
+                disnake.ui.Separator(),
+                disnake.ui.TextDisplay(queue)
+            )
+        await command.reply(component=embed)
+
+    @commands.command(name='следующий', aliases=['некст', 'next'])
+    async def nextTrack(self, ctx: disnake.MessageCommand):
+        self.vc.stop()
+
+    def _getTrackInfo(self, music_path: Path):
+        tag: TinyTag = TinyTag.get(str(music_path))
+        artist, title = tag.artist, tag.title
+        return " - ".join([artist, title])
 
     async def _start_radio(self):
         guild = self.bot.get_guild(self.GUILD_ID)
@@ -33,8 +64,8 @@ class CatcraftFM(commands.Cog):
             self._started = False
             return
 
-        channel = guild.get_channel(self.CHANNEL_ID)
-        if channel is None:
+        self.channel = guild.get_channel(self.CHANNEL_ID)
+        if self.channel is None:
             print(f"Channel {self.CHANNEL_ID} not found")
             self._started = False
             return
@@ -44,21 +75,21 @@ class CatcraftFM(commands.Cog):
             await guild.voice_client.disconnect(force=True)
 
         try:
-            vc = await channel.connect(timeout=10.0, reconnect=True)
+            self.vc = await self.channel.connect(timeout=10.0, reconnect=True)
         except Exception as e:
             print(f"Voice connect failed: {e}")
             self._started = False
             return
 
         try:
-            await self._play_loop(vc)
+            await self._play_loop(self.vc)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             print(f"Play loop crashed: {e}")
         finally:
-            if vc.is_connected():
-                await vc.disconnect(force=True)
+            if self.vc.is_connected():
+                await self.vc.disconnect(force=True)
             self._started = False  # позволяем перезапустить при следующем on_ready
 
     async def _play_loop(self, vc: disnake.VoiceClient):
@@ -67,19 +98,21 @@ class CatcraftFM(commands.Cog):
         music_count = 0
         loop = asyncio.get_running_loop()
 
-        while vc.is_connected():
+        while self.vc.is_connected():
             if music_count < 3:
-                if not music_files:
-                    music_files = sorted(os.listdir(self.music_path))
-                if not music_files:
+                if not self.music_files:
+                    self.music_files = os.listdir(self.music_path)
+                    shuffle(self.music_files)
+                if not self.music_files:
                     print("No music files")
                     return
-                track = music_files.pop(0)
+                track = self.music_files.pop(0)
                 path = self.music_path / track
                 music_count += 1
             else:
                 if not dictor_files:
                     dictor_files = os.listdir(self.dictor_path)
+                    shuffle(dictor_files)
                 if not dictor_files:
                     music_count = 0
                     continue
@@ -95,7 +128,17 @@ class CatcraftFM(commands.Cog):
                 loop.call_soon_threadsafe(done.set)
 
             try:
-                vc.play(disnake.FFmpegPCMAudio(str(path)), after=_after)
+                self.vc.play(disnake.FFmpegPCMAudio(str(path)), after=_after)
+                tag: TinyTag = TinyTag.get(str(path))
+                self.current_track_path = str(path)
+                self.current_track = f"{tag.artist} - {tag.title}"
+                embed = disnake.ui.Container(
+                    disnake.ui.TextDisplay(f"🎵 Сейчас играет: **{self.current_track}**"),
+                    disnake.ui.Separator(),
+                    disnake.ui.TextDisplay(f"-# Следующий трек: {self._getTrackInfo(self.music_path / self.music_files[0])}"),
+                    accent_colour=disnake.Color.from_hex(ColorStorage.main)
+                )
+                await self.channel.send(components=embed)
             except Exception as e:
                 print(f"Failed to start playback for {track}: {e}")
                 await asyncio.sleep(1)

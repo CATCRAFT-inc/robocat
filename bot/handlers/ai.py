@@ -183,7 +183,7 @@ class RobocatAI(commands.Cog):
             await flags.setFlag(user, "airequests", 1, expires_at="8ч")
         else:
             await flags.setFlag(user, "airequests", "+1")
-        if int(current_req.value) + 1 >= 25:
+        if int(current_req.value) + 1 >= 35:
             await flags.setFlag(user, "ai_locked", None, "8ч")
         return
         
@@ -287,6 +287,12 @@ class RobocatAI(commands.Cog):
         except openai.AuthenticationError:
             print("================== API KEY ERROR ==================")
             self.logger.exception("Слетел какой-то API: %s", e)
+            self.vendors.pop(0)
+            await self._getNewClient()
+            mes, image_files = await self.generateAnswer(conversation, user_message)
+            return mes, image_files, None
+        except openai.InternalServerError as e:
+            self.logger.exception("Internal server error: %s", e)
             self.vendors.pop(0)
             await self._getNewClient()
             mes, image_files = await self.generateAnswer(conversation, user_message)
