@@ -42,7 +42,7 @@ class CatcraftFM(commands.Cog):
         queue = ''.join([f"{self._getTrackInfo(self.music_path / i)}\n" for i in self.music_files[:4]])
         queue_message = f"**-> {self.current_track}**\n{queue}"
         embed = disnake.ui.Container(
-                disnake.ui.TextDisplay(f"Текущий трек: {self.current_track}"),
+                disnake.ui.TextDisplay(f"## 🎵 Текущий трек: {self.current_track}"),
                 disnake.ui.Separator(),
                 disnake.ui.TextDisplay(queue)
             )
@@ -129,9 +129,7 @@ class CatcraftFM(commands.Cog):
 
             try:
                 self.vc.play(disnake.FFmpegPCMAudio(str(path)), after=_after)
-                tag: TinyTag = TinyTag.get(str(path))
-                self.current_track_path = str(path)
-                self.current_track = f"{tag.artist} - {tag.title}"
+                self.current_track(self._getTrackInfo(str(path)))
                 embed = disnake.ui.Container(
                     disnake.ui.TextDisplay(f"🎵 Сейчас играет: **{self.current_track}**"),
                     disnake.ui.Separator(),
