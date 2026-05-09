@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from random import randint, shuffle
 from tinytag import TinyTag
+from datetime import datetime
+import math
 
 import disnake
 from disnake.ext import commands
@@ -29,6 +31,10 @@ class CatcraftFM(commands.Cog):
 
         self.vc: disnake.VoiceClient = None
 
+        self.skip_votes = 0 # Сколько проголосвало за скип
+        self.votes_list = []
+        self.last_skip = 0 # time когда последний голос был. через 5 минут skip_votes обнуляется
+
     @commands.Cog.listener()
     async def on_ready(self):
         if self._started:
@@ -36,21 +42,53 @@ class CatcraftFM(commands.Cog):
         self._started = True
         self._task = asyncio.create_task(self._start_radio())
 
-    @commands.command(name="очередь")
+    @commands.command(name="очередь", aliases=['queue', 'q'])
     async def musicQueue(self, command: disnake.MessageCommand):
         print(TinyTag.get(str(self.current_track_path)))
         queue = ''.join([f"{self._getTrackInfo(self.music_path / i)}\n" for i in self.music_files[:4]])
-        queue_message = f"**-> {self.current_track}**\n{queue}"
         embed = disnake.ui.Container(
                 disnake.ui.TextDisplay(f"## 🎵 Текущий трек: {self.current_track}"),
-                disnake.ui.Separator(),
                 disnake.ui.TextDisplay(queue)
             )
         await command.reply(components=embed)
 
-    @commands.command(name='следующий', aliases=['некст', 'next'])
-    async def nextTrack(self, ctx: disnake.MessageCommand):
-        self.vc.stop()
+    def _is_expired(self):
+        now = datetime.now().timestamp()
+        if now - self.last_skip > 5 * 60:
+            self.skip_votes = 0
+            self.votes_list = []
+            self.last_skip = 0
+
+    @commands.command(name='следующий', aliases=['некст', 'next', 'skip', 'скип', 'ytrcn'])
+    async def nextTrack(self, ctx: commands.Context):
+        if ctx.channel.id == 1502616927695015986:
+            if len(ctx.channel.members) > 2:
+                self._is_expired()
+                listeners = len(ctx.channel.members)
+                required_votes = self._requiredVotes(listeners)
+                if ctx.author.id not in self.votes_list:
+                    self.skip_votes += 1
+                    if self.skip_votes >= required_votes:
+                        await ctx.channel.send(f"{self.skip_votes} котика проголосовали за скип трека, пропускаем...")
+                        self.vc.stop()
+                        self.votes_list = []
+                        self.last_skip = 0
+                        self.skip_votes = 0
+                    else:
+                        await ctx.channel.send(f"{ctx.author.mention} проголосовал за пропуск песни! ({self.skip_votes}/{required_votes})")
+                        self.votes_list.append(ctx.author.id)
+                        self.last_skip = datetime.now().timestamp()
+                else:
+                    await ctx.reply("Ты уже проголосовал(а) за пропуск песни!", delete_after=5)
+            else:
+                self.vc.stop()
+        
+    def _requiredVotes(self, listeners: int) -> int:
+        if listeners <= 1:
+            return 1
+        if listeners == 2:
+            return 2
+        return math.ceil(listeners / 2)
 
     def _getTrackInfo(self, music_path: Path):
         tag: TinyTag = TinyTag.get(str(music_path))

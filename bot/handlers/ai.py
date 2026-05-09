@@ -37,12 +37,9 @@ class RobocatAI(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.logger = logging.getLogger("robocat.ai")
-        VENDORS_PATH = Path(__file__).resolve().parents[2] / "data" / "ai_settings.yaml"
-        with VENDORS_PATH.open("r", encoding='utf-8') as file:
-            data = yaml.safe_load(file)
-            self.system_prompt = data["system_prompt"]
-            self.vendors = data["vendors"]
-            # self.image_gen = data["image_gen"]
+        
+        
+        # self.image_gen = data["image_gen"]
         self.tools = [
             {
                 "type": "function",
@@ -98,11 +95,11 @@ class RobocatAI(commands.Cog):
                     "properties": {
                         "duration": {
                             "type": "integer",
-                            "description": "duration of mute in seconds. Max duration - 1209600s (14 days)"
+                            "description": "Duration of mute in seconds. Max duration - 1209600s (14 days)"
                         },
                         "reason": {
                             "type": "string",
-                            "description": "Reason of mute"
+                            "description": "Reason of mute. Include duration of mute."
                         },
                     },
                     "required": ["duration", "reason"],
@@ -129,8 +126,16 @@ class RobocatAI(commands.Cog):
         self.top_p = 1
 
     async def cog_load(self):
+        await self._loadAIData()
         await self._getNewClient()
         print(self.current_vendor, self.current_model)
+
+    async def _loadAIData(self):
+        VENDORS_PATH = Path(__file__).resolve().parents[2] / "data" / "ai_settings.yaml"
+        with VENDORS_PATH.open("r", encoding='utf-8') as file:
+            data = yaml.safe_load(file)
+            self.system_prompt = data["system_prompt"]
+            self.vendors = data["vendors"]
 
     async def _getNewClient(self):
         """ Читаем self.vendors, берём первый из списка.
@@ -341,9 +346,11 @@ class RobocatAI(commands.Cog):
                             reason = args.get("reason")
                             try:
                                 await user_message.author.timeout(duration=duration, reason=reason)
-                            except Exception as e:
+                            except disnake.Forbidden:
                                 print(e)
-                                content = "[[ Can't mute this user for some reason ]]"
+                                content = "[[ You can't mute this user - they are admin or have mute bypass ]]"
+                            except Exception as e:
+                                content = f"[[ You can't mute this user - {e}]]"
                             else:
                                 content = "[[ User is muted succesfully ]]"
                         case _:
@@ -439,6 +446,15 @@ class RobocatAI(commands.Cog):
         else:
             self.ai_locked = True
             await inter.send("ИИ заблокирован", ephemeral=True)
+
+    @commands.slash_command(name="reloadai", description="перезапуск клиента и системного промпта")
+    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    async def aiReload(self, inter: disnake.MessageCommandInteraction):
+        await self.client.close()
+        await self._getNewClient()
+        await self._loadAIData()
+
+    
 
 def setup(bot: commands.Bot):
     bot.add_cog(RobocatAI(bot))
