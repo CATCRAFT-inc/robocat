@@ -46,7 +46,7 @@ class CatcraftFM(commands.Cog):
                 disnake.ui.Separator(),
                 disnake.ui.TextDisplay(queue)
             )
-        await command.reply(component=embed)
+        await command.reply(components=embed)
 
     @commands.command(name='следующий', aliases=['некст', 'next'])
     async def nextTrack(self, ctx: disnake.MessageCommand):
