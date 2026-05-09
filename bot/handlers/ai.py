@@ -266,7 +266,7 @@ class RobocatAI(commands.Cog):
         if not self.client:
             await self._getNewClient()
         if self.ai_locked:
-            return "*Робокотик на сегодня всё... Поговори с ним завтра*", None
+            return "*Робокотик на сегодня всё... Поговори с ним завтра*", None, None
         api_params = {
             "model": self.current_model, 
             "messages": conversation,
@@ -280,15 +280,15 @@ class RobocatAI(commands.Cog):
             response = await self.client.chat.completions.create(**api_params)
         except openai.RateLimitError:
             print("===================== RATE LIMIT =====================")
-            self.vendors.pop(0) # В теории код сюда не дойдёт, если список уже пуст. Верно ведь?
-            await self._getNewClient()
+            #self.vendors.pop(0) # В теории код сюда не дойдёт, если список уже пуст. Верно ведь?
+            #await self._getNewClient()
             mes, image_files, _ = await self.generateAnswer(conversation, user_message)
             return mes, image_files, None
         except openai.AuthenticationError:
             print("================== API KEY ERROR ==================")
             self.logger.exception("Слетел какой-то API: %s", e)
-            self.vendors.pop(0)
-            await self._getNewClient()
+            # self.vendors.pop(0)
+            # await self._getNewClient()
             mes, image_files, _ = await self.generateAnswer(conversation, user_message)
             return mes, image_files, None
         except openai.InternalServerError as e:
