@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 
 from pathlib import Path
@@ -17,6 +18,9 @@ class CatcraftFM(commands.Cog):
     GUILD_ID = 1138425078493753366
     CHANNEL_ID = 1502616927695015986
 
+    RECONNECT_DELAY = 10 # секунд между попытками реконнекта
+    MAX_RECONNECT_DELAY = 120 # максимальная пауза при backoff
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         base = Path(__file__).resolve().parents[2] / "data" / "catcraftfm"
@@ -31,25 +35,153 @@ class CatcraftFM(commands.Cog):
 
         self.vc: disnake.VoiceClient = None
 
-        self.skip_votes = 0 # Сколько проголосвало за скип
+        self.skip_votes = 0
         self.votes_list = []
-        self.last_skip = 0 # time когда последний голос был. через 5 минут skip_votes обнуляется
+        self.last_skip = 0
+
+        self.logger = logging.getLogger("robocat.fm")
 
     @commands.Cog.listener()
     async def on_ready(self):
         if self._started:
             return
         self._started = True
-        self._task = asyncio.create_task(self._start_radio())
+        self._task = asyncio.create_task(self._radio_supervisor())
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(
+        self,
+        member: disnake.Member,
+        before: disnake.VoiceState,
+        after: disnake.VoiceState,
+    ):
+        if member != self.bot.user:
+            return
+        if before.channel is not None and after.channel is None:
+            self.logger.warning("отключён от канала - включаем супервизора")
+            if self.vc is not None and self.vc.is_connected():
+                await self.vc.disconnect(force=True)
+
+    async def _radio_supervisor(self):
+        delay = self.RECONNECT_DELAY
+        while True:
+            try:
+                await self._start_radio()
+            except asyncio.CancelledError:
+                self.logger.warning("супервизор отменён")
+                return
+            except Exception as e:
+                self.logger.exception(f"_start_radio поднялся:", e)
+            self.logger.info("перезагружаемся через %ss...", delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, self.MAX_RECONNECT_DELAY)
+
+    async def _start_radio(self):
+        guild = self.bot.get_guild(self.GUILD_ID)
+        if guild is None:
+            print("[CatcraftFM] Guild not found")
+            return
+
+        self.channel = guild.get_channel(self.CHANNEL_ID)
+        if self.channel is None:
+            print(f"[CatcraftFM] Channel {self.CHANNEL_ID} not found")
+            return
+
+        if guild.voice_client is not None:
+            await guild.voice_client.disconnect(force=True)
+
+        try:
+            self.vc = await self.channel.connect(timeout=10.0, reconnect=True)
+        except Exception as e:
+            self.logger.exception("Не удалось подключиться к каналу: %s", e)
+            return
+
+        try:
+            await self._play_loop(self.vc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.logger.exception("play loop crash: %s", e)
+        finally:
+            if self.vc and self.vc.is_connected():
+                await self.vc.disconnect(force=True)
+
+    async def _play_loop(self, vc: disnake.VoiceClient):
+        dictor_files: list[str] = []
+        music_count = 0
+        loop = asyncio.get_running_loop()
+
+        while True:
+            # Проверяем коннект в начале каждой итерации
+            if not vc.is_connected():
+                self.logger.warning("потеряно соединенеи к ГС - выхожу из цикла")
+                return
+
+            if music_count < 3:
+                if not self.music_files:
+                    self.music_files = os.listdir(self.music_path)
+                    shuffle(self.music_files)
+                if not self.music_files:
+                    print("[CatcraftFM] No music files")
+                    return
+                track = self.music_files.pop(0)
+                path = self.music_path / track
+                music_count += 1
+            else:
+                if not dictor_files:
+                    dictor_files = os.listdir(self.dictor_path)
+                    shuffle(dictor_files)
+                if not dictor_files:
+                    music_count = 0
+                    continue
+                track = dictor_files.pop(randint(0, len(dictor_files) - 1))
+                path = self.dictor_path / track
+                music_count = 0
+
+            done = asyncio.Event()
+
+            def _after(error: Exception | None):
+                if error is not None:
+                    self.logger.exception("ошибка плейбека в %s: %s", track, error)
+                loop.call_soon_threadsafe(done.set)
+
+            is_dictor = music_count == 0
+
+            try:
+                vc.play(disnake.FFmpegPCMAudio(str(path)), after=_after)
+            except Exception as e:
+                self.logger.exception("ошибка плейбека в %s: %s", track, e)
+                await asyncio.sleep(1)
+                continue
+
+            if not is_dictor:
+                self.current_track = self._getTrackInfo(str(path))
+                self.current_track_path = str(path)
+
+                next_info = (
+                    self._getTrackInfo(self.music_path / self.music_files[0])
+                    if self.music_files else "—"
+                )
+                embed = disnake.ui.Container(
+                    disnake.ui.TextDisplay(f"🎵 Сейчас играет: **{self.current_track}**"),
+                    disnake.ui.Separator(),
+                    disnake.ui.TextDisplay(f"-# Следующий трек: {next_info}"),
+                    accent_colour=disnake.Color.from_hex(ColorStorage.main)
+                )
+                try:
+                    await self.channel.send(components=embed)
+                except Exception as e:
+                    self.logger.exception("ошибка плейбека: %s", e)
+
+            await done.wait()
 
     @commands.command(name="очередь", aliases=['queue', 'q'])
     async def musicQueue(self, command: disnake.MessageCommand):
-        print(TinyTag.get(str(self.current_track_path)))
         queue = ''.join([f"{self._getTrackInfo(self.music_path / i)}\n" for i in self.music_files[:4]])
         embed = disnake.ui.Container(
-                disnake.ui.TextDisplay(f"## 🎵 Текущий трек: {self.current_track}"),
-                disnake.ui.TextDisplay(queue)
-            )
+            disnake.ui.TextDisplay(f"## 🎵 Текущий трек: {self.current_track}"),
+            disnake.ui.TextDisplay(queue)
+        )
         await command.reply(components=embed)
 
     def _is_expired(self):
@@ -82,7 +214,16 @@ class CatcraftFM(commands.Cog):
                     await ctx.reply("Ты уже проголосовал(а) за пропуск песни!", delete_after=5)
             else:
                 self.vc.stop()
-        
+
+    @commands.command(name='radiostart')
+    async def _radioForceStart(self, ctx):
+        if self._started:
+            await ctx.reply("уже", delete_after=5)
+            return
+        await ctx.reply("угу", delete_after=5)
+        self._started = True
+        self._task = asyncio.create_task(self._radio_supervisor())
+
     def _requiredVotes(self, listeners: int) -> int:
         if listeners <= 1:
             return 1
@@ -94,106 +235,6 @@ class CatcraftFM(commands.Cog):
         tag: TinyTag = TinyTag.get(str(music_path))
         artist, title = tag.artist, tag.title
         return " - ".join([artist, title])
-
-    async def _start_radio(self):
-        guild = self.bot.get_guild(self.GUILD_ID)
-        if guild is None:
-            print("Guild not found")
-            self._started = False
-            return
-
-        self.channel = guild.get_channel(self.CHANNEL_ID)
-        if self.channel is None:
-            print(f"Channel {self.CHANNEL_ID} not found")
-            self._started = False
-            return
-
-        # Если каким-то чудом уже есть voice_client — отключаемся чисто
-        if guild.voice_client is not None:
-            await guild.voice_client.disconnect(force=True)
-
-        try:
-            self.vc = await self.channel.connect(timeout=10.0, reconnect=True)
-        except Exception as e:
-            print(f"Voice connect failed: {e}")
-            self._started = False
-            return
-
-        try:
-            await self._play_loop(self.vc)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            print(f"Play loop crashed: {e}")
-        finally:
-            if self.vc.is_connected():
-                await self.vc.disconnect(force=True)
-            self._started = False  # позволяем перезапустить при следующем on_ready
-
-    async def _play_loop(self, vc: disnake.VoiceClient):
-        music_files: list[str] = []
-        dictor_files: list[str] = []
-        music_count = 0
-        loop = asyncio.get_running_loop()
-
-        while self.vc.is_connected():
-            if music_count < 3:
-                if not self.music_files:
-                    self.music_files = os.listdir(self.music_path)
-                    shuffle(self.music_files)
-                if not self.music_files:
-                    print("No music files")
-                    return
-                track = self.music_files.pop(0)
-                path = self.music_path / track
-                music_count += 1
-            else:
-                if not dictor_files:
-                    dictor_files = os.listdir(self.dictor_path)
-                    shuffle(dictor_files)
-                if not dictor_files:
-                    music_count = 0
-                    continue
-                track = dictor_files.pop(randint(0, len(dictor_files) - 1))
-                path = self.dictor_path / track
-                music_count = 0
-
-            done = asyncio.Event()
-
-            def _after(error: Exception | None):
-                if error is not None:
-                    print(f"Playback error on {track}: {error}")
-                loop.call_soon_threadsafe(done.set)
-
-            is_dictor = music_count == 0
-
-            try:
-                self.vc.play(disnake.FFmpegPCMAudio(str(path)), after=_after)
-            except Exception as e:
-                print(f"Failed to start playback for {track}: {e}")
-                await asyncio.sleep(1)
-                continue  # только здесь continue — _after не зарегистрирован нормально
-            if not is_dictor:
-                # Всё что ниже — уже не может прервать done.wait()
-                self.current_track = self._getTrackInfo(str(path))
-                self.current_track_path = str(path)
-
-                next_info = (
-                    self._getTrackInfo(self.music_path / self.music_files[0])
-                    if self.music_files else "—"
-                )
-                embed = disnake.ui.Container(
-                    disnake.ui.TextDisplay(f"🎵 Сейчас играет: **{self.current_track}**"),
-                    disnake.ui.Separator(),
-                    disnake.ui.TextDisplay(f"-# Следующий трек: {next_info}"),
-                    accent_colour=disnake.Color.from_hex(ColorStorage.main)
-                )
-                try:
-                    await self.channel.send(components=embed)
-                except Exception as e:
-                    print(f"Failed to send now-playing: {e}")
-
-            await done.wait()  # всегда ждём окончания трека
 
     def cog_unload(self):
         if self._task and not self._task.done():
