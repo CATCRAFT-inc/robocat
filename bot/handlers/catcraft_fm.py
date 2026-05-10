@@ -194,26 +194,27 @@ class CatcraftFM(commands.Cog):
     @commands.command(name='следующий', aliases=['некст', 'next', 'skip', 'скип', 'ytrcn'])
     async def nextTrack(self, ctx: commands.Context):
         if ctx.channel.id == 1502616927695015986:
-            if len(ctx.channel.members) > 2:
-                self._is_expired()
-                listeners = len(ctx.channel.members)
-                required_votes = self._requiredVotes(listeners)
-                if ctx.author.id not in self.votes_list:
-                    self.skip_votes += 1
-                    if self.skip_votes >= required_votes:
-                        await ctx.channel.send(f"{self.skip_votes} котика проголосовали за скип трека, пропускаем...")
-                        self.vc.stop()
-                        self.votes_list = []
-                        self.last_skip = 0
-                        self.skip_votes = 0
+            if ctx.author in ctx.channel.members:
+                if len(ctx.channel.members) > 2:
+                    self._is_expired()
+                    listeners = len(ctx.channel.members)
+                    required_votes = self._requiredVotes(listeners)
+                    if ctx.author.id not in self.votes_list:
+                        self.skip_votes += 1
+                        if self.skip_votes >= required_votes:
+                            await ctx.channel.send(f"{self.skip_votes} котика проголосовали за скип трека, пропускаем...")
+                            self.vc.stop()
+                            self.votes_list = []
+                            self.last_skip = 0
+                            self.skip_votes = 0
+                        else:
+                            await ctx.channel.send(f"{ctx.author.mention} проголосовал за пропуск песни! ({self.skip_votes}/{required_votes})")
+                            self.votes_list.append(ctx.author.id)
+                            self.last_skip = datetime.now().timestamp()
                     else:
-                        await ctx.channel.send(f"{ctx.author.mention} проголосовал за пропуск песни! ({self.skip_votes}/{required_votes})")
-                        self.votes_list.append(ctx.author.id)
-                        self.last_skip = datetime.now().timestamp()
+                        await ctx.reply("Ты уже проголосовал(а) за пропуск песни!", delete_after=5)
                 else:
-                    await ctx.reply("Ты уже проголосовал(а) за пропуск песни!", delete_after=5)
-            else:
-                self.vc.stop()
+                    self.vc.stop()
 
     @commands.command(name='radiostart')
     async def _radioForceStart(self, ctx):
