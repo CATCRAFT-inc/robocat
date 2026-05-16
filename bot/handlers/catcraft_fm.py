@@ -46,6 +46,8 @@ class CatcraftFM(commands.Cog):
         self.votes_list: list[int] = []
         self.last_skip = 0
 
+        self.random = 7
+
         self.logger = logging.getLogger("robocat.fm")
 
     @commands.Cog.listener()
@@ -137,7 +139,7 @@ class CatcraftFM(commands.Cog):
                 return
 
             # выбор следующего трека
-            if music_count < 3:
+            if music_count < self.random:
                 if not self.music_files:
                     self.music_files = os.listdir(self.music_path)
                     shuffle(self.music_files)
@@ -159,6 +161,7 @@ class CatcraftFM(commands.Cog):
                 path = self.dictor_path / track
                 music_count = 0
                 is_dictor = True
+                self.random = randint(5,15)
 
             done = asyncio.Event()
             self._current_done = done
