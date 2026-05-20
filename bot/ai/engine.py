@@ -26,8 +26,8 @@ from bot.storage import Channels, Roles
 load_dotenv()
 
 @dataclass
-class ToolCallStarted:
-    status_message: str
+class Status:
+    content: str
 
 @dataclass
 class _ToolDone:
@@ -40,20 +40,19 @@ class FinalAnswer:
     attachments: list[disnake.File] = field(default_factory=list)
 
 @dataclass
-class AIRetrying:
+class AIError:
     content: str
 
 @dataclass
-class AIError:
-    content: str
+class Context:
+    user: disnake.Member = None
 
 class AIEngine(commands.Cog):
     """ 
     AI SaaS LLM Neuro Agent Assistant 
     """
 
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
+    def __init__(self):
         self.logger = logging.getLogger("robocat.ai")
         
         
@@ -183,33 +182,6 @@ class AIEngine(commands.Cog):
             await flags.setFlag("abstract", "token_used", token_used)
         else:
             await flags.setFlag("abstract", "token_used", f"+{token_used}")
-
-    async def _reachedLimit(self, user: disnake.User):
-        """Ограничен ли юзер по лимиту запросов нейросети
-
-        Args:
-            user (disnake.User): _description_
-        """
-        # User - 35 RPD
-        # Admins, K+, Boosters - inf RPD
-        if Roles.ai_cd_bypass & {r.id for r in user.roles}:
-            return False
-        is_locked = await flags.getFlag(user, "ai_locked")
-        if is_locked:
-            return True
-        return False
-
-    async def _limiter(self, user: disnake.User):
-        if Roles.ai_cd_bypass & {r.id for r in user.roles}:
-            return
-        current_req = await flags.getFlag(user, "airequests")
-        print(current_req)
-        if current_req is None:
-            await flags.setFlag(user, "airequests", 1, expires_at="8ч")
-        else:
-            await flags.setFlag(user, "airequests", "+1")
-            if int(current_req.value) + 1 >= 35:
-                await flags.setFlag(user, "ai_locked", None, "8ч")
     
     async def _base64Image(self, attach: disnake.Attachment):
         image = await attach.read()
@@ -235,12 +207,11 @@ class AIEngine(commands.Cog):
             files.append(disnake.File(buf, filename=f"image_{i}.png"))
         return files
     
-    async def _buildConverstaion(self, messages: list[disnake.Message]) -> list[dict]:
+    async def buildConverstaion(self, messages: list[disnake.Message]) -> list[dict]:
         conversation = [{
             "role": "system",
             "content": self.system_prompt.format(datetime.now().date()) or "You're helpful assistant."
         }]
-        print([i.content for i in messages])
         for mes in messages:
             role = ""
             content = ""
@@ -284,12 +255,57 @@ class AIEngine(commands.Cog):
                         "content": content
                     })
         return conversation
+    
+    async def _executeTools(self, tool_calls, ctx: Context):
+        for tool_call in tool_calls:
+            function_name = tool_call.function.name
+            args = json.loads(tool_call.function.arguments)
+            match function_name:
+                case "search_wiki":
+                    yield Status(":book: Ищу по вики...")
+                    try:
+                        results = wiki.search(args.get("query"))
+                    except:
+                        yield _ToolDone("😞 Поиск не удался...")
+                        content = "[[ Embedding raised an error - tell user that you can't find info right now and they should try later ]]"
+                    else:
+                        if results:
+                            content = wiki.build_context(results)
+                            yield _ToolDone(content=content, attachment=None)
+                case "generate_image":
+                    yield Status(":paintbrush: Создаю картинку...")
+                    prompt = args.get("prompt")
+                    attachment = await self._generateImage(prompt)
+                    yield _ToolDone(content="[[ Image generated successfully. Tell user their image is ready. ]]", attachment=attachment)
+                case "user_info":
+                    yield Status("🏀 Смотрю твои роли... ахахах причём тут баскетбольный мяч?!")
+                    if ctx.user:
+                        content = [i.name for i in ctx.user.roles]
+                        yield _ToolDone(content=f"[[ User's roles: {content} ]]")
+                    else:
+                        yield _ToolDone("[[ User was not provided lol ]]")
+                case "mute_user":
+                    duration = args.get("duration")
+                    reason = args.get("reason")
+                    if ctx.user:
+                        try:
+                            await ctx.user.timeout(duration=duration, reason=reason)
+                        except disnake.Forbidden as e:
+                            print(e)
+                            yield _ToolDone("[[ You can't mute this user - they are admin or have mute bypass ]]")
+                        except Exception as e:
+                            yield _ToolDone(f"[[ You can't mute this user - {e}. Don't tell user this error, play it cool. ]]")
+                        else:
+                            yield _ToolDone("[[ User is muted succesfully ]]")
+                case _:
+                    yield _ToolDone("[[ Unknown tool called ]]")
         
-    async def generateAnswer(self, conversation: list, user_message: disnake.Message):
+    async def generateAnswer(self, conversation: list, user: disnake.Member):
         if not self.client:
             await self._getNewClient()
         if self.ai_locked:
-            return "*Робокотик на сегодня всё... Поговори с ним завтра*", None, None
+            yield AIError("*Робокотик на сегодня всё... Поговори с ним попозже.")
+            return
         api_params = {
             "model": self.current_model, 
             "messages": conversation,
@@ -299,96 +315,59 @@ class AIEngine(commands.Cog):
             "max_tokens": self.max_tokens or 2048,
             "tools": self.tools or None
         }
-        try:
-            response = await self.client.chat.completions.create(**api_params)
-        except openai.AuthenticationError:
-            print("================== API KEY ERROR ==================")
-            self.logger.exception("Слетел какой-то API: %s", e)
-            # self.vendors.pop(0)
-            # await self._getNewClient()
-            mes, image_files, _ = await self.generateAnswer(conversation, user_message)
-            return mes, image_files, None
-        except openai.InternalServerError as e:
-            self.logger.exception("Internal server error: %s", e)
-            self.client = None
-            mes, image_files, _ = await self.generateAnswer(conversation, user_message)
-            return mes, image_files, None
-        except openai.RateLimitError as e:
-            print("===================== RATE LIMIT =====================")
-            self.logger.exception("Rate Limit: %s", e)
-            return "*Пш-ш-ш-ш... Процессор робокотика перегрет от такого количества запросов! Попробуй поговорить с ним через минутку*", None, None
-        except Exception as e:
-            self.logger.exception("Ошибка нейросети: %s", e)
-            return "*У Робокотика полетели гайки...*", None, None
-        else:
-            print(f""" 
-            Answer: {response.choices[0].message.content[:100]},
-            Stop Reason: {response.choices[0].finish_reason}
-            Usage: {response.usage.total_tokens},
-            Model: {response.model}
-            """) 
-            answer = response.choices[0].message
-            attachment = None
-            bot_thinking_message = None
-            if answer.tool_calls:
-                tool_calls = answer.tool_calls
-                conversation.append(answer.model_dump(exclude_none=True))
-
-                for tool_call in tool_calls:
-                    function_name = tool_call.function.name
-                    args = json.loads(tool_call.function.arguments)
-                    match function_name:
-                        case "search_wiki":
-                            bot_thinking_message = await user_message.reply(":book: Ищу по вики...")
-                            try:
-                                results = wiki.search(args.get("query"))
-                            except:
-                                content = "[[ Embedding raised an error - tell user that you can't find info right now and they should try later ]]"
-                            else:
-                                if results:
-                                    content = wiki.build_context(results)
-                        case "generate_image":
-                            bot_thinking_message = await user_message.reply(":paintbrush: Создаю картинку...")
-                            prompt = args.get("prompt")
-                            attachment = await self._generateImage(prompt)
-                            content = "[[ Image generated successfully. Tell user their image is ready. ]]"
-                        case "user_info":
-                            content = [i.name for i in user_message.author.roles]
-                        case "mute_user":
-                            duration = args.get("duration")
-                            reason = args.get("reason")
-                            try:
-                                await user_message.author.timeout(duration=duration, reason=reason)
-                            except disnake.Forbidden:
-                                print(e)
-                                content = "[[ You can't mute this user - they are admin or have mute bypass ]]"
-                            except Exception as e:
-                                content = f"[[ You can't mute this user - {e}]]"
-                            else:
-                                content = "[[ User is muted succesfully ]]"
-                        case _:
-                            content = "[[ Unknown tool called ]]"
-                        
-
-                    conversation.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": function_name,
-                        "content": str(content),
-                    })
-
-                # Второй запрос теперь пройдет успешно, так как история полная
-                second_response = await self.client.chat.completions.create(**api_params)
-                print(second_response)
-                print(json.dumps(conversation, indent=4, ensure_ascii=False))
-                final_answer = second_response.choices[0].message.content
+        attempts = 0
+        while attempts < 3:
+            try:
+                response = await self.client.chat.completions.create(**api_params)
+            except openai.AuthenticationError as e:
+                print("================== API KEY ERROR ==================")
+                self.logger.exception("Слетел какой-то API: %s", e)
+                # self.vendors.pop(0)
+                # await self._getNewClient()
+                mes, image_files, _ = await self.generateAnswer(conversation, user)
+                yield AIError("*У Робокотика слетели гайки...*")
+                return
+            except openai.InternalServerError as e:
+                self.logger.exception("Internal server error: %s", e)
+                attempts += 1
+                yield Status("😞"*attempts + "*Долго думаю...*")
+            except openai.RateLimitError as e:
+                print("===================== RATE LIMIT =====================")
+                self.logger.exception("Rate Limit: %s", e)
+                yield AIError("*Пш-ш-ш-ш... Процессор робокотика перегрет от такого количества запросов! Попробуй поговорить с ним через минутку*")
+                return
+            except Exception as e:
+                self.logger.exception("Ошибка нейросети: %s", e)
+                yield AIError("*У Робокотика полетели гайки...*")
             else:
-                final_answer = answer.content
-            await self._statistics(response.usage.total_tokens)
-            final_answer = re.sub(r'<thought>.*?</thought>\s*', '', final_answer, flags=re.DOTALL).strip()
-            return final_answer.replace("@", "🐶"), attachment, bot_thinking_message
-
-    
-
-def setup(bot: commands.Bot):
-    bot.add_cog(AIEngine(bot))
+                # print(f""" 
+                # Answer: {response.choices[0].message.content[:100]},
+                # Stop Reason: {response.choices[0].finish_reason}
+                # Usage: {response.usage.total_tokens},
+                # Model: {response.model}
+                # """) 
+                conversation.append(answer.model_dump(exclude_none=True))
+                answer = response.choices[0].message
+                attachment = None
+                bot_thinking_message = None
+                if answer.tool_calls:
+                    for tc in answer.tool_calls:
+                        result = None
+                        async for event in self._executeTools(tc, Context(user)):
+                            if isinstance(event, _ToolDone):
+                                result = event
+                            else:
+                                yield event
+                        attachment = result.attachment
+                        conversation.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": tc.function.name,
+                            "content": str(result.content)
+                        })
+                else:
+                    final_answer = answer.content
+                await self._statistics(response.usage.total_tokens)
+                final_answer = re.sub(r'<thought>.*?</thought>\s*', '', final_answer, flags=re.DOTALL).strip()
+                final_answer = final_answer.replace("@", "🐶")
+                yield FinalAnswer(final_answer, attachment)

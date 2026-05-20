@@ -4,11 +4,41 @@ from disnake.ext import commands
 from bot.storage import Channels, Roles
 from bot.flag_system.flag_system import flags
 
+from .engine import AIEngine,  Status, FinalAnswer, AIError
+
 
 class AIMessageHandler(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.ai_engine = AIEngine()
+
+    async def _reachedLimit(self, user: disnake.User):
+        """Ограничен ли юзер по лимиту запросов нейросети
+
+        Args:
+            user (disnake.User): _description_
+        """
+        # User - 35 RPD
+        # Admins, K+, Boosters - inf RPD
+        if Roles.ai_cd_bypass & {r.id for r in user.roles}:
+            return False
+        is_locked = await flags.getFlag(user, "ai_locked")
+        if is_locked:
+            return True
+        return False
+
+    async def _limiter(self, user: disnake.User):
+        if Roles.ai_cd_bypass & {r.id for r in user.roles}:
+            return
+        current_req = await flags.getFlag(user, "airequests")
+        print(current_req)
+        if current_req is None:
+            await flags.setFlag(user, "airequests", 1, expires_at="8ч")
+        else:
+            await flags.setFlag(user, "airequests", "+1")
+            if int(current_req.value) + 1 >= 35:
+                await flags.setFlag(user, "ai_locked", None, "8ч")
 
     @commands.Cog.listener("on_message")
     async def robocatAI(self, message: disnake.Message):
@@ -18,7 +48,7 @@ class AIMessageHandler(commands.Cog):
             return
         if message.channel.id in [Channels.for_bots, Channels.secret]: # Отслеживаем сообщения только в двух чатах - для ботов и для теста
             if self.bot.user.mentioned_in(message) or (message.reference and message.reference.resolved.author == self.bot.user): # Если робокотика пинганули или ответили ему на сообщение
-                if self.ai_locked and message.author.id not in self.ai_locked_bypass_user_ids:
+                if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
                     return "*Робокотик остужает свой процессор... Поговори с ним попозже.*"
                 if await self._reachedLimit(message.author):
                     ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
@@ -47,21 +77,28 @@ class AIMessageHandler(commands.Cog):
                     except disnake.NotFound:
                         break
                 
-                conversation = await self._buildConverstaion(messages)
+                conversation = await self.ai_engine.buildConverstaion(messages)
+
 
                 async with message.channel.typing():
-                    reply, attachment, thinking_message = await self.generateAnswer(conversation, message)
-                    if thinking_message:
-                        await thinking_message.delete()
-                    if len(reply) > 1999:
-                        answers = [reply[i:i+1999] for i in range(0, len(reply), 1999)]
-                        for mes in answers:
-                            await message.reply(mes)
-                        if attachment:
-                            await message.reply(file=attachment)
-                    else:
-                        await message.reply(reply, file=attachment)
-                    await self._limiter(message.author)
+                    thinking_message = await message.reply("Думаю...")
+                    async for ev in self.ai_engine.generateAnswer(conversation, message.author):
+                        if isinstance(ev, FinalAnswer):
+                            if len(ev.content) > 1999:
+                                answers = [ev.content[i:i+1999] for i in range(0, len(ev.content), 1999)]
+                                await thinking_message.delete()
+                                for mes in answers:
+                                    await message.reply(mes)
+                                if ev.attachments:
+                                    await message.reply(file=ev.attachments)
+                            else:
+                                await thinking_message.edit(ev.content, file=ev.attachments)
+                        elif isinstance(ev, Status):
+                            await thinking_message.edit(ev.content)
+                        elif isinstance(ev, AIError):
+                            await thinking_message.edit(ev.content)
+                            return
+                        await self._limiter(message.author)
     
     @commands.slash_command(name='aiinfo', description="посмотреть инфу о ии")
     @commands.has_any_role(Roles.admin, Roles.st_admin)

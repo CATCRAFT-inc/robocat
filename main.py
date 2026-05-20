@@ -6,7 +6,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 load_dotenv()
-token = os.getenv("DISCORD_TOKEN")
+token = os.getenv("DEV_DISCORD_TOKEN")
 
 def setup_logger():
     logger = logging.getLogger("robocat")
@@ -44,8 +44,10 @@ def load_extension():
         "handlers.tickets.bugs",
         "handlers.tickets.engine",
         "handlers.search_player",
-        "handlers.ai",
         "handlers.catcraft_fm",
+
+        ### AI
+        "ai.handler",
 
         ### Other
         "utils",
