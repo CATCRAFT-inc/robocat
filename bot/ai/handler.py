@@ -13,6 +13,11 @@ class AIMessageHandler(commands.Cog):
         self.bot = bot
         self.ai_engine = AIEngine()
 
+        self.user_request_limit: int = 35
+
+    async def cog_load(self):
+        await self.ai_engine.load_ai(self.bot)
+
     async def _reachedLimit(self, user: disnake.User):
         """Ограничен ли юзер по лимиту запросов нейросети
 
@@ -37,7 +42,7 @@ class AIMessageHandler(commands.Cog):
             await flags.setFlag(user, "airequests", 1, expires_at="8ч")
         else:
             await flags.setFlag(user, "airequests", "+1")
-            if int(current_req.value) + 1 >= 35:
+            if int(current_req.value) + 1 >= self.user_request_limit:
                 await flags.setFlag(user, "ai_locked", None, "8ч")
 
     @commands.Cog.listener("on_message")
@@ -49,7 +54,8 @@ class AIMessageHandler(commands.Cog):
         if message.channel.id in [Channels.for_bots, Channels.secret]: # Отслеживаем сообщения только в двух чатах - для ботов и для теста
             if self.bot.user.mentioned_in(message) or (message.reference and message.reference.resolved.author == self.bot.user): # Если робокотика пинганули или ответили ему на сообщение
                 if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
-                    return "*Робокотик остужает свой процессор... Поговори с ним попозже.*"
+                    await message.reply("*Робокотик остужает свой процессор... Поговори с ним попозже.*") 
+                    return
                 if await self._reachedLimit(message.author):
                     ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
                     expires_at = ai_locked_flag.expires_at or None
@@ -81,24 +87,40 @@ class AIMessageHandler(commands.Cog):
 
 
                 async with message.channel.typing():
-                    thinking_message = await message.reply("Думаю...")
-                    async for ev in self.ai_engine.generateAnswer(conversation, message.author):
-                        if isinstance(ev, FinalAnswer):
-                            if len(ev.content) > 1999:
-                                answers = [ev.content[i:i+1999] for i in range(0, len(ev.content), 1999)]
+                    thinking_message = None
+                    async for event in self.ai_engine.generateAnswer(conversation, message.author):
+                        if isinstance(event, FinalAnswer):
+                            if len(event.content) > 1999:
+                                answers = [event.content[i:i+1999] for i in range(0, len(event.content), 1999)]
                                 await thinking_message.delete()
                                 for mes in answers:
                                     await message.reply(mes)
-                                if ev.attachments:
-                                    await message.reply(file=ev.attachments)
+                                if event.attachments:
+                                    await message.reply(files=event.attachments)
                             else:
-                                await thinking_message.edit(ev.content, file=ev.attachments)
-                        elif isinstance(ev, Status):
-                            await thinking_message.edit(ev.content)
-                        elif isinstance(ev, AIError):
-                            await thinking_message.edit(ev.content)
+                                if thinking_message:
+                                    if event.attachments:
+                                        await thinking_message.edit(event.content, files=event.attachments)
+                                    else:
+                                        await thinking_message.edit(event.content)
+                                else:
+                                    if event.attachments:
+                                        await message.reply(event.content, files=event.attachments)
+                                    else:
+                                        await message.reply(event.content)
+                        elif isinstance(event, Status):
+                            if thinking_message:
+                                await thinking_message.edit(event.content)
+                            else:
+                                thinking_message = await message.reply(event.content)
+                                
+                        elif isinstance(event, AIError):
+                            if thinking_message:
+                                await thinking_message.edit(event.content)
+                            else:
+                                thinking_message = await message.reply(event.content)
                             return
-                        await self._limiter(message.author)
+                    await self._limiter(message.author)
     
     @commands.slash_command(name='aiinfo', description="посмотреть инфу о ии")
     @commands.has_any_role(Roles.admin, Roles.st_admin)

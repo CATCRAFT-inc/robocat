@@ -76,24 +76,24 @@ class AIEngine(commands.Cog):
                 }
                 
             },
-            # {
-            #     "type": "function",
-            #     "function": {
-            #         "name": "generate_image",
-            #     "description": "Generating an AI image",
-            #     "parameters": {
-            #         "type": "object",
-            #         "properties": {
-            #             "prompt": {
-            #                 "type": "string",
-            #                 "description": "When generating images, expand the user's request into a detailed English prompt with style, lighting, and composition details."
-            #             },
-            #         },
-            #         "required": ["prompt"],
-            #     },
-            #     }
+            {
+                "type": "function",
+                "function": {
+                    "name": "generate_image",
+                "description": "Generating an AI image",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "When generating images, expand the user's request into a detailed English prompt with style, lighting, and composition details."
+                        },
+                    },
+                    "required": ["prompt"],
+                },
+                }
                 
-            # },
+            },
             {
                 "type": "function",
                 "function": {
@@ -133,19 +133,24 @@ class AIEngine(commands.Cog):
 
         # killswitch (когда все модели 429 или просто так)
         self.ai_locked: bool = False
-        self.ai_locked_bypass_user_ids = [531208170098655233]
+        self.ai_locked_bypass_user_ids = [531208170098655233] # Чтоэто? Я не помню
 
         # AI Info
-        self.max_tokens = 4096
+        self.max_tokens = 1024
         self.has_vision: bool = False # Есть ли у текущей модели просмотр картинок юзера
         self.thinking = None # None, low, medium, high
-        self.temperature = 0.5
+        self.temperature = 0.6
         self.top_p = 1
 
-    async def cog_load(self):
+    async def load_ai(self, bot):
         await self._loadAIData()
         await self._getNewClient()
+        self.bot = bot
         print(self.current_vendor, self.current_model)
+        print("[[ AI IS LOCKED AND LOADED! ]]")
+        models = await self.client.models.list()
+        async for model in models:
+            print(model.id)
 
     async def _loadAIData(self):
         VENDORS_PATH = Path(__file__).resolve().parents[2] / "data" / "ai_settings.yaml"
@@ -190,7 +195,7 @@ class AIEngine(commands.Cog):
     
     async def _generateImage(self, prompt: str):
         image = await self.client.images.generate(
-            model="imagen-4.0-ultra-generate-001",
+            model="gemini-2.5-flash-image",
             prompt=prompt,
             response_format='b64_json',
             n=1
@@ -202,10 +207,13 @@ class AIEngine(commands.Cog):
 
             buf = BytesIO()
             image.save(buf, format="PNG")
-            buf.seek(0)  # обязательно, иначе отправится пустой файл
+            buf.seek(0) 
 
             files.append(disnake.File(buf, filename=f"image_{i}.png"))
         return files
+    
+    async def _buildFinalMessage(text: str) -> str:
+        return
     
     async def buildConverstaion(self, messages: list[disnake.Message]) -> list[dict]:
         conversation = [{
@@ -256,49 +264,51 @@ class AIEngine(commands.Cog):
                     })
         return conversation
     
-    async def _executeTools(self, tool_calls, ctx: Context):
-        for tool_call in tool_calls:
-            function_name = tool_call.function.name
-            args = json.loads(tool_call.function.arguments)
-            match function_name:
-                case "search_wiki":
-                    yield Status(":book: Ищу по вики...")
-                    try:
-                        results = wiki.search(args.get("query"))
-                    except:
-                        yield _ToolDone("😞 Поиск не удался...")
-                        content = "[[ Embedding raised an error - tell user that you can't find info right now and they should try later ]]"
-                    else:
-                        if results:
-                            content = wiki.build_context(results)
-                            yield _ToolDone(content=content, attachment=None)
-                case "generate_image":
+    async def _executeTool(self, tool_call, ctx: Context):
+        function_name = tool_call.function.name
+        args = json.loads(tool_call.function.arguments)
+        match function_name:
+            case "search_wiki":
+                yield Status(":book: Ищу по вики...")
+                try:
+                    results = wiki.search(args.get("query"))
+                except:
+                    yield _ToolDone("😞 Поиск не удался...")
+                    content = "[[ Embedding raised an error - tell user that you can't find info right now and they should try later ]]"
+                else:
+                    if results:
+                        content = wiki.build_context(results)
+                        yield _ToolDone(content=content, attachment=None)
+            case "generate_image":
+                if Roles.ai_cd_bypass & {r.id for r in ctx.user.roles}:
                     yield Status(":paintbrush: Создаю картинку...")
                     prompt = args.get("prompt")
                     attachment = await self._generateImage(prompt)
                     yield _ToolDone(content="[[ Image generated successfully. Tell user their image is ready. ]]", attachment=attachment)
-                case "user_info":
-                    yield Status("🏀 Смотрю твои роли... ахахах причём тут баскетбольный мяч?!")
-                    if ctx.user:
-                        content = [i.name for i in ctx.user.roles]
-                        yield _ToolDone(content=f"[[ User's roles: {content} ]]")
+                else:
+                    yield _ToolDone(content="[[ User does not have permission to generate AI images. They can get that with buying Котик+ or boosting this server. ]]")
+            case "user_info":
+                yield Status("🏀 Смотрю твои роли... ахахах причём тут баскетбольный мяч?!")
+                if ctx.user:
+                    content = [i.name for i in ctx.user.roles]
+                    yield _ToolDone(content=f"[[ User's roles: {content} ]]")
+                else:
+                    yield _ToolDone("[[ User was not provided lol ]]")
+            case "mute_user":
+                duration = args.get("duration")
+                reason = args.get("reason")
+                if ctx.user:
+                    try:
+                        await ctx.user.timeout(duration=duration, reason=reason)
+                    except disnake.Forbidden as e:
+                        print(e)
+                        yield _ToolDone("[[ You can't mute this user - they are admin or have mute bypass ]]")
+                    except Exception as e:
+                        yield _ToolDone(f"[[ You can't mute this user - {e}. Don't tell user this error, play it cool. ]]")
                     else:
-                        yield _ToolDone("[[ User was not provided lol ]]")
-                case "mute_user":
-                    duration = args.get("duration")
-                    reason = args.get("reason")
-                    if ctx.user:
-                        try:
-                            await ctx.user.timeout(duration=duration, reason=reason)
-                        except disnake.Forbidden as e:
-                            print(e)
-                            yield _ToolDone("[[ You can't mute this user - they are admin or have mute bypass ]]")
-                        except Exception as e:
-                            yield _ToolDone(f"[[ You can't mute this user - {e}. Don't tell user this error, play it cool. ]]")
-                        else:
-                            yield _ToolDone("[[ User is muted succesfully ]]")
-                case _:
-                    yield _ToolDone("[[ Unknown tool called ]]")
+                        yield _ToolDone("[[ User is muted succesfully ]]")
+            case _:
+                yield _ToolDone("[[ Unknown tool called ]]")
         
     async def generateAnswer(self, conversation: list, user: disnake.Member):
         if not self.client:
@@ -316,7 +326,9 @@ class AIEngine(commands.Cog):
             "tools": self.tools or None
         }
         attempts = 0
-        while attempts < 3:
+        tool_rounds = 0
+        attachment = None
+        while attempts < 3 and tool_rounds < 2:
             try:
                 response = await self.client.chat.completions.create(**api_params)
             except openai.AuthenticationError as e:
@@ -324,13 +336,12 @@ class AIEngine(commands.Cog):
                 self.logger.exception("Слетел какой-то API: %s", e)
                 # self.vendors.pop(0)
                 # await self._getNewClient()
-                mes, image_files, _ = await self.generateAnswer(conversation, user)
                 yield AIError("*У Робокотика слетели гайки...*")
                 return
             except openai.InternalServerError as e:
                 self.logger.exception("Internal server error: %s", e)
                 attempts += 1
-                yield Status("😞"*attempts + "*Долго думаю...*")
+                yield Status("😞"*attempts + " *Долго думаю...*")
             except openai.RateLimitError as e:
                 print("===================== RATE LIMIT =====================")
                 self.logger.exception("Rate Limit: %s", e)
@@ -346,28 +357,45 @@ class AIEngine(commands.Cog):
                 # Usage: {response.usage.total_tokens},
                 # Model: {response.model}
                 # """) 
-                conversation.append(answer.model_dump(exclude_none=True))
                 answer = response.choices[0].message
-                attachment = None
+                # print(f"prompt={response.usage.prompt_tokens} "
+                # f"completion={response.usage.completion_tokens} "
+                # f"total={response.usage.total_tokens}\n\n"
+                # f"{response.choices[0].message}")
+                conversation.append(answer.model_dump(exclude_none=True))
                 bot_thinking_message = None
                 if answer.tool_calls:
                     for tc in answer.tool_calls:
                         result = None
-                        async for event in self._executeTools(tc, Context(user)):
+                        async for event in self._executeTool(tc, Context(user)):
                             if isinstance(event, _ToolDone):
                                 result = event
                             else:
                                 yield event
-                        attachment = result.attachment
+                        if result and result.attachment:
+                            attachment = result.attachment
                         conversation.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "name": tc.function.name,
                             "content": str(result.content)
                         })
+                    yield Status("🤤 Ещё чуть-чуть думаю...")
+                    tool_rounds += 1
+                    continue
                 else:
                     final_answer = answer.content
                 await self._statistics(response.usage.total_tokens)
-                final_answer = re.sub(r'<thought>.*?</thought>\s*', '', final_answer, flags=re.DOTALL).strip()
-                final_answer = final_answer.replace("@", "🐶")
+                final_answer = self.sanitize_answer(final_answer)
                 yield FinalAnswer(final_answer, attachment)
+                return
+            
+    def sanitize_answer(self, text) -> str:
+        text = re.sub(r'<thought>.*?</thought>\s*', '', text, flags=re.DOTALL).strip()
+        text = re.sub(r'(?<!`)`(?!`)', r'\\`', text)
+        dog = re.compile(
+            r'(?<=<)@'
+            r'|(?<!\w)@(?=\w)',
+        )
+        text = dog.sub('🐶', text)
+        return text
