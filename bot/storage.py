@@ -98,7 +98,7 @@ class Roles:
     media = 1139039063127621762
     server_updates = 1154962203007533168
     site_updates = 1216088841761329252
-    ai_cd_bypass = frozenset({owner,st_admin,admin,developer,moderator,kotikplus,booster})
+    premium_ai = frozenset({owner,st_admin,admin,developer,moderator,kotikplus,booster}) # Те, кто может юзать ИИ без кд и генерировать картинки
 
 class Users:
     szarkan = 531208170098655233

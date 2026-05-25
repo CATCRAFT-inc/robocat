@@ -26,7 +26,7 @@ class AIMessageHandler(commands.Cog):
         """
         # User - 35 RPD
         # Admins, K+, Boosters - inf RPD
-        if Roles.ai_cd_bypass & {r.id for r in user.roles}:
+        if Roles.premium_ai & {r.id for r in user.roles}:
             return False
         is_locked = await flags.getFlag(user, "ai_locked")
         if is_locked:
@@ -34,7 +34,7 @@ class AIMessageHandler(commands.Cog):
         return False
 
     async def _limiter(self, user: disnake.User):
-        if Roles.ai_cd_bypass & {r.id for r in user.roles}:
+        if Roles.premium_ai & {r.id for r in user.roles}:
             return
         current_req = await flags.getFlag(user, "airequests")
         print(current_req)
@@ -91,8 +91,15 @@ class AIMessageHandler(commands.Cog):
                     async for event in self.ai_engine.generateAnswer(conversation, message.author):
                         if isinstance(event, FinalAnswer):
                             if len(event.content) > 1999:
+                                if len(event.content) < 4095:
+                                    container = disnake.ui.Container(
+                                        disnake.ui.TextDisplay(content=event.content)
+                                    )
+                                    await message.reply(components=container, files=event.attachments)
+                                    return
                                 answers = [event.content[i:i+1999] for i in range(0, len(event.content), 1999)]
-                                await thinking_message.delete()
+                                if thinking_message:
+                                    await thinking_message.delete()
                                 for mes in answers:
                                     await message.reply(mes)
                                 if event.attachments:
@@ -125,7 +132,7 @@ class AIMessageHandler(commands.Cog):
     @commands.slash_command(name='aiinfo', description="посмотреть инфу о ии")
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def aiInfo(self, inter: disnake.MessageCommandInteraction):
-        await inter.send(f"{self.current_model}, {self.current_vendor}, {self.locked_models}", ephemeral=True)
+        await inter.send(f"{self.ai_engine.current_model}, {self.ai_engine.current_vendor}, {self.ai_engine.locked_models}", ephemeral=True)
         token_used = await flags.getFlag("abstract", "token_used")
         if token_used:
             await inter.send(f"Token used: {token_used.value}t", ephemeral=True)
@@ -133,19 +140,19 @@ class AIMessageHandler(commands.Cog):
     @commands.slash_command(name='ailock', description="посмотреть инфу о ии")
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def aiLock(self, inter: disnake.MessageCommandInteraction):
-        if self.ai_locked:
-            self.ai_locked = False
+        if self.ai_engine.ai_locked:
+            self.ai_engine.ai_locked = False
             await inter.send("ИИ разблокирован", ephemeral=True)
         else:
-            self.ai_locked = True
+            self.ai_engine.ai_locked = True
             await inter.send("ИИ заблокирован", ephemeral=True)
 
     @commands.slash_command(name="reloadai", description="перезапуск клиента и системного промпта")
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def aiReload(self, inter: disnake.MessageCommandInteraction):
-        await self.client.close()
-        await self._getNewClient()
-        await self._loadAIData()
+        await self.ai_engine.client.close()
+        await self.ai_engine._getNewClient()
+        await self.ai_engine._loadAIData()
 
 def setup(bot: commands.Bot):
     bot.add_cog(AIMessageHandler(bot))

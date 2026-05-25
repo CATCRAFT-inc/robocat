@@ -106,6 +106,30 @@ class FlagCommands(commands.Cog):
         else:
             await inter.send("Такого канала нет!", ephemeral=True)
 
+    @commands.slash_command(name='remove_flag_user', description="Удалить флаг у пользователя")
+    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    async def removeUserFlagCommand(self, inter: disnake.ApplicationCommandInteraction,
+                            member: disnake.Member,
+                            flag: str,
+                            value = None,
+                            expires_at = None):
+        if member:
+            await flags.removeFlag(member,flag,"Команда remove_flag_user")
+        else:
+            await inter.send("Такого пользователя нет!", ephemeral=True)
+
+    @commands.slash_command(name='remove_channel_flag', description="Удалить флаг у канала")
+    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    async def removeChannelFlagCommand(self, inter: disnake.ApplicationCommandInteraction,
+                            channel: disnake.abc.GuildChannel,
+                            flag: str,
+                            value = None,
+                            expires_at = None):
+        if channel:
+            await flags.removeFlag(channel,flag,"Команда remove_channel_flag")
+        else:
+            await inter.send("Такого канала нет!", ephemeral=True)
+
 
 def setup(bot: commands.Bot):
     bot.add_cog(FlagCommands(bot))

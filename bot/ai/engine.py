@@ -1,5 +1,5 @@
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import logging
 import os
@@ -98,8 +98,7 @@ class AIEngine(commands.Cog):
                 "type": "function",
                 "function": {
                     "name": "user_info",
-                "description": "Get current's user discord info (right now - only their roles)",
-                "parameters": {}
+                "description": "Get current's user discord info (right now - only their roles)"
                 }
             },
             {
@@ -136,11 +135,13 @@ class AIEngine(commands.Cog):
         self.ai_locked_bypass_user_ids = [531208170098655233] # Чтоэто? Я не помню
 
         # AI Info
-        self.max_tokens = 1024
+        self.max_tokens = 4096
         self.has_vision: bool = False # Есть ли у текущей модели просмотр картинок юзера
         self.thinking = None # None, low, medium, high
         self.temperature = 0.6
         self.top_p = 1
+
+        self.flags = flags
 
     async def load_ai(self, bot):
         await self._loadAIData()
@@ -194,23 +195,26 @@ class AIEngine(commands.Cog):
         return f"data:image/jpeg;base64,{base64_image}"
     
     async def _generateImage(self, prompt: str):
-        image = await self.client.images.generate(
-            model="gemini-2.5-flash-image",
-            prompt=prompt,
-            response_format='b64_json',
-            n=1
-        )
+        try:
+            image = await self.client.images.generate(
+                model="gemini-2.5-flash-image",
+                prompt=prompt,
+                response_format='b64_json',
+                n=1
+            )
+        except:
+            return None
+        else:
+            files = []
+            for i, image_data in enumerate(image.data):
+                image = Image.open(BytesIO(base64.b64decode(image_data.b64_json)))
 
-        files = []
-        for i, image_data in enumerate(image.data):
-            image = Image.open(BytesIO(base64.b64decode(image_data.b64_json)))
+                buf = BytesIO()
+                image.save(buf, format="PNG")
+                buf.seek(0) 
 
-            buf = BytesIO()
-            image.save(buf, format="PNG")
-            buf.seek(0) 
-
-            files.append(disnake.File(buf, filename=f"image_{i}.png"))
-        return files
+                files.append(disnake.File(buf, filename=f"image_{i}.png"))
+            return files
     
     async def _buildFinalMessage(text: str) -> str:
         return
@@ -273,20 +277,31 @@ class AIEngine(commands.Cog):
                 try:
                     results = wiki.search(args.get("query"))
                 except:
-                    yield _ToolDone("😞 Поиск не удался...")
-                    content = "[[ Embedding raised an error - tell user that you can't find info right now and they should try later ]]"
+                    yield Status("😞 Поиск не удался...")
+                    yield _ToolDone(content="[[ Wiki search failed. Tell user that something went wrong and they should try again later. ]]")
                 else:
                     if results:
                         content = wiki.build_context(results)
                         yield _ToolDone(content=content, attachment=None)
             case "generate_image":
-                if Roles.ai_cd_bypass & {r.id for r in ctx.user.roles}:
+                if Roles.premium_ai & {r.id for r in ctx.user.roles}:
+                    image_gen_flag = await self.flags.getFlag(ctx.user, "image_gen")
+                    if image_gen_flag and int(image_gen_flag.value) == 1:
+                        yield _ToolDone(content=f"[[ User has already generated an image today. Tell them they can generate more in <t:{image_gen_flag.expires_at}:R>. ]]")
+                        return
                     yield Status(":paintbrush: Создаю картинку...")
                     prompt = args.get("prompt")
                     attachment = await self._generateImage(prompt)
-                    yield _ToolDone(content="[[ Image generated successfully. Tell user their image is ready. ]]", attachment=attachment)
+                    if attachment:
+                        yield FinalAnswer(content="Твоя картиночка готова!", attachments=attachment)
+                        if image_gen_flag:
+                            await self.flags.setFlag(ctx.user, "image_gen", value="+1")
+                        else:
+                            await self.flags.setFlag(ctx.user, "image_gen", value="1", expires_at="1д")
+                    else:
+                        yield _ToolDone(content="[[ Image generation failed. Tell user that something went wrong and they should try again later. ]]")
                 else:
-                    yield _ToolDone(content="[[ User does not have permission to generate AI images. They can get that with buying Котик+ or boosting this server. ]]")
+                    yield _ToolDone(content="[[ User does not have permission to generate AI images. They can get that by buying Котик+ or boosting this server. ]]")
             case "user_info":
                 yield Status("🏀 Смотрю твои роли... ахахах причём тут баскетбольный мяч?!")
                 if ctx.user:
@@ -345,11 +360,12 @@ class AIEngine(commands.Cog):
             except openai.RateLimitError as e:
                 print("===================== RATE LIMIT =====================")
                 self.logger.exception("Rate Limit: %s", e)
-                yield AIError("*Пш-ш-ш-ш... Процессор робокотика перегрет от такого количества запросов! Попробуй поговорить с ним через минутку*")
+                yield AIError(f"*Пш-ш-ш-ш... Процессор робокотика перегрелсяи! Попробуй поговорить с ним через <t:{int(datetime.now(timezone.utc).timestamp() + 60)}:R>*")
                 return
             except Exception as e:
                 self.logger.exception("Ошибка нейросети: %s", e)
-                yield AIError("*У Робокотика полетели гайки...*")
+                yield AIError("😞 *У Робокотика полетели гайки...*")
+                return
             else:
                 # print(f""" 
                 # Answer: {response.choices[0].message.content[:100]},
@@ -370,6 +386,9 @@ class AIEngine(commands.Cog):
                         async for event in self._executeTool(tc, Context(user)):
                             if isinstance(event, _ToolDone):
                                 result = event
+                            elif isinstance(event, FinalAnswer):
+                                yield event
+                                return
                             else:
                                 yield event
                         if result and result.attachment:
@@ -384,11 +403,12 @@ class AIEngine(commands.Cog):
                     tool_rounds += 1
                     continue
                 else:
-                    final_answer = answer.content
+                    final_answer = answer.content or " "
                 await self._statistics(response.usage.total_tokens)
                 final_answer = self.sanitize_answer(final_answer)
                 yield FinalAnswer(final_answer, attachment)
                 return
+        yield FinalAnswer("😞 *Слетели гайки... Попробуй спросить меня ещё раз.*")
             
     def sanitize_answer(self, text) -> str:
         text = re.sub(r'<thought>.*?</thought>\s*', '', text, flags=re.DOTALL).strip()

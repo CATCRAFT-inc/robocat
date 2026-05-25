@@ -132,73 +132,25 @@ class Flags:
                         case "-":
                             value = -int(value[1:])
 
-        if value is not None and expires_at:    
-            async with aiosqlite.connect(self.dbpath) as db:
-                await db.execute(
-                    """
-                    INSERT INTO flags (entity_type, entity_id, flag, value, expires_at) VALUES
-                    (:entity_type, :entity_id, :flag, :value, :expires_at) ON CONFLICT(entity_type, entity_id, flag)
-                    DO UPDATE SET value = :value, expires_at = :expires_at
-                    """,
-                    {
-                        "entity_type": entity_type,
-                        "entity_id": entity_id,
-                        "flag": flag,
-                        "value": value,
-                        "expires_at": expires_at,
-                    }
-                )
-                await db.commit()
-            self.logger.info("[ОБНОВЛЕНИЕ] Флаг %s на энтити (%s, ID: %s) создан, expires_at: %s", flag, entity_type, entity_id, expires_at or "Нет")
-        elif value is not None:
-            async with aiosqlite.connect(self.dbpath) as db:
-                await db.execute(
-                    """
-                    INSERT INTO flags (entity_type, entity_id, flag, value) VALUES
-                    (:entity_type, :entity_id, :flag, :value) ON CONFLICT(entity_type, entity_id, flag)
-                    DO UPDATE SET value = :value
-                    """,
-                    {
-                        "entity_type": entity_type,
-                        "entity_id": entity_id,
-                        "flag": flag,
-                        "value": value,
-                    }
-                )
-                await db.commit()
-            self.logger.info("[ОБНОВЛЕНИЕ] На флаге %s на энтити (%s, ID: %s) обновлён value: %s", flag, entity, entity_id, value)
-        elif expires_at:
-            async with aiosqlite.connect(self.dbpath) as db:
-                await db.execute(
-                    """
-                    INSERT INTO flags (entity_type, entity_id, flag, expires_at) VALUES
-                    (:entity_type, :entity_id, :flag, :expires_at) ON CONFLICT(entity_type, entity_id, flag)
-                    DO UPDATE SET expires_at = :expires_at
-                    """,
-                    {
-                        "entity_type": entity_type,
-                        "entity_id": entity_id,
-                        "flag": flag,
-                        "expires_at": expires_at
-                    }
-                )
-                await db.commit()
-            self.logger.info("[ОБНОВЛЕНИЕ] На флаге %s на энтити (%s, ID: %s) обновлён expires_at: %s", flag, entity, entity_id, expires_at)
-        else:
-            async with aiosqlite.connect(self.dbpath) as db:
-                await db.execute(
-                    """
-                    INSERT INTO flags (entity_type, entity_id, flag, expires_at) VALUES
-                    (:entity_type, :entity_id, :flag)
-                    """,
-                    {
-                        "entity_type": entity_type,
-                        "entity_id": entity_id,
-                        "flag": flag,
-                    }
-                )
-                await db.commit()
-            self.logger.info("[ОБНОВЛЕНИЕ] На флаге %s на энтити (%s, ID: %s) создан флаг без значений", flag, entity, entity_id)
+        async with aiosqlite.connect(self.dbpath) as db:
+            await db.execute(
+                """
+                INSERT INTO flags (entity_type, entity_id, flag, value, expires_at)
+                VALUES (:entity_type, :entity_id, :flag, :value, :expires_at)
+                ON CONFLICT(entity_type, entity_id, flag) DO UPDATE SET
+                    value = COALESCE(:value, value),
+                    expires_at = COALESCE(:expires_at, expires_at)
+                """,
+                {
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "flag": flag,
+                    "value": value,
+                    "expires_at": expires_at,
+                }
+            )
+            await db.commit()
+            self.logger.info("[ИЗМЕНЕНИЕ ФЛАГА/НОВЫЙ ФЛАГ] Создан/изменён флаг %s на энтити (%s, ID: %s) со значением %s", flag, entity, entity_id, value)
 
         
 
