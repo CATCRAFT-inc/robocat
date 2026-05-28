@@ -135,7 +135,7 @@ class AIEngine(commands.Cog):
         self.ai_locked_bypass_user_ids = [531208170098655233] # Чтоэто? Я не помню
 
         # AI Info
-        self.max_tokens = 4096
+        self.max_tokens = 1024
         self.has_vision: bool = False # Есть ли у текущей модели просмотр картинок юзера
         self.thinking = None # None, low, medium, high
         self.temperature = 0.6
@@ -149,9 +149,6 @@ class AIEngine(commands.Cog):
         self.bot = bot
         print(self.current_vendor, self.current_model)
         print("[[ AI IS LOCKED AND LOADED! ]]")
-        models = await self.client.models.list()
-        async for model in models:
-            print(model.id)
 
     async def _loadAIData(self):
         VENDORS_PATH = Path(__file__).resolve().parents[2] / "data" / "ai_settings.yaml"
@@ -225,6 +222,7 @@ class AIEngine(commands.Cog):
             "content": self.system_prompt.format(datetime.now().date()) or "You're helpful assistant."
         }]
         for mes in messages:
+            index = 0
             role = ""
             content = ""
             match mes.author:
@@ -234,6 +232,14 @@ class AIEngine(commands.Cog):
                     if mes.attachments:
                         attach_type = mes.attachments[0].content_type
                         content += f"[[ This message contained {attach_type} content, now it's not available ]]"
+                    if mes.components:
+                        try:
+                            content = mes.components[0].content
+                        except:
+                            content = "[[ Message could not be loaded. ]]"
+                    if content.count("-# cut") > 0:
+                        content = "[[ This message was cutted out due to Discord message length limit, but the answer was full. ]]"
+                        content = content.replace("-# cut", "")
                     conversation.append({
                         "role": role,
                         "content": content
@@ -241,7 +247,7 @@ class AIEngine(commands.Cog):
                 case _:
                     role = "user"
                     content = f"({mes.author.display_name})" + mes.clean_content
-                    if mes.attachments:
+                    if mes.attachments and index == 0: # Если это текущее сообщение пользователя - обрабатываем в нём картинку (если есть офк)
                         attachment = mes.attachments[0]
                         if attachment.content_type.split("/")[0] == "image": # image/png image/jpg image/gif(?)
                             processed_attachment = await self._base64Image(attachment)
@@ -260,9 +266,12 @@ class AIEngine(commands.Cog):
                                         }
                                     ]
                             })
+                            index += 1
                         else:
                             content += "[[ User provided attachment that you can't process. Tell them about that politely.]]"
-                    conversation.append({
+                    elif mes.attachments: # Не загружаем в память картинки из всего диалога - дорого по токенам!!!!!!!!1
+                        content += f"[[ This message contained {mes.attachments[0].content_type} content, now it's not available ]]"
+                    conversation.append({ # Так или иначе добавляем в разговор сообщение юзера
                         "role": role,
                         "content": content
                     })
@@ -325,7 +334,9 @@ class AIEngine(commands.Cog):
             case _:
                 yield _ToolDone("[[ Unknown tool called ]]")
         
-    async def generateAnswer(self, conversation: list, user: disnake.Member):
+    async def generateAnswer(self, 
+            conversation: list, 
+            user: disnake.Member):
         if not self.client:
             await self._getNewClient()
         if self.ai_locked:
