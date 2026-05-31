@@ -96,77 +96,77 @@ class AIMessageHandler(commands.Cog):
         allowed_channels = {Channels.for_bots, Channels.secret}
         parent_id = getattr(message.channel, 'parent_id', None)
 
-        if message.channel.id in allowed_channels or parent_id == Channels.for_bots:
-            if self.bot.user.mentioned_in(message) or (message.reference and message.reference.resolved.author == self.bot.user): # Если робокотика пинганули или ответили ему на сообщение
-                if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
-                    await message.reply("*Робокотик остужает свой процессор... Поговори с ним попозже.*") 
-                    return
-                if await self._reachedLimit(message.author):
-                    ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
-                    expires_at = ai_locked_flag.expires_at or None
-                    if expires_at:
-                        expires_at = f"<t:{expires_at}:R>"
-                    else:
-                        expires_at = "попозже"
-                    await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
-                    return
+        #if message.channel.id in allowed_channels or parent_id == Channels.for_bots:
+        if self.bot.user.mentioned_in(message) or (message.reference and message.reference.resolved.author == self.bot.user): # Если робокотика пинганули или ответили ему на сообщение
+            if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
+                await message.reply("*Робокотик остужает свой процессор... Поговори с ним попозже.*") 
+                return
+            if await self._reachedLimit(message.author):
+                ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
+                expires_at = ai_locked_flag.expires_at or None
+                if expires_at:
+                    expires_at = f"<t:{expires_at}:R>"
+                else:
+                    expires_at = "попозже"
+                await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
+                return
 
-                messages = [message]
-                current_msg = message
-                
-                while len(messages) < 5 and current_msg.reference:
-                    try:
-                        prev_msg = current_msg.reference.resolved
-                        if prev_msg is None:
-                            prev_msg = await message.channel.fetch_message(current_msg.reference.message_id)
-                        
-                        messages.insert(0, prev_msg)
-                        
-                        current_msg = prev_msg
-                    except disnake.NotFound:
-                        break
-                
-                conversation = await self.ai_engine.buildConverstaion(messages)
+            messages = [message]
+            current_msg = message
+            
+            while len(messages) < 5 and current_msg.reference:
+                try:
+                    prev_msg = current_msg.reference.resolved
+                    if prev_msg is None:
+                        prev_msg = await message.channel.fetch_message(current_msg.reference.message_id)
+                    
+                    messages.insert(0, prev_msg)
+                    
+                    current_msg = prev_msg
+                except disnake.NotFound:
+                    break
+            
+            conversation = await self.ai_engine.buildConverstaion(messages)
 
 
-                async with message.channel.typing():
-                    thinking_message = None
-                    async for event in self.ai_engine.generateAnswer(conversation, message.author):
-                        if isinstance(event, FinalAnswer):
-                            if len(event.content) > 1999:
-                                chunks = await self._buildLongMessage(event.content)
-                                if thinking_message:
-                                    await thinking_message.delete()
-                                for mes in chunks:
-                                    await message.reply(content="-# cut",components=disnake.ui.Container(
-                                        disnake.ui.TextDisplay(mes)
-                                    ))
+            async with message.channel.typing():
+                thinking_message = None
+                async for event in self.ai_engine.generateAnswer(conversation, message.author):
+                    if isinstance(event, FinalAnswer):
+                        if len(event.content) > 1999:
+                            chunks = await self._buildLongMessage(event.content)
+                            if thinking_message:
+                                await thinking_message.delete()
+                            for mes in chunks:
+                                await message.reply(content="-# cut",components=disnake.ui.Container(
+                                    disnake.ui.TextDisplay(mes)
+                                ))
+                            if event.attachments:
+                                await message.reply(files=event.attachments)
+                        else:
+                            if thinking_message:
                                 if event.attachments:
-                                    await message.reply(files=event.attachments)
-                            else:
-                                if thinking_message:
-                                    if event.attachments:
-                                        await thinking_message.edit(event.content, files=event.attachments)
-                                    else:
-                                        await thinking_message.edit(event.content)
+                                    await thinking_message.edit(event.content, files=event.attachments)
                                 else:
-                                    if event.attachments:
-                                        await message.reply(event.content, files=event.attachments)
-                                    else:
-                                        await message.reply(event.content)
-                        elif isinstance(event, Status):
-                            if thinking_message:
-                                await thinking_message.edit(event.content)
+                                    await thinking_message.edit(event.content)
                             else:
-                                thinking_message = await message.reply(event.content)
-                                
-                        elif isinstance(event, AIError):
-                            if thinking_message:
-                                await thinking_message.edit(event.content)
-                            else:
-                                thinking_message = await message.reply(event.content)
-                            return
-                    await self._limiter(message.author)
+                                if event.attachments:
+                                    await message.reply(event.content, files=event.attachments)
+                                else:
+                                    await message.reply(event.content)
+                    elif isinstance(event, Status):
+                        if thinking_message:
+                            await thinking_message.edit(event.content)
+                        else:
+                            thinking_message = await message.reply(event.content)
+                            
+                    elif isinstance(event, AIError):
+                        if thinking_message:
+                            await thinking_message.edit(event.content)
+                        else:
+                            thinking_message = await message.reply(event.content)
+                        return
+                await self._limiter(message.author)
 
     @commands.slash_command(name='aichat', description="Создать приватный чат с нейросетью")
     @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.booster, Roles.kotikplus)
