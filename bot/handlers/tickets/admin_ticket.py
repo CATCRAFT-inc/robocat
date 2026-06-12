@@ -3,7 +3,7 @@ from disnake.ext import commands
 from disnake import TextInputStyle, GroupOption, RadioGroup
 from disnake.ui import TextDisplay, TextInput, Label, Container, Separator
 
-from bot.flag_system.flag_system import Flags
+from bot.flag_system.flag_system import flags
 from bot.storage import ColorStorage, Roles, Users
 from bot.utils import create_container
 
@@ -64,7 +64,7 @@ class AdminTicket(commands.Cog):
             )
             await bug_thread.send(components=[bug_container])
             await inter.edit_original_response(f"Репорт админам создан! Перейди в него: <#{bug_thread.id}>")
-            await Flags().setFlag(bug_thread,"created_by",inter.author.id)
+            await flags.setFlag(bug_thread,"created_by",inter.author.id)
             await inter.author.send(
                 components=create_container(
                     f"## Тред админ-тикета ''{bug_thread_name}'' создан!",

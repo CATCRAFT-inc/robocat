@@ -4,7 +4,7 @@ from disnake import TextInputStyle, TextInput, StringSelectMenu, SelectOption
 from disnake.ext import commands
 from bot.storage import Buttons, Channels, ColorStorage, FAQStorage, Roles, Users
 from bot.utils import create_container, create_embed
-from bot.flag_system.flag_system import Flags
+from bot.flag_system.flag_system import flags
 
 
 class BugHandler(commands.Cog):
@@ -30,7 +30,7 @@ class BugHandler(commands.Cog):
                     await self.bot.flags.setFlag(inter.author,"create_bug_cooldown", "true","15мин")
                     return
                 elif created_bugs:
-                    await self.bot.flags.setFlag(inter.author, "created_bugs", int(created_bugs[0]) + 1, expires_at="15мин")
+                    await self.bot.flags.setFlag(inter.author, "created_bugs", int(created_bugs.value) + 1, expires_at="15мин")
                 else:
                     await self.bot.flags.setFlag(inter.author, "created_bugs", 1, expires_at="15мин")
                 await inter.response.send_modal(modal=self.BugModal())

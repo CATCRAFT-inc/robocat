@@ -1,7 +1,7 @@
 import disnake
 from disnake.ext import commands
 
-from bot.flag_system.flag_system import Flags
+from bot.flag_system.flag_system import flags
 from bot.storage import Buttons, ColorStorage, Embeds, Roles, Channels
 from bot.utils import create_embed
 

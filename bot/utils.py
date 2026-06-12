@@ -31,9 +31,10 @@ def create_embed(title: str = None,
 
     # Если ебанат поставил не HEX цвет - ставится дефолтный
     if isinstance(color, str):
-        if re.match(string=color, pattern="^(0x|0X|#)?[a-fA-F0-9]+$"):
-            color = disnake.Colour.from_hex()
-        color = disnake.Colour.from_hex("#4f2dbe")
+        try:
+            color = disnake.Colour.from_hex(color)
+        except (ValueError, KeyError):
+            color = disnake.Colour.from_hex("#4f2dbe")
             
 
     embed = disnake.Embed(
@@ -59,10 +60,6 @@ def create_button(label: str,
     :param style: Стиль кнопки
     :return: Кнопку
     """
-    if emoji is not None:
-        emoji = emoji
-    else:
-        emoji = None
     button = disnake.ui.Button(
         label=label,
         custom_id=custom_id,

@@ -20,6 +20,7 @@ class AIMessageHandler(commands.Cog):
 
     async def cog_load(self):
         await self.ai_engine.load_ai(self.bot)
+        self.bot.ai_engine = self.ai_engine
 
     async def _reachedLimit(self, user: disnake.User):
         """Ограничен ли юзер по лимиту запросов нейросети
@@ -97,7 +98,8 @@ class AIMessageHandler(commands.Cog):
         parent_id = getattr(message.channel, 'parent_id', None)
 
         #if message.channel.id in allowed_channels or parent_id == Channels.for_bots:
-        if self.bot.user.mentioned_in(message) or (message.reference and message.reference.resolved.author == self.bot.user): # Если робокотика пинганули или ответили ему на сообщение
+        resolved = message.reference.resolved if message.reference else None
+        if self.bot.user.mentioned_in(message) or (resolved and resolved.author == self.bot.user): # Если робокотика пинганули или ответили ему на сообщение
             if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
                 await message.reply("*Робокотик остужает свой процессор... Поговори с ним попозже.*") 
                 return

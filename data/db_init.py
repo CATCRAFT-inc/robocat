@@ -1,58 +1,34 @@
 import aiosqlite
 import asyncio
+from pathlib import Path
+
+DB_PATH = Path(__file__).parent / "db.sqlite"
+
 
 async def dbInit():
-    async with aiosqlite.connect("db.sqlite") as db:
-        # Создать таблицу
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS left_players (
-                id INTEGER PRIMARY KEY,
-                left_time INTEGER,
-                roles TEXT
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS user_channel_id (
-                user_id INTEGER PRIMARY KEY,
-                channel_id INTEGER
+            CREATE TABLE IF NOT EXISTS flags (
+                entity_type TEXT NOT NULL,
+                entity_id   INTEGER NOT NULL,
+                flag        TEXT NOT NULL,
+                value       TEXT,
+                expires_at  INTEGER,
+                PRIMARY KEY (entity_type, entity_id, flag)
             )
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS stats (
-                user_id INTEGER PRIMARY KEY,
-                bugs_submitted INTEGER,
-                bugs_fixed INTEGER,
-                ideas_submitted INTEGER,
-                ideas_added INTEGER
+                user_id         INTEGER PRIMARY KEY,
+                bugs_submitted  INTEGER DEFAULT 0,
+                bugs_fixed      INTEGER DEFAULT 0,
+                ideas_submitted INTEGER DEFAULT 0,
+                ideas_added     INTEGER DEFAULT 0
             )
         """)
-        await db.execute("CREATE TABLE IF NOT EXISTS flags "
-        "(entity_type TEXT NOT NULL, " \
-        "entity_id INTEGER NOT NULL, " \
-        "flag TEXT NOT NULL, " \
-        "value TEXT, " \
-        "expires_at INTEGER, " \
-        "PRIMARY KEY (entity_type, entity_id, flag))")
         await db.commit()
+    print(f"DB initialised at {DB_PATH}")
 
-async def dbCommit():
-    async with aiosqlite.connect("db.sqlite") as db:
-        await db.execute("CREATE TABLE IF NOT EXISTS flags "
-        "(entity_type TEXT NOT NULL, " \
-        "entity_id INTEGER NOT NULL, " \
-        "flag TEXT NOT NULL, value TEXT, " \
-        "expires_at INTEGER, " \
-        "PRIMARY KEY (entity_type, entity_id, flag))")
-        await db.commit()
-
-async def test():
-    async with aiosqlite.connect("db.sqlite") as db:
-        tables = await db.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = await tables.fetchall()
-        print(tables)
 
 if __name__ == '__main__':
-    #asyncio.run(test())
     asyncio.run(dbInit())
-    #asyncio.run(dbCommit())
-    
