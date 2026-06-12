@@ -29,9 +29,6 @@ class PunishmentsHanlder(commands.Cog):
             await inter.send("Нужно либо указать пользователя, либо прописать команду ответом на его сообщение!", ephemeral=True)
             return
         duration_time = parse_duration(duration)
-        if mute_member is None:
-            await inter.send("Ой-ёй... Не смог найти этого пользователя. Он вышел?", ephemeral=True)
-            return
         if duration_time is None:
             await inter.send("Неправильно указано время!\nПоддерживаемые значения: `1сек`, `1мин`,`1ч`,`1д`,`1н`")
             return
@@ -45,9 +42,6 @@ class PunishmentsHanlder(commands.Cog):
             return
         except Exception as e:
             await inter.send(f'Чето пошло не так: {e}', ephemeral=True)
-            return
-        except disnake.HTTPException as e:
-            await inter.send(f"Чёто не получилось: {e}", ephemeral=True)
             return
         await inter.send(components=disnake.ui.Container(
             disnake.ui.TextDisplay("## Мут!"),
@@ -100,10 +94,6 @@ class PunishmentsHanlder(commands.Cog):
             return
         except Exception as e:
             await ctx.author.send(f'Чето пошло не так: {e}')
-            await ctx.message.delete()
-            return
-        except disnake.HTTPException as e:
-            await ctx.author.send(f"Чёто не получилось: {e}")
             await ctx.message.delete()
             return
         await ctx.send(components=disnake.ui.Container(
