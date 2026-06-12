@@ -1,343 +1,182 @@
-# Robocat Full Rewrite — Design Document
+# Robocat — Bot Design Spec
 
-> **Для нового чата:** Прочитай этот документ полностью перед тем как что-то писать.
-> Запусти `superpowers:writing-plans` для создания плана реализации на основе этого диздока.
-
----
-
-## Цель
-
-Написать того же бота с нуля чистым кодом. Функциональность та же, код — новый, без багов оригинала, с нормальной архитектурой.
-
-**Не меняем:** SQLite (Supabase недоступен без VPN), disnake, логику AI-провайдеров, FM-радио, функционал флагов.
-
-**Меняем:** структуру файлов, паттерны, устраняем все архитектурные проблемы оригинала.
+Discord-бот для Minecraft-сервера (~500 MAU). Стек: **disnake**, **aiosqlite** (SQLite), **openai** (OpenAI-compatible API), **google-genai**, **PyYAML**, **python-dotenv**.
 
 ---
 
-## Известные баги оригинала (не повторять)
+## 1. Flag System
 
-1. `hasFlag` — `float(None)` краш на постоянных флагах (NULL `expires_at`)
-2. `flag_commands.py` — `getAllFlags` вызывался с двумя аргументами вместо одного
-3. `flag_commands.py` — `FlagRow[0]` вместо `FlagRow.value`
-4. `flag_commands.py` — `<t:None:R>` для постоянных флагов
-5. `tickets/engine.py` — `get_member(str)` вместо `get_member(int)` в `/decline`
-6. `tickets/bugs.py` — `FlagRow[0]` вместо `.value`
-7. `ai/handler.py` — `message.reference.resolved.author` без проверки на None
-8. `idiot_check.py` — `AIEngine()` без `load_ai()`, `client = None` → краш
-9. `ai/engine.py` — trailing comma: `conversation = [...],` → tuple вместо list
-10. `punishments.py` — `except HTTPException` после `except Exception` — мёртвый код
-11. `utils.py` — `create_embed` всегда перезаписывает цвет дефолтным
-12. `Flags()` — новый инстанс на каждый вызов в ticket engine вместо синглтона
+Универсальное key-value хранилище, прикреплённое к любой сущности Discord.
 
----
+**Entity types:** `member`, `channel`, `thread`, `category`, `forum`, `abstract` (не Discord-объект, ID=-1).
 
-## Стек
-
-| Что | Чем |
-|-----|-----|
-| Discord | disnake >= 2.12 |
-| База данных | SQLite + aiosqlite |
-| AI | openai (OpenAI-compatible API) + google-genai (embeddings) |
-| Конфиг | python-dotenv + PyYAML |
-| Аудио (FM) | disnake[music] + tinytag |
-| RCON | Кастомный asyncio-клиент (без mcrcon — он обрезает ответы) |
-
----
-
-## Структура файлов
-
-```
-robocat/
-├── main.py                        # точка входа: логирование, загрузка когов, bot.run()
-├── requirements.txt
-├── .env                           # токены, API ключи, RCON
-│
-├── bot/
-│   ├── core/
-│   │   ├── bot.py                 # класс RobocatBot(commands.Bot) с типизированными атрибутами
-│   │   └── config.py              # загрузка env-переменных в датакласс Config
-│   │
-│   ├── flags/
-│   │   ├── models.py              # FlagRow dataclass
-│   │   ├── store.py               # FlagStore — вся логика флагов
-│   │   └── cog.py                 # slash-команды управления флагами (admin only)
-│   │
-│   ├── ai/
-│   │   ├── engine.py              # AIEngine cog: провайдеры, generateAnswer(), idiotCheck()
-│   │   ├── handler.py             # on_message handler, лимиты, /aichat, /aiinfo
-│   │   └── wiki.py                # WikiSearcher: embedding-поиск по индексу
-│   │
-│   ├── tickets/
-│   │   ├── helpers.py             # create_ticket() — общая логика создания приватного треда
-│   │   ├── admin.py               # AdminTicket modal + cog
-│   │   ├── bugs.py                # BugHandler modal + cog
-│   │   └── engine.py              # TicketEngine: on_dropdown, /done, /decline
-│   │
-│   ├── moderation/
-│   │   ├── punishments.py         # /mute, !мут
-│   │   └── rcon.py                # /rcon slash-команда
-│   │
-│   ├── music/
-│   │   └── fm.py                  # CatcraftFM radio cog
-│   │
-│   ├── general/
-│   │   ├── faq.py                 # FAQ prefix-команды
-│   │   ├── roles.py               # RoleSelect on_dropdown
-│   │   ├── events.py              # on_member_join, on_message (новости→тред)
-│   │   └── admin.py               # /send_embed, /delete_until, /test_some_shit
-│   │
-│   ├── utils/
-│   │   ├── time.py                # parse_duration(), duration_to_text()
-│   │   ├── embeds.py              # create_embed(), create_container()
-│   │   └── rcon_client.py         # низкоуровневый async RCON (protocol impl)
-│   │
-│   └── storage.py                 # константы: IDs каналов, ролей, эмодзи, тексты
-│
-└── data/
-    ├── db.sqlite                  # runtime (создаётся при первом запуске)
-    ├── db_init.py                 # скрипт создания схемы
-    ├── ai_settings.yaml           # конфиг AI-провайдеров и системный промпт
-    └── wiki_index.json            # предрассчитанные векторы для wiki-поиска
-```
-
----
-
-## Компоненты
-
-### 1. `bot/core/bot.py` — RobocatBot
-
-Подкласс `commands.Bot` с явно типизированными атрибутами:
-
-```python
-class RobocatBot(commands.Bot):
-    flags: FlagStore
-    config: Config
-    ai_engine: AIEngine | None = None  # устанавливается в AIEngine.cog_load()
-```
-
-`FlagStore` создаётся в `__init__` бота и передаётся в когды через `self.bot.flags`. Никаких глобальных синглтонов.
-
-### 2. `bot/core/config.py` — Config
-
-Датакласс, загружается из env один раз при старте:
-
-```python
-@dataclass
-class Config:
-    discord_token: str
-    dev_token: str
-    rcon_host: str
-    rcon_port: int
-    rcon_password: str
-    failure_webhook: str
-
-    @classmethod
-    def from_env(cls) -> "Config": ...
-```
-
-### 3. `bot/flags/store.py` — FlagStore
-
-Вся логика флагов. Без глобального состояния, без синглтона — инжектируется через `bot.flags`.
-
-**Публичное API:**
-```python
-class FlagStore:
-    def __init__(self, db_path: Path)
-
-    async def get(self, entity, flag: str) -> FlagRow | None
-    async def set(self, entity, flag: str, value=None, expires_at: int | str | None = None)
-    async def has(self, entity, flag: str) -> bool
-    async def get_all(self, entity) -> list[FlagRow]          # только живые, без истёкших
-    async def get_all_with(self, flag: str) -> list[FlagRow]  # все entity с этим флагом
-    async def remove(self, entity, flag: str, reason: str = "")
-```
-
-**Правила реализации:**
-- `get()` — единственное место, где проверяется `is_expired`. Если истёк — удаляет и возвращает `None`.
-- `has()` — вызывает `get()`, проверяет `is not None`. Никакой отдельной логики.
-- `set()` с `+N`/`-N` строкой — арифметика через `int(value)` (Python правильно парсит `"+5"` → 5).
-- UPSERT: `value = :value, expires_at = :expires_at` — без `COALESCE`, чтобы можно было обнулить.
-- `expires_at` как строка (`"1д"`, `"8ч"`) → конвертируется в unix timestamp через `parse_duration`.
-
-**Entity resolution:**
-
-```python
-def _resolve(entity) -> tuple[str, int]:
-    # возвращает (entity_type_str, entity_id)
-    # "abstract" → ("abstract", -1)
-    # disnake.Member → ("member", member.id)
-    # и т.д.
-```
-
-### 4. `bot/flags/models.py` — FlagRow
-
-```python
-@dataclass
-class FlagRow:
-    entity_type: str
-    entity_id: int
-    flag: str
-    value: str | None
-    expires_at: int | None
-
-    @property
-    def is_expired(self) -> bool:
-        return self.expires_at is not None and self.expires_at < int(time.time())
-```
-
-**Важно:** `value` всегда `str | None` — SQLite хранит TEXT. Вызывающий код делает `int(flag.value)` когда нужно число.
-
-### 5. `bot/utils/rcon_client.py` — RCON
-
-Кастомный asyncio-клиент. `mcrcon` не используется — он обрезает ответы сервера.
-
-**Протокол:**
-- Пакет: `[Length 4B LE][RequestID 4B LE signed][Type 4B LE][Payload UTF-8 \x00][\x00]`
-- Типы: AUTH=3, EXECCOMMAND=2, RESPONSE=0
-- Аутентификация: ID=-1 в ответе → неверный пароль
-
-**Сбор многопакетных ответов (sentinel trick):**
-1. Отправить команду (ID=2)
-2. Отправить пустую команду-sentinel (ID=3)
-3. Читать пакеты, накапливать payload с ID=2
-4. Получили ID=3 → конец ответа
-
-**Публичное API:**
-```python
-async def rcon_exec(
-    host: str,
-    port: int,
-    password: str,
-    command: str,
-    timeout: float = 10.0
-) -> str:
-    """Полный ответ сервера, включая многопакетные."""
-```
-
-Никакого контекст-менеджера — просто функция. Каждый вызов открывает соединение, отправляет команду, закрывает.
-
-### 6. `bot/tickets/helpers.py` — Shared ticket logic
-
-В оригинале `admin.py` и `bugs.py` дублировали 40 строк создания тикета. Выносим в хелпер:
-
-```python
-async def create_ticket(
-    channel: disnake.TextChannel | disnake.ForumChannel,
-    author: disnake.Member,
-    title: str,
-    body_container: disnake.ui.Container,
-    notify_roles: list[int],
-    flag_store: FlagStore,
-) -> disnake.Thread:
-    """Создаёт приватный тред, пингует роли, ставит флаг created_by, возвращает тред."""
-```
-
-### 7. `bot/ai/engine.py` — AIEngine
-
-Cog. Основные правила:
-
-- `cog_load`: загружает YAML, создаёт клиент, устанавливает `self.bot.ai_engine = self`
-- `cog_unload`: закрывает клиент
-- `generateAnswer` — async generator: `yield Status(...)`, `yield FinalAnswer(...)`
-- `idiotCheck` — отдельный метод, использует тот же клиент
-- Нет `_buildFinalMessage` (мёртвый метод)
-- `conversation` в `idiotCheck` — список, без trailing comma
-
-### 8. `bot/ai/handler.py` — AIMessageHandler
-
-- `on_message`: проверка `resolved = message.reference.resolved if message.reference else None`
-- Лимит запросов через `bot.flags` (не через `self.ai_engine.flags`)
-- После `cog_load` устанавливает `bot.ai_engine = self.ai_engine`
-
----
-
-## Схема БД
-
+**Схема:**
 ```sql
-CREATE TABLE IF NOT EXISTS flags (
+CREATE TABLE flags (
     entity_type TEXT    NOT NULL,
     entity_id   INTEGER NOT NULL,
     flag        TEXT    NOT NULL,
     value       TEXT,
-    expires_at  INTEGER,
+    expires_at  INTEGER,  -- unix timestamp, NULL = не истекает
     PRIMARY KEY (entity_type, entity_id, flag)
 );
 ```
 
-Других таблиц в активном использовании нет. `stats` и `left_players` из оригинала нигде не используются — не создавать.
+**Dataclass FlagRow:** поля `entity_type, entity_id, flag, value: str|None, expires_at: int|None`. Свойство `is_expired` → `expires_at is not None and expires_at < time()`.
+
+**Класс FlagStore — публичный API:**
+- `get(entity, flag)` → `FlagRow | None` — если флаг истёк, удаляет и возвращает None
+- `set(entity, flag, value=None, expires_at=None)` — UPSERT. `value="+5"` / `value="-3"` → арифметика к текущему. `expires_at` принимает unix int ИЛИ строку (`"1д"`, `"8ч"`)
+- `has(entity, flag)` → `bool` — просто вызывает `get() is not None`
+- `get_all(entity)` → `list[FlagRow]` — только живые, без истёкших
+- `get_all_with(flag)` → `list[FlagRow]` — все entity с этим флагом
+- `remove(entity, flag)`
+
+FlagStore создаётся один раз в `RobocatBot.__init__` и доступен как `bot.flags`.
+
+**Slash-команды (admin-only, ephemeral):**
+- `/flag_member`, `/flag_channel` — set/remove/info/list для member и channel
+- info показывает value и `<t:{expires_at}:R>` (или "Никогда")
+- list показывает все живые флаги entity
 
 ---
 
-## Правила кода
+## 2. AI-система
 
-**Запрещено:**
-- `print()` — только `logger.xxx()`
-- `except:` без типа — всегда `except SomeError as e:`
-- `Flags()` или `FlagStore()` внутри когов — только `self.bot.flags`
-- Голые `try/except Exception` там где можно поймать конкретную ошибку
-- `except SpecificError` после `except Exception` — мёртвый код
-- Нет комментариев объясняющих ЧТО — только ПОЧЕМУ (если неочевидно)
+### Engine
 
-**Обязательно:**
-- Аннотации типов на всех публичных методах
-- `cog_load` / `cog_unload` для инициализации/очистки ресурсов
-- Логгер в каждом cog: `self.logger = logging.getLogger("robocat.<name>")`
-- `ephemeral=True` для всех ошибок пользователю
-
----
-
-## Ветка
-
-Работаем на новой ветке `rewrite` от `master` (не от `rework`):
-
-```bash
-git checkout master
-git checkout -b rewrite
+Cog. Загружает провайдеров из `data/ai_settings.yaml`:
+```yaml
+providers:
+  - name: groq
+    base_url: ...
+    api_key_env: GROQ_API_KEY
+    model: ...
+  - name: openrouter
+    ...
+system_prompt: "..."
 ```
 
-Ветка `rework` остаётся как референс — там все баги уже исправлены, можно подсматривать код.
+При rate limit (429) — ротация к следующему провайдеру.
+
+**`generateAnswer(conversation: list[dict])` — async generator:**
+- `yield StatusUpdate(text)` — промежуточные статусы (редактирует сообщение)
+- `yield FinalAnswer(text)` — финальный ответ
+
+`bot.ai_engine` устанавливается в `AIEngine.cog_load`.
+
+### Handler (on_message)
+
+Отвечает если: бот упомянут / ответ на сообщение бота / в AI-канале.
+
+Лимит запросов через `bot.flags`: флаг `ai_requests` на member с expires_at = конец дня. Если `int(flag.value) >= MAX` → отказ.
+
+Ответ: сначала "обрабатываю...", потом редактирует через статусы из генератора.
+
+### Wiki Search
+
+`WikiSearcher` — embedding-поиск по `data/wiki_index.json`. Используется в контексте ответа на вопросы о сервере.
+
+### Idiot Check (on_message listener)
+
+Regex pre-filter на возраст (паттерны "мне X лет", "X years old"). При совпадении → LLM structured output:
+```python
+class Idiot(BaseModel):
+    isIdiot: bool
+```
+Если `isIdiot=True` → предупреждение в канале. Использует `bot.ai_engine`.
 
 ---
 
-## Что переносится без изменений
+## 3. Ticket System
 
-- `bot/music/fm.py` (CatcraftFM) — написана хорошо, только переносим в новое место
-- `data/ai_settings.yaml` — структура не меняется
-- `data/wiki_index.json` — не трогаем
-- `bot/storage.py` — IDs каналов и ролей, только переносим
-- Regex в `IdiotCheck` — правильный, переносим как есть
+**Общая механика:** при открытии тикета создаётся приватный тред в нужном канале. Флаг `created_by` (entity=тред, value=str(member.id)) хранит автора.
 
----
+**Типы тикетов:**
 
-## Порядок реализации (для writing-plans)
+### Admin Ticket (обращение к администрации)
+- Dropdown в спец. канале → Modal с полем "опишите проблему"
+- После submit: создаётся приватный тред, пингуются роли `admin` + `st_admin`, кнопки "Закрыть" / "Отклонить"
 
-Рекомендуемый порядок задач:
+### Bug Report
+- Аналогично: dropdown → modal ("заголовок" + "описание" + "как воспроизвести")
+- Тред в канале баг-репортов, пинг роли `dev`
 
-1. **Scaffold** — структура папок, `main.py`, `core/bot.py`, `core/config.py`, `storage.py`
-2. **FlagStore** — `flags/models.py`, `flags/store.py`, `data/db_init.py`
-3. **Utils** — `utils/time.py`, `utils/embeds.py`, `utils/rcon_client.py`
-4. **Flag commands** — `flags/cog.py`
-5. **Moderation** — `moderation/punishments.py`
-6. **General** — `general/faq.py`, `general/roles.py`, `general/events.py`, `general/admin.py`
-7. **Tickets** — `tickets/helpers.py`, `tickets/bugs.py`, `tickets/admin.py`, `tickets/engine.py`
-8. **RCON** — `moderation/rcon.py` (использует `utils/rcon_client.py`)
-9. **AI** — `ai/wiki.py`, `ai/engine.py`, `ai/handler.py`
-10. **FM Radio** — `music/fm.py`
-11. **Финальная проверка** — `main.py` загружает все коги, синтаксис, структура
-
-Задачи 3-6 можно делать параллельно агентами (нет зависимостей между собой).
-Задачи 7-10 параллельно после задач 2-3.
+**TicketEngine Cog (on_dropdown):**
+- `/done` — закрывает тред (архивирует), доступно только ролям `admin`/`st_admin`/`dev`
+- `/decline` — отклоняет тред, уведомляет автора (читает `created_by` флаг → `int(flag.value)` → `guild.get_member()`)
 
 ---
 
-## Чеклист перед мержем
+## 4. Moderation
 
-- [ ] Все 27 `.py` файлов проходят `python3 -m ast`
-- [ ] Нет `print()` вне `main.py`
-- [ ] Нет `Flags()` / `FlagStore()` внутри когов
-- [ ] Нет `except:` без типа
-- [ ] `bot.flags` инжектируется через `RobocatBot.__init__`
-- [ ] `bot.ai_engine` устанавливается в `AIEngine.cog_load`
-- [ ] Все slash-команды возвращают ответ (нет зависших interaction)
-- [ ] RCON использует sentinel-trick для полных ответов
+### Mute (/mute и !мут)
+- Slash: `/mute member duration reason`
+- Prefix: `!мут @member 1ч причина`
+- `parse_duration("1ч")` → секунды. Применяет `member.timeout(duration)`
+- DM участнику с причиной и сроком
+
+### RCON (/rcon)
+Admin-only, ephemeral. Отправляет команду на Minecraft-сервер, возвращает полный ответ.
+
+**Кастомный asyncio RCON-клиент** (без сторонних библиотек):
+
+Протокол: `[Length 4B LE][RequestID 4B signed LE][Type 4B LE][Payload UTF-8 \x00\x00]`
+Типы: AUTH=3, EXECCOMMAND=2, RESPONSE=0.
+
+**Sentinel trick для полных ответов:**
+1. Auth (type=3)
+2. Отправить команду (ID=CMD_ID, type=2)
+3. Отправить пустую команду-sentinel (ID=SENTINEL_ID, type=2)
+4. Читать пакеты: накапливать payload где ID==CMD_ID, стоп когда пришёл ID==SENTINEL_ID
+5. Вернуть конкатенированный ответ
+
+```python
+async def rcon_exec(host, port, password, command, timeout=10.0) -> str: ...
+```
+
+Env: `RCON_HOST`, `RCON_PORT` (default 25575), `RCON_PASSWORD`.
+
+---
+
+## 5. CatcraftFM Radio
+
+Cog для воспроизведения интернет-радио в голосовом канале.
+
+- `/fm play <url>` — подключиться и играть через `FFmpegPCMAudio`
+- `/fm stop` — остановить и выйти
+- Vote-skip: `/fm skip` — нужен порог голосов (например, >50% слушателей)
+- Reconnect supervisor: при разрыве соединения — exponential backoff (1s, 2s, 4s... до 60s), потом переподключение
+
+---
+
+## 6. General
+
+### FAQ
+Prefix-команды: `!правила`, `!ip`, `!donate` и т.д. Возвращают embed с текстом из `storage.py`.
+
+### Role Select (on_dropdown)
+Dropdown с ролями (цвет ника, уведомления и т.д.) — toggle-логика: если роль есть → снять, нет → дать.
+
+### Events
+- `on_member_join` — приветственное DM
+- `on_message` в канале новостей → автоматически создаёт тред к сообщению
+
+### Admin Commands
+- `/send_embed channel` — Modal для создания embed (title, description, color, image)
+- `/delete_until message_id` — удалить сообщения в канале до указанного ID
+
+---
+
+## 7. Bot Structure
+
+```python
+class RobocatBot(commands.Bot):
+    flags: FlagStore        # создаётся в __init__
+    config: Config          # загружается из env
+    ai_engine: AIEngine | None = None  # устанавливается в AIEngine.cog_load
+```
+
+Логгер в каждом cog: `logging.getLogger("robocat.<name>")`. Нет `print()`. Нет голых `except:`.
+
+`storage.py` — все Discord ID (каналы, роли, эмодзи) как именованные константы.
