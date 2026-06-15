@@ -2,6 +2,7 @@ import re
 
 import asyncio
 import random
+import time
 
 import disnake
 from disnake.ext import commands, tasks
@@ -11,9 +12,9 @@ import os
 import sys
 
 from bot import storage
-from bot.flag_system.flag_system import Flags
+from bot.flag_system.flag_system import flags
 from bot.utils import create_embed
-from bot.storage import Messages
+from bot.storage import Messages, Channels
 
 os.environ["PYTHONIOENCODING"] = "UTF-8"
 
@@ -29,7 +30,6 @@ bot = commands.Bot(
     test_guilds=[1138425078493753366],
     owner_id=531208170098655233
 )
-bot.flags = Flags()
 
 @bot.event
 async def on_ready():
@@ -72,8 +72,18 @@ async def on_member_join(inter: disnake.Member):
     Кидает случайное сообщение о входе юзера и выдаёт роли, если они были
     """
     if inter.guild.id == 1138425078493753366:
-        channel = bot.get_channel(1138425079231938683) # TODO: убрать хардкод
-        await channel.send(random.choice(Messages.join).replace("%1", f"<@{inter.id}>"))
+        channel = bot.get_channel(Channels.welcome)
+        if await flags.getFlag(inter, "left"):
+            await channel.send(random.choice(Messages.join_again).replace("%1", f"<@{inter.id}>"))
+            await flags.removeFlag(inter,"left","Зашёл обратно")
+        else:
+            await channel.send(random.choice(Messages.join).replace("%1", f"<@{inter.id}>"))
+
+@bot.listen()
+async def on_raw_member_remove(payload: disnake.RawGuildMemberRemoveEvent):
+    if payload.user:
+        await flags.setFlag(payload.user, "left", int(time.time()))
+
 
 # #TODO: не работает?
 # @bot.listen()
