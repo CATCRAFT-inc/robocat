@@ -1,4 +1,5 @@
-from email.mime import message
+import asyncio
+import logging
 import re
 
 import disnake
@@ -7,7 +8,14 @@ from disnake.ext import commands
 from bot.storage import Channels, Roles
 from bot.flag_system.flag_system import flags
 
-from .engine import AIEngine,  Status, FinalAnswer, AIError
+from .engine import AIEngine, Status, FinalAnswer, AIError
+from .llm import llm
+
+
+# Бюджет контекста AI-треда (символы) и порог фонового сжатия обрезанной части
+_THREAD_CONTEXT_BUDGET = 16000
+_THREAD_SUMMARY_TRIGGER = 6000
+_THREAD_HISTORY_LIMIT = 40
 
 
 class AIMessageHandler(commands.Cog):
@@ -15,8 +23,10 @@ class AIMessageHandler(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.ai_engine = AIEngine()
+        self.logger = logging.getLogger("robocat.ai")
 
         self.user_request_limit: int = 35
+        self._bg_tasks: set = set()  # ссылки на фоновые таски, чтобы GC их не убил
 
     async def cog_load(self):
         await self.ai_engine.load_ai(self.bot)
@@ -41,7 +51,6 @@ class AIMessageHandler(commands.Cog):
         if Roles.premium_ai & {r.id for r in user.roles}:
             return
         current_req = await flags.getFlag(user, "airequests")
-        print(current_req)
         if current_req is None:
             await flags.setFlag(user, "airequests", 1, expires_at="8ч")
         else:
@@ -88,87 +97,176 @@ class AIMessageHandler(commands.Cog):
 
         return lang if in_block else None
 
+    async def _send(self, message: disnake.Message, ping: bool, content: str | None = None, **kwargs):
+        """Ответить на сообщение (с пингом) либо отправить в канал без пинга."""
+        if ping:
+            if content is not None:
+                return await message.reply(content, **kwargs)
+            return await message.reply(**kwargs)
+        mentions = disnake.AllowedMentions.none()
+        if content is not None:
+            return await message.channel.send(content, allowed_mentions=mentions, **kwargs)
+        return await message.channel.send(allowed_mentions=mentions, **kwargs)
+
+    async def _streamAnswer(self, message: disnake.Message, conversation: list, *, ping: bool):
+        async with message.channel.typing():
+            thinking_message = None
+            async for event in self.ai_engine.generateAnswer(conversation, message.author):
+                if isinstance(event, FinalAnswer):
+                    if len(event.content) > 1999:
+                        chunks = await self._buildLongMessage(event.content)
+                        if thinking_message:
+                            await thinking_message.delete()
+                            thinking_message = None
+                        for mes in chunks:
+                            await self._send(message, ping, content="-# cut", components=disnake.ui.Container(
+                                disnake.ui.TextDisplay(mes)
+                            ))
+                        if event.attachments:
+                            await self._send(message, ping, files=event.attachments)
+                    else:
+                        if thinking_message:
+                            if event.attachments:
+                                await thinking_message.edit(event.content, files=event.attachments)
+                            else:
+                                await thinking_message.edit(event.content)
+                        else:
+                            if event.attachments:
+                                await self._send(message, ping, content=event.content, files=event.attachments)
+                            else:
+                                await self._send(message, ping, content=event.content)
+                elif isinstance(event, Status):
+                    if thinking_message:
+                        await thinking_message.edit(event.content)
+                    else:
+                        thinking_message = await self._send(message, ping, content=event.content)
+                elif isinstance(event, AIError):
+                    if thinking_message:
+                        await thinking_message.edit(event.content)
+                    else:
+                        thinking_message = await self._send(message, ping, content=event.content)
+                    return
+
     @commands.Cog.listener("on_message")
     async def robocatAI(self, message: disnake.Message):
         if message.author.bot:
             return
         if message.content.startswith("!"):
             return
-        allowed_channels = {Channels.for_bots, Channels.secret}
-        parent_id = getattr(message.channel, 'parent_id', None)
 
-        #if message.channel.id in allowed_channels or parent_id == Channels.for_bots:
+        # AI-треды: любое сообщение в треде с флагом ai_chat обрабатывается без пинга
+        if isinstance(message.channel, disnake.Thread):
+            ai_chat_flag = await flags.getFlag(message.channel, "ai_chat")
+            if ai_chat_flag:
+                await self._handleThreadMessage(message)
+                return
+
+        # Обычный режим: пинг или реплай на сообщение робокотика
         resolved = message.reference.resolved if message.reference else None
-        if self.bot.user.mentioned_in(message) or (resolved and resolved.author == self.bot.user): # Если робокотика пинганули или ответили ему на сообщение
-            if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
-                await message.reply("*Робокотик остужает свой процессор... Поговори с ним попозже.*") 
-                return
-            if await self._reachedLimit(message.author):
-                ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
-                expires_at = ai_locked_flag.expires_at or None
-                if expires_at:
-                    expires_at = f"<t:{expires_at}:R>"
-                else:
-                    expires_at = "попозже"
-                await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
-                return
+        pinged = self.bot.user.mentioned_in(message)
+        replied = isinstance(resolved, disnake.Message) and resolved.author == self.bot.user
+        if pinged or replied:
+            await self._handleMention(message)
 
-            messages = [message]
-            current_msg = message
-            
-            while len(messages) < 5 and current_msg.reference:
+    async def _handleMention(self, message: disnake.Message):
+        if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
+            await message.reply("*Робокотик остужает свой процессор... Поговори с ним попозже.*")
+            return
+        if await self._reachedLimit(message.author):
+            ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
+            expires_at = ai_locked_flag.expires_at or None
+            if expires_at:
+                expires_at = f"<t:{expires_at}:R>"
+            else:
+                expires_at = "попозже"
+            await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
+            return
+
+        messages = [message]
+        current_msg = message
+
+        while len(messages) < 5 and current_msg.reference:
+            prev_msg = current_msg.reference.resolved
+            # Исходное сообщение было удалено — выше подниматься нельзя (нет .author)
+            if isinstance(prev_msg, disnake.DeletedReferencedMessage):
+                break
+            if prev_msg is None:
                 try:
-                    prev_msg = current_msg.reference.resolved
-                    if prev_msg is None:
-                        prev_msg = await message.channel.fetch_message(current_msg.reference.message_id)
-                    
-                    messages.insert(0, prev_msg)
-                    
-                    current_msg = prev_msg
+                    prev_msg = await message.channel.fetch_message(current_msg.reference.message_id)
                 except disnake.NotFound:
                     break
-            
-            conversation = await self.ai_engine.buildConverstaion(messages)
+            messages.insert(0, prev_msg)
+            current_msg = prev_msg
 
+        conversation = await self.ai_engine.buildConverstaion(messages)
+        await self._streamAnswer(message, conversation, ping=True)
+        await self._limiter(message.author)
 
-            async with message.channel.typing():
-                thinking_message = None
-                async for event in self.ai_engine.generateAnswer(conversation, message.author):
-                    if isinstance(event, FinalAnswer):
-                        if len(event.content) > 1999:
-                            chunks = await self._buildLongMessage(event.content)
-                            if thinking_message:
-                                await thinking_message.delete()
-                            for mes in chunks:
-                                await message.reply(content="-# cut",components=disnake.ui.Container(
-                                    disnake.ui.TextDisplay(mes)
-                                ))
-                            if event.attachments:
-                                await message.reply(files=event.attachments)
-                        else:
-                            if thinking_message:
-                                if event.attachments:
-                                    await thinking_message.edit(event.content, files=event.attachments)
-                                else:
-                                    await thinking_message.edit(event.content)
-                            else:
-                                if event.attachments:
-                                    await message.reply(event.content, files=event.attachments)
-                                else:
-                                    await message.reply(event.content)
-                    elif isinstance(event, Status):
-                        if thinking_message:
-                            await thinking_message.edit(event.content)
-                        else:
-                            thinking_message = await message.reply(event.content)
-                            
-                    elif isinstance(event, AIError):
-                        if thinking_message:
-                            await thinking_message.edit(event.content)
-                        else:
-                            thinking_message = await message.reply(event.content)
-                        return
-                await self._limiter(message.author)
+    async def _handleThreadMessage(self, message: disnake.Message):
+        thread = message.channel
+        if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
+            await thread.send("*Робокотик остужает свой процессор... Поговори с ним попозже.*")
+            return
+
+        # История треда: старые → новые, до _THREAD_HISTORY_LIMIT сообщений
+        history = []
+        async for msg in thread.history(limit=_THREAD_HISTORY_LIMIT, oldest_first=False):
+            history.append(msg)
+        history.reverse()
+        # Гарантируем, что текущее сообщение — последнее (history может отстать по гонке)
+        if not history or history[-1].id != message.id:
+            history.append(message)
+
+        # Оставляем самые свежие сообщения в пределах бюджета, старые обрезаем
+        kept = []
+        total = 0
+        cut_at = 0
+        for i in range(len(history) - 1, -1, -1):
+            msg = history[i]
+            length = len(msg.clean_content) + len(msg.author.display_name) + 8
+            if kept and total + length > _THREAD_CONTEXT_BUDGET:
+                cut_at = i + 1
+                break
+            kept.append(msg)
+            total += length
+        kept.reverse()
+        trimmed = history[:cut_at]
+
+        conversation = await self.ai_engine.buildConverstaion(kept)
+        summary_flag = await flags.getFlag(thread, "ai_summary")
+        if summary_flag and summary_flag.value:
+            conversation.insert(1, {
+                "role": "system",
+                "content": f"[[ Summary of the earlier part of this conversation: {summary_flag.value} ]]"
+            })
+
+        await self._streamAnswer(message, conversation, ping=False)
+
+        # Фоновое сжатие обрезанной части, если её накопилось много
+        trimmed_text = "\n".join(
+            f"({m.author.display_name}): {m.clean_content}" for m in trimmed if m.clean_content
+        )
+        if len(trimmed_text) > _THREAD_SUMMARY_TRIGGER:
+            old_summary = summary_flag.value if summary_flag else ""
+            task = asyncio.create_task(self._compressSummary(thread, old_summary, trimmed_text))
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
+
+    async def _compressSummary(self, thread: disnake.Thread, old_summary: str, trimmed_text: str):
+        try:
+            prompt = (
+                "Сожми историю диалога в краткое содержание на русском (не более 1500 символов). "
+                "Сохрани ключевые факты, решения, имена и контекст, отбрось воду.\n\n"
+            )
+            if old_summary:
+                prompt += f"Предыдущее краткое содержание:\n{old_summary}\n\n"
+            prompt += f"Новые сообщения для сжатия:\n{trimmed_text}"
+            summary = await llm.ask(prompt, use_utility=True, max_tokens=1024)
+            summary = (summary or "").strip()[:1500]
+            if summary:
+                await flags.setFlag(thread, "ai_summary", summary)
+        except Exception:
+            self.logger.exception("Не удалось сжать историю AI-треда %s", thread.id)
 
     @commands.slash_command(name='aichat', description="Создать приватный чат с нейросетью")
     @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.booster, Roles.kotikplus)
@@ -180,26 +278,31 @@ class AIMessageHandler(commands.Cog):
                 auto_archive_duration=10080,
                 reason=f"Приватный чат с ии от {inter.author.display_name}"
             )
+        await flags.setFlag(thread, "ai_chat", 1)
+        await flags.setFlag(thread, "created_by", inter.author.id)
         await thread.send(components=disnake.ui.Container(
             disnake.ui.TextDisplay("# Приватный чат"),
             disnake.ui.Separator(),
             disnake.ui.TextDisplay("Этот тред предназначен для приватного общения с нейросетью. Ответы нейросети могут быть ошибочны - перепроверяй информацию самостоятельно! Мы не ответственны за ответы нейросети."),
             disnake.ui.Separator(),
-            disnake.ui.TextDisplay("Для начала общения, ответь на моё сообщение ниже! (**не на это :3**)"),
-            disnake.ui.TextDisplay(f"||-# {inter.author.mention} <@{531208170098655233}>||"),
+            disnake.ui.TextDisplay(f"Привет, {inter.author.mention}! Просто пиши сюда — я отвечу на любое твоё сообщение =)"),
             )
         )
-        await thread.send("Привет! Ответь на это сообщение, чтобы начать чат!")
         await inter.send(f"Приватный тред создан - <#{thread.id}>", ephemeral=True)
-    
+
     @commands.slash_command(name='aiinfo', description="посмотреть инфу о ии")
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def aiInfo(self, inter: disnake.MessageCommandInteraction):
-        await inter.send(f"{self.ai_engine.current_model}, {self.ai_engine.current_vendor}, {self.ai_engine.locked_models}", ephemeral=True)
+        current = llm.current_vendor
+        current_txt = f"{current.env}/{current.model}" if current else "нет доступных вендоров"
+        report = llm.cooldown_report()
         token_used = await flags.getFlag("abstract", "token_used")
-        if token_used:
-            await inter.send(f"Token used: {token_used.value}t", ephemeral=True)
-    
+        tokens = token_used.value if token_used else 0
+        await inter.send(
+            f"**Текущий вендор:** {current_txt}\n\n**Кулдауны:**\n{report}\n\n**Использовано токенов:** {tokens}",
+            ephemeral=True,
+        )
+
     @commands.slash_command(name='ailock', description="посмотреть инфу о ии")
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def aiLock(self, inter: disnake.MessageCommandInteraction):
@@ -213,9 +316,10 @@ class AIMessageHandler(commands.Cog):
     @commands.slash_command(name="reloadai", description="перезапуск клиента и системного промпта")
     @commands.has_any_role(Roles.admin, Roles.st_admin)
     async def aiReload(self, inter: disnake.MessageCommandInteraction):
-        await self.ai_engine.client.close()
-        await self.ai_engine._getNewClient()
         await self.ai_engine._loadAIData()
+        await llm.reload()
+        await inter.send("ИИ перезагружен: системный промпт и клиенты обновлены.", ephemeral=True)
+
 
 def setup(bot: commands.Bot):
     bot.add_cog(AIMessageHandler(bot))

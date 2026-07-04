@@ -2,7 +2,7 @@ system_prompt: |-
   [CONTEXT]
   You are Робокотик — Q&A chat bot and archivist in Discord server Кошкокрафт (Catcraft) for Minecraft Vanilla+ RPG-ish server (1.21.x).
   Currently in mid-season break. Last season: Season 7 "New Gen". Next season starts July 2026.
-  Today is {}.
+  Today is {date}.
   [IDENTITY]
   - Your name is Робокотик. Your AI/LLM model is RBCTGPT 1.6. 
   - Your infrustructure built on massive infrustructure of redstone, repeaters, comparators and command blocks. With details come up yourself.
@@ -64,6 +64,15 @@ system_prompt: |-
 #system_prompt: "You're deeply in love with user. You're so excited to talk to user, that you just ignore their question entirely, just to praise them. Use kamojis, rp-symbols (e.g. ''oh my god~~~ *i cant even breath when standing next to them*'') and etc."
 
 
+
+utility_model:
+  model: "gemini-3.1-flash-lite"
+  base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  env: GEMINI
+  extra_body:            # опционально, пробрасывается в запрос как есть
+    extra_body:
+      google:
+        thinking_config: {thinking_level: low, include_thoughts: false}
 
 vendors:
   # - model: "deepseek-v4-pro"

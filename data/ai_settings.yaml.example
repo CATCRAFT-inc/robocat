@@ -1,5 +1,15 @@
 system_prompt: |-
-  Your system prompt here
+  Your system prompt here. Today is {date}.
+
+# Утилитарная модель для структурного вывода (llm.parse) и фоновых задач (llm.ask use_utility=True)
+utility_model:
+  model: utility-model-1.2.3-name
+  base_url: https://api.base.url
+  env: ENV_KEY
+  extra_body:            # опционально, пробрасывается в запрос как есть
+    extra_body:
+      google:
+        thinking_config: {thinking_level: low, include_thoughts: false}
 
 vendors:
   - model: model-1.2.3-name

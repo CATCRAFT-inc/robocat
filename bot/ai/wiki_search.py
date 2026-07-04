@@ -1,12 +1,8 @@
 import json
-import math
-import os
 from pathlib import Path
-from dotenv import load_dotenv
-from google.genai import Client, types
 
-load_dotenv()
-client = Client(api_key=os.getenv("GEMINI"))
+from .embeddings import embed, cosine
+
 
 class WikiSearcher:
     def __init__(self):
@@ -20,26 +16,11 @@ class WikiSearcher:
             self._index = json.loads(self._index_file.read_text(encoding="utf-8"))
         return self._index
 
-    def _cosine(self, a, b) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = math.sqrt(sum(x**2 for x in a))
-        norm_b = math.sqrt(sum(x**2 for x in b))
-        return dot / (norm_a * norm_b)
-
-    def search(self, query: str, top_k: int = 5) -> list[dict]:
-        result = client.models.embed_content(
-            model="gemini-embedding-001",
-            contents=query,
-            config=types.EmbedContentConfig(
-                task_type="RETRIEVAL_QUERY",
-                output_dimensionality=768,
-            ),
-        )
-        query_vec = result.embeddings[0].values
-
+    async def search(self, query: str, top_k: int = 5) -> list[dict]:
+        query_vec = await embed(query)
         scored = sorted(
             self.index,
-            key=lambda c: self._cosine(query_vec, c["vector"]),
+            key=lambda c: cosine(query_vec, c["vector"]),
             reverse=True,
         )
         return scored[:top_k]
@@ -52,5 +33,6 @@ class WikiSearcher:
                 f"[Источник: {r['url']}]\n{r['text']}"
             )
         return "\n\n---\n\n".join(parts)
+
 
 wiki = WikiSearcher()
