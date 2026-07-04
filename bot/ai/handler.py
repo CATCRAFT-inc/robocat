@@ -1,9 +1,10 @@
 import asyncio
+import datetime
 import logging
 import re
 
 import disnake
-from disnake.ext import commands
+from disnake.ext import commands, tasks
 
 from bot.storage import Channels, Roles
 from bot.flag_system.flag_system import flags
@@ -16,6 +17,10 @@ from .llm import llm
 _THREAD_CONTEXT_BUDGET = 16000
 _THREAD_SUMMARY_TRIGGER = 6000
 _THREAD_HISTORY_LIMIT = 40
+
+_MSK = datetime.timezone(datetime.timedelta(hours=3))
+# Все флаги AI-треда — снимаем их скопом при удалении/очистке
+_AICHAT_FLAGS = ("ai_chat", "ai_summary", "created_by", "ai_delete_warn")
 
 
 class AIMessageHandler(commands.Cog):
@@ -31,6 +36,10 @@ class AIMessageHandler(commands.Cog):
     async def cog_load(self):
         await self.ai_engine.load_ai(self.bot)
         self.bot.ai_engine = self.ai_engine
+        self.aiChatCleaner.start()
+
+    def cog_unload(self):
+        self.aiChatCleaner.cancel()
 
     async def _reachedLimit(self, user: disnake.User):
         """Ограничен ли юзер по лимиту запросов нейросети
@@ -286,9 +295,102 @@ class AIMessageHandler(commands.Cog):
             disnake.ui.TextDisplay("Этот тред предназначен для приватного общения с нейросетью. Ответы нейросети могут быть ошибочны - перепроверяй информацию самостоятельно! Мы не ответственны за ответы нейросети."),
             disnake.ui.Separator(),
             disnake.ui.TextDisplay(f"Привет, {inter.author.mention}! Просто пиши сюда — я отвечу на любое твоё сообщение =)"),
+            disnake.ui.ActionRow(
+                disnake.ui.Button(
+                    style=disnake.ButtonStyle.danger,
+                    label="🚪 Завершить чат",
+                    custom_id="AICHAT_CLOSE",
+                )
+            ),
             )
         )
         await inter.send(f"Приватный тред создан - <#{thread.id}>", ephemeral=True)
+
+    @commands.Cog.listener("on_button_click")
+    async def aiChatClose(self, inter: disnake.MessageInteraction):
+        if inter.component.custom_id != "AICHAT_CLOSE":
+            return
+        thread = inter.channel
+        ai_chat_flag = await flags.getFlag(thread, "ai_chat") if isinstance(thread, disnake.Thread) else None
+        if ai_chat_flag is None:
+            await inter.response.send_message("Этот тред не похож на AI-чат 🤔", ephemeral=True)
+            return
+
+        # Право закрыть: создатель треда (флаг created_by) или админ/модератор
+        created_by = await flags.getFlag(thread, "created_by")
+        is_owner = created_by is not None and str(inter.author.id) == str(created_by.value)
+        allowed_roles = {Roles.admin, Roles.st_admin, Roles.moderator}
+        has_role = any(r.id in allowed_roles for r in getattr(inter.author, "roles", []))
+        if not (is_owner or has_role):
+            await inter.response.send_message(
+                "Завершить чат может только его создатель или админ/модератор.", ephemeral=True
+            )
+            return
+
+        await inter.response.send_message("Чат завершён! Удаляю тред... 👋", ephemeral=True)
+        for f in _AICHAT_FLAGS:
+            await flags.removeFlag(thread, f)
+        try:
+            await thread.delete()
+        except disnake.HTTPException:
+            self.logger.exception("Не удалось удалить AI-тред %s", thread.id)
+
+    @tasks.loop(time=datetime.time(hour=12, tzinfo=_MSK))  # 12:00 МСК
+    async def aiChatCleaner(self):
+        """Раз в сутки чистит зависшие AI-треды: за день до удаления пингует
+        создателя, а если тишина продолжается — удаляет тред и его флаги."""
+        entities = await flags.getAllWithFlag("ai_chat")
+        if not entities:
+            return
+        now = disnake.utils.utcnow()
+        for entity_type, eid, _exp in entities:
+            if entity_type != "thread":
+                continue
+            try:
+                thread = self.bot.get_channel(eid)
+                if thread is None:
+                    try:
+                        thread = await self.bot.fetch_channel(eid)
+                    except (disnake.NotFound, disnake.Forbidden):
+                        # тред уже удалён/недоступен — вычищаем осиротевшие флаги
+                        for f in _AICHAT_FLAGS:
+                            await flags._removeFlagRaw("thread", eid, f)
+                        continue
+
+                last_id = thread.last_message_id or thread.id
+                idle = now - disnake.utils.snowflake_time(last_id)
+                warn = await flags.getFlag(thread, "ai_delete_warn")
+
+                if warn is not None:
+                    warn_id = int(warn.value)
+                    if warn_id == last_id:
+                        # с момента предупреждения никто не написал
+                        if now - disnake.utils.snowflake_time(warn_id) >= datetime.timedelta(hours=23):
+                            try:
+                                await thread.delete()
+                            except disnake.HTTPException:
+                                self.logger.exception("Не удалось удалить AI-тред %s", eid)
+                            for f in _AICHAT_FLAGS:
+                                await flags.removeFlag(thread, f)
+                    else:
+                        # юзер написал после предупреждения — отсчёт заново
+                        await flags.removeFlag(thread, "ai_delete_warn")
+                elif idle >= datetime.timedelta(days=6):
+                    creator = await flags.getFlag(thread, "created_by")
+                    mention = f"<@{creator.value}> " if creator else ""
+                    msg = await thread.send(
+                        f"{mention}⏳ В этом чате тихо уже 6 дней — завтра я удалю тред. "
+                        "Напиши что-нибудь, если хочешь его сохранить!",
+                        allowed_mentions=disnake.AllowedMentions(users=True),
+                    )
+                    await flags.setFlag(thread, "ai_delete_warn", msg.id)
+            except Exception:
+                self.logger.exception("Ошибка при авто-очистке AI-треда %s", eid)
+                continue
+
+    @aiChatCleaner.before_loop
+    async def beforeAiChatCleaner(self):
+        await self.bot.wait_until_ready()
 
     @commands.slash_command(name='aiinfo', description="посмотреть инфу о ии")
     @commands.has_any_role(Roles.admin, Roles.st_admin)
