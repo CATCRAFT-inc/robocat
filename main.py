@@ -6,10 +6,11 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 load_dotenv()
-env = os.getenv("BOT_ENV" "prod")
+env = os.getenv("BOT_ENV", "prod")
 token = os.getenv("DEV_DISCORD_TOKEN") if env == "dev" else os.getenv("DISCORD_TOKEN")
 
 def setup_logger():
+    os.makedirs("logs", exist_ok=True)
     logger = logging.getLogger("robocat")
     logger.setLevel(logging.DEBUG)
 
@@ -48,6 +49,8 @@ def load_extension():
         "handlers.catcraft_fm",
         "handlers.idiot_check",
         "handlers.rcon",          # RCON команды
+        "handlers.honeypot",      # Ловушка для ботов
+        "handlers.digest",        # /digest — выжимка новостей
 
         ### AI
         "ai.handler",
