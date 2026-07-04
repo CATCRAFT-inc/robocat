@@ -13,7 +13,7 @@ import openai
 import pytest
 from pydantic import BaseModel
 
-from bot.ai.llm import LLM, AIUnavailable, _Vendor
+from bot.ai.llm import LLM, AIUnavailable, _Vendor, strip_thoughts
 
 
 def _rate_limit_error() -> openai.RateLimitError:
@@ -121,3 +121,28 @@ async def test_parse_without_utility_raises_ai_unavailable(llm_instance):
     llm_instance.utility = None
     with pytest.raises(AIUnavailable):
         await llm_instance.parse("вопрос", _FakeSchema)
+
+
+# -------- strip_thoughts --------
+
+
+def test_strip_thoughts_removes_closed_tag():
+    assert strip_thoughts("<thought>я размышляю</thought>Привет, котик!") == "Привет, котик!"
+
+
+def test_strip_thoughts_removes_unclosed_tag():
+    # ответ обрезали по max_tokens прямо посреди размышления — закрывающего тега нет
+    assert strip_thoughts("Держи ответ.\n<thought>дальше меня обрезало на середине") == "Держи ответ."
+
+
+def test_strip_thoughts_keeps_plain_text():
+    assert strip_thoughts("Просто ответ без размышлений") == "Просто ответ без размышлений"
+
+
+def test_strip_thoughts_removes_tag_in_the_middle():
+    # закрывающий тег и следующий за ним пробел съедаются \s* — склейки слов не будет
+    assert strip_thoughts("До <thought>секрет</thought> После") == "До После"
+
+
+def test_strip_thoughts_empty_string():
+    assert strip_thoughts("") == ""

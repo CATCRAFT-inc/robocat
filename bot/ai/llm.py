@@ -8,6 +8,7 @@
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -19,6 +20,22 @@ _SETTINGS_PATH = Path(__file__).resolve().parents[2] / "data" / "ai_settings.yam
 
 RATE_LIMIT_COOLDOWN = 15 * 60      # 15 минут
 AUTH_COOLDOWN = 6 * 60 * 60        # 6 часов
+
+
+def strip_thoughts(text: str) -> str:
+    """Вырезать размышления модели в тегах <thought>…</thought>.
+
+    Основная модель (gemma) думает в этих тегах неотключаемо — их содержимое
+    не должно попадать никуда (ответы чата, выжимки тикетов, /digest, саммари).
+    Убирает и закрытые блоки, и НЕЗАКРЫТЫЙ <thought>… до конца строки (когда
+    ответ обрезали по max_tokens прямо посреди размышления)."""
+    if not text:
+        return text
+    # закрытые блоки (в т.ч. в середине текста), заодно съедаем хвостовые пробелы
+    text = re.sub(r"<thought>.*?</thought>\s*", "", text, flags=re.DOTALL)
+    # незакрытый тег — режем от него и до конца строки
+    text = re.sub(r"<thought>.*", "", text, flags=re.DOTALL)
+    return text.strip()
 
 
 class AIUnavailable(Exception):
@@ -218,7 +235,7 @@ class LLM:
             return params
 
         response = await self._execute(vendors, build)
-        return response.choices[0].message.content or ""
+        return strip_thoughts(response.choices[0].message.content or "")
 
     async def parse(self, prompt: str, schema, *, system: str | None = None):
         """Структурный вывод через utility-модель. Кидает AIUnavailable."""

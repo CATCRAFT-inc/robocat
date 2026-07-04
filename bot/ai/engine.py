@@ -17,7 +17,7 @@ from pathlib import Path
 import yaml
 from PIL import Image
 from .wiki_search import wiki
-from .llm import llm, AIUnavailable
+from .llm import llm, AIUnavailable, strip_thoughts
 
 from dataclasses import dataclass, field
 
@@ -363,7 +363,7 @@ class AIEngine(commands.Cog):
         yield FinalAnswer("😞 *Слетели гайки... Попробуй спросить меня ещё раз.*")
             
     def sanitize_answer(self, text) -> str:
-        text = re.sub(r'<thought>.*?</thought>\s*', '', text, flags=re.DOTALL).strip()
+        text = strip_thoughts(text)
         text = re.sub(r'(?<!`)`(?!`)', r'\\`', text)
         dog = re.compile(
             r'(?<=<)@'
