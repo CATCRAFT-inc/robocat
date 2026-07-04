@@ -58,7 +58,7 @@ class AdminTicket(commands.Cog):
                     content=bug_description
                 ),
                 disnake.ui.TextDisplay(
-                    content=f"-# ||<@{Roles.st_admin}> <@{Roles.admin}> <@{Roles.developer}>||"
+                    content=f"-# ||<@&{Roles.admin}> <@&{Roles.moderator}> {inter.author.mention}||"
                 ),
                 accent_colour=disnake.Color.from_hex(ColorStorage.main),
             )
