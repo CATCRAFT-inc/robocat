@@ -11,8 +11,12 @@ class FAQ(commands.Cog):
 
     async def send_faq(self, ctx, embed):
         if ctx.message.reference:
-            ref_message = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-            await ref_message.reply(components=embed)
+            try:
+                ref_message = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            except (disnake.NotFound, disnake.HTTPException):
+                await ctx.channel.send(components=embed)
+            else:
+                await ref_message.reply(components=embed)
         else:
             await ctx.channel.send(components=embed)
 
@@ -240,6 +244,9 @@ class FAQ(commands.Cog):
 
     @commands.Cog.listener(name='on_message')
     async def findFAQInMessages(self, message: disnake.Message):
+        # Не отвечаем на ботов и на сообщения, где упомянут бот (иначе двойной ответ с ИИ)
+        if message.author.bot or self.bot.user in message.mentions:
+            return
         if message.author != self.bot.user:
             if 'когда вайп' in message.content.lower():
                 await message.reply(components=disnake.ui.Container(

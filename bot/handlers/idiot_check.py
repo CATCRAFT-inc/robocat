@@ -46,10 +46,14 @@ class IdiotCheck(commands.Cog):
             return
 
         ai_engine = getattr(self.bot, 'ai_engine', None)
-        if ai_engine is None or ai_engine.client is None:
+        if ai_engine is None:
             return
 
-        if not await ai_engine.idiotCheck(message.content):
+        try:
+            is_underage = await ai_engine.idiotCheck(message.content)
+        except Exception:
+            return  # ИИ недоступен — молча пропускаем, это не повод ронять листенер
+        if not is_underage:
             return
 
         try:

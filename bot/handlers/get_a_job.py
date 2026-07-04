@@ -22,7 +22,10 @@ class GetAJob(commands.Cog):
     @commands.Cog.listener("on_button_click")
     async def getAJobButton(self, inter: disnake.MessageInteraction):
         if inter.component.custom_id == Buttons.GET_A_JOB.id:
-            return
+            await inter.send(
+                "Пока вакансий нет — сезон ещё не начался! Загляни позже =)",
+                ephemeral=True,
+            )
 
 
 def setup(bot: commands.Bot):
