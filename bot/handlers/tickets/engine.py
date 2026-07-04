@@ -63,15 +63,20 @@ class TicketEngine(commands.Cog):
             except Exception:
                 logger.exception("Ошибка AI-выжимки тикета %s", thread.id)
 
+        creator_flag = await flags.getFlag(thread, "created_by")
+        author_line = f"\n**Автор:** <@{creator_flag.value}>" if creator_flag else "\n**Автор:** неизвестен"
+
         buf = io.BytesIO(transcript.encode("utf-8"))
         transcript_file = disnake.File(buf, filename=f"ticket-{thread.id}.txt")
         note_line = f"\n**Комментарий/причина:** {note}" if note else ""
         container = disnake.ui.Container(
             disnake.ui.TextDisplay(f"## 📁 Тикет закрыт: {thread.name}"),
             disnake.ui.Separator(),
-            disnake.ui.TextDisplay(f"**Тип:** {ticket_type}\n**Закрыл:** {closer.mention}{note_line}"),
+            disnake.ui.TextDisplay(f"**Тип:** {ticket_type}{author_line}\n**Закрыл:** {closer.mention}{note_line}"),
             disnake.ui.Separator(),
             disnake.ui.TextDisplay(f"### Выжимка\n{summary}"),
+            # V2-сообщения прячут вложения без явной ссылки на них — иначе файл не виден
+            disnake.ui.File(file=f"attachment://ticket-{thread.id}.txt"),
             accent_colour=disnake.Color.from_hex(ColorStorage.main),
         )
         log_channel = self.bot.get_channel(Channels.ticket_log)
