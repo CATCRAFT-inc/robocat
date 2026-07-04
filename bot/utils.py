@@ -72,69 +72,76 @@ def getTime():
     # Время по МСК
     return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3)))
 
-def parse_duration(duration_str):
-    # Define the multipliers for each time unit
-    time_multipliers = {
-        'сек': 1,  # second
-        'мин': 60,  # minute
-        'ч': 3600,  # hour
-        'д': 86400,  # day
-        'н': 86400*7,  # week
-        'м': 86400*30, # месяц
-        'г': 86400*365
-    }
+# Множители единиц времени в секундах. ВНИМАНИЕ: 'м' = минуты (раньше был месяц —
+# из-за этого /mute мутил на месяцы). Месяц — только 'мес'.
+_TIME_MULTIPLIERS = {
+    'сек': 1,           # секунда
+    'мин': 60,          # минута
+    'м': 60,            # минута (короткая форма)
+    'ч': 3600,          # час
+    'д': 86400,         # день
+    'н': 86400 * 7,     # неделя
+    'мес': 86400 * 30,  # месяц
+    'г': 86400 * 365,   # год
+}
 
-    # Extract the number and the time unit from the string
-    number = int(''.join(filter(str.isdigit, duration_str)))
+# Формы склонения для каждой единицы: (1, 2-4, 5+)
+_TIME_FORMS = {
+    'сек': ('секунда', 'секунды', 'секунд'),
+    'мин': ('минута', 'минуты', 'минут'),
+    'м': ('минута', 'минуты', 'минут'),
+    'ч': ('час', 'часа', 'часов'),
+    'д': ('день', 'дня', 'дней'),
+    'н': ('неделя', 'недели', 'недель'),
+    'мес': ('месяц', 'месяца', 'месяцев'),
+    'г': ('год', 'года', 'лет'),
+}
+
+def parse_duration(duration_str):
+    """
+    Парсит строку вида "15мин" в количество секунд.
+    Единицы: сек, мин ('м' тоже минуты), ч, д, н, мес, г.
+    Любой кривой ввод (пустые цифры/неизвестная единица) → None (не кидает).
+    """
+    if not isinstance(duration_str, str):
+        return None
+
+    digits = ''.join(filter(str.isdigit, duration_str))
     unit = ''.join(filter(str.isalpha, duration_str)).lower()
 
-    # Calculate the duration in seconds
-    if unit in time_multipliers:
-        return number * time_multipliers[unit]
-    else:
-        raise ValueError("Неправильный формат времени!")
+    if not digits or unit not in _TIME_MULTIPLIERS:
+        return None
+
+    return int(digits) * _TIME_MULTIPLIERS[unit]
 
 def duration_to_text(dur_str):
     """
-    Меняет строчки типа "1д", "2ч", "5м" на "1 день", "2 часа", "5 минут" и т.п.
+    Меняет строчки типа "1д", "2ч", "5мин" на "1 день", "2 часа", "5 минут" и т.п.
+    Число и суффикс выделяются так же, как в parse_duration.
+    Кривой ввод → возвращает исходную строку (не кидает).
     :param dur_str: Строчка
     :return: Красивая строчка
     """
-    dur = dur_str[-1]  # Последний символ строки
-    try:
-        nums = int(dur_str[:-1])
-    except:
-        raise IndexError("Некорректный формат строки")
+    if not isinstance(dur_str, str):
+        return dur_str
 
-    if dur == 'д':
-        if nums % 100 in [11, 12, 13, 14]:
-            return f'{nums} дней'
-        elif nums % 10 == 1:
-            return f'{nums} день'
-        elif nums % 10 in [2, 3, 4]:
-            return f'{nums} дня'
-        else:
-            return f'{nums} дней'
-    elif dur == 'ч':
-        if nums % 100 in [11, 12, 13, 14]:
-            return f'{nums} часов'
-        elif nums % 10 == 1:
-            return f'{nums} час'
-        elif nums % 10 in [2, 3, 4]:
-            return f'{nums} часа'
-        else:
-            return f'{nums} часов'
-    elif dur == 'м':
-        if nums % 100 in [11, 12, 13, 14]:
-            return f'{nums} минут'
-        elif nums % 10 == 1:
-            return f'{nums} минута'
-        elif nums % 10 in [2, 3, 4]:
-            return f'{nums} минуты'
-        else:
-            return f'{nums} минут'
+    digits = ''.join(filter(str.isdigit, dur_str))
+    unit = ''.join(filter(str.isalpha, dur_str)).lower()
+
+    if not digits or unit not in _TIME_FORMS:
+        return dur_str
+
+    nums = int(digits)
+    one, few, many = _TIME_FORMS[unit]
+
+    if nums % 10 == 1 and nums % 100 != 11:
+        word = one
+    elif nums % 10 in (2, 3, 4) and nums % 100 not in (12, 13, 14):
+        word = few
     else:
-        raise ValueError("Неизвестная единица измерения")
+        word = many
+
+    return f'{nums} {word}'
 
 def create_container(title: str, description: str, footer: str = None, color: str = "#4f2dbe"):
     """ По сути - замена create_embed, добавляет Title, separator, description и опционально маленький футер и цвет.

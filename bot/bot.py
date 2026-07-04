@@ -14,7 +14,7 @@ import sys
 from bot import storage
 from bot.flag_system.flag_system import flags
 from bot.utils import create_embed
-from bot.storage import Messages, Channels
+from bot.storage import Messages, Channels, Guilds
 
 os.environ["PYTHONIOENCODING"] = "UTF-8"
 
@@ -34,8 +34,9 @@ bot = commands.Bot(
 @bot.event
 async def on_ready():
     print("Я родился!")
-    channel = bot.get_channel(1138425079483609220)
-    await channel.send('Я тут!')
+    channel = bot.get_channel(Channels.secret)
+    if channel:
+        await channel.send('Я тут!')
 
 # TODO: Переписать, не работает
 # @bot.slash_command()
@@ -53,13 +54,17 @@ async def on_message(message: disnake.Message):
     Функция на добавление реакций и создания треда под каждым постом в заданных каналах
     + пишет, если игрок ошибся при написании Робокотику, а не Робокотику SRV
     """
-    channels_to_check = [1139036448201392218, 1215338737286914109, 1139036637519683584]
-    if message.channel.id in channels_to_check:
+    if message.channel.id in Channels.news_reaction_channels:
+        if message.author.bot or message.type not in (disnake.MessageType.default, disnake.MessageType.reply):
+            return
         reactions = ['❤️', '👍', '👎']
         for reaction in reactions:
             await message.add_reaction(reaction)
             await asyncio.sleep(1)
-        await message.create_thread(name="Обсуждение", reason="Тред на новую новость")
+        try:
+            await message.create_thread(name="Обсуждение", reason="Тред на новую новость")
+        except disnake.HTTPException:
+            pass
     elif isinstance(message.channel, DMChannel):
         # Если сообщение — ровно 4 цифры
         if re.fullmatch(r'\d{4}', message.content):
@@ -71,7 +76,7 @@ async def on_member_join(inter: disnake.Member):
     """
     Кидает случайное сообщение о входе юзера и выдаёт роли, если они были
     """
-    if inter.guild.id == 1138425078493753366:
+    if inter.guild.id == Guilds.main:
         channel = bot.get_channel(Channels.welcome)
         if await flags.getFlag(inter, "left"):
             await channel.send(random.choice(Messages.join_again).replace("%1", f"<@{inter.id}>"))
@@ -81,6 +86,8 @@ async def on_member_join(inter: disnake.Member):
 
 @bot.listen()
 async def on_raw_member_remove(payload: disnake.RawGuildMemberRemoveEvent):
+    if payload.guild_id != Guilds.main:
+        return
     if payload.user:
         await flags.setFlag(payload.user, "left", int(time.time()))
 
@@ -92,29 +99,3 @@ async def on_raw_member_remove(payload: disnake.RawGuildMemberRemoveEvent):
 #         backup_channel = message.guild.get_channel(1138425079483609220)
 #         await backup_channel.send(f"Кто-то удалил сообщение в <@{message.channel.id}>")
 #         await backup_channel.send(content=message.content)
-
-# @bot.listen()
-# async def on_thread_create(thread: disnake.Thread):
-#     """
-#     Пишет сообщения в определенные треды
-#     """
-#     if thread.guild.id == 1138425078493753366:
-#         forum = bot.get_channel(thread.parent_id)
-
-#         try:
-#             tag = forum.get_tag_by_name('на рассмотрении')
-#             await thread.add_tags(tag)
-#         except:
-#             pass
-
-#         if thread.parent_id == 1240040560019111987:  # Баги
-#             await thread.send(embed=create_embed(
-#                 title="Спасибо за репорт бага!",
-#                 description="Пожалуйста убедись, что баг написан по шаблону (как закреплённый тред в этом форуме).\n"
-#                             "Без описания или пути воспроизведения бага мы не сможем его пофиксить, а без твоего ника мы не сможем выдать тебе АРы!"
-#             ))
-#         elif thread.parent_id == 1143564055999676416:  # Запросы
-#             await thread.send(embed=create_embed(
-#                 title="По поводу Котячьих Заслуг",
-#                 description="Если ты подал запрос на **Котячью Заслугу**, то указывай какая именно тебе нужна (строительство, идея, друзья) и прикрепи за что именно мы должны её тебе выдать!"
-#             ))

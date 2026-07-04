@@ -1,6 +1,8 @@
 import disnake
 from disnake.ext import commands
 
+from bot.storage import Channels
+
 
 class Tests(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -9,11 +11,38 @@ class Tests(commands.Cog):
 
     @commands.Cog.listener("on_message")
     async def restrictArtem123zzz(self, message: disnake.Message):
+        if message.guild is None:
+            return
         if message.author.bot:
             return
         if message.author.id == self.artem123zzz_id:
             if 'https' in message.content or message.attachments:
-                await message.delete()
+                try:
+                    await message.delete()
+                except (disnake.Forbidden, disnake.NotFound):
+                    pass
+
+    @commands.command("mess")
+    @commands.is_owner()
+    @commands.guild_only()
+    async def sendMessages(self, inter: commands.Context):
+        party_search = inter.guild.get_channel(Channels.requests)
+        tag = party_search.get_tag(1218152835716354058)
+        await party_search.create_thread(name="Запросы!", applied_tags=[tag], components=disnake.ui.Container(
+            disnake.ui.TextDisplay("# Запросы!"),
+            disnake.ui.Separator(),
+            disnake.ui.TextDisplay("""Тут ты можешь запросить получение ролей, достижений и прочего!
+
+Например, тут ты можешь запросить **CatPass** - это ветка достижений на Кошкокрафте с различными игровыми заданиями, за которые ты можешь получить награду! От АРов до **рублей** :3
+Ты можешь найти эту вкладку под иконкой алмазов в обычных достижениях.
+
+## А получить награду то как?
+Всё просто - напиши пост сюда и приложи доказательство выполнения, и всё :3
+
+Или тут ты можешь запросить роль @С 2 сезона @С 3 сезона , медали и прочее!""")
+        ))
+        
+
 
 def setup(bot: commands.Bot):
     bot.add_cog(Tests(bot))

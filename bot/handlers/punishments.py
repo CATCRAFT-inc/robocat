@@ -25,9 +25,6 @@ class PunishmentsHanlder(commands.Cog):
                             '28д'
                         ]),
                         reason: str = "Без причины"):
-        if mute_member is None:
-            await inter.send("Нужно либо указать пользователя, либо прописать команду ответом на его сообщение!", ephemeral=True)
-            return
         duration_time = parse_duration(duration)
         if duration_time is None:
             await inter.send("Неправильно указано время!\nПоддерживаемые значения: `1сек`, `1мин`,`1ч`,`1д`,`1н`")
@@ -48,13 +45,16 @@ class PunishmentsHanlder(commands.Cog):
             disnake.ui.Separator(),
             disnake.ui.TextDisplay(f"### {mute_member.mention} был замьючен!\n**Причина**: {reason}\n**Длительность**: {duration_to_text(duration)}")
         ))
-        await mute_member.send(components=disnake.ui.Container(
-            disnake.ui.TextDisplay("## Ты был замьючен в ДС Кошкокрафта!"),
-            disnake.ui.Separator(),
-            disnake.ui.TextDisplay(f"**Причина**: {reason}\n**Длительность**: {duration_to_text(duration)}"),
-            disnake.ui.Separator(),
-            disnake.ui.TextDisplay("-# Это ошибка? Напиши тикет в ''получить-помощь'' или свяжись с любым админом напрямую!")
-        ))
+        try:
+            await mute_member.send(components=disnake.ui.Container(
+                disnake.ui.TextDisplay("## Ты был замьючен в ДС Кошкокрафта!"),
+                disnake.ui.Separator(),
+                disnake.ui.TextDisplay(f"**Причина**: {reason}\n**Длительность**: {duration_to_text(duration)}"),
+                disnake.ui.Separator(),
+                disnake.ui.TextDisplay("-# Это ошибка? Напиши тикет в ''получить-помощь'' или свяжись с любым админом напрямую!")
+            ))
+        except disnake.Forbidden:
+            pass
 
 
     @commands.command(name='мут')
@@ -76,6 +76,10 @@ class PunishmentsHanlder(commands.Cog):
             return
 
         mute_member = ref_message.author
+        if not isinstance(mute_member, disnake.Member):
+            await ctx.author.send("Замутить можно только участника сервера (не бота/вебхук).")
+            await ctx.message.delete()
+            return
         time = parse_duration(duration)
         if not time:
             await ctx.author.send("Неправильный формат времени. Используй `1d`, `12h`, `10m`.")
@@ -101,13 +105,16 @@ class PunishmentsHanlder(commands.Cog):
             disnake.ui.Separator(),
             disnake.ui.TextDisplay(f"### {mute_member.mention} был замьючен!\n**Причина**: {reason}\n**Длительность**: {duration_to_text(duration)}")
         ))
-        await mute_member.send(components=disnake.ui.Container(
-            disnake.ui.TextDisplay("## Ты был замьючен в ДС Кошкокрафта!"),
-            disnake.ui.Separator(),
-            disnake.ui.TextDisplay(f"**Причина**: {reason}\n**Длительность**: {duration_to_text(duration)}"),
-            disnake.ui.Separator(),
-            disnake.ui.TextDisplay("-# Это ошибка? Напиши тикет в ''получить-помощь'' или свяжись с любым админом напрямую!")
-        ))
+        try:
+            await mute_member.send(components=disnake.ui.Container(
+                disnake.ui.TextDisplay("## Ты был замьючен в ДС Кошкокрафта!"),
+                disnake.ui.Separator(),
+                disnake.ui.TextDisplay(f"**Причина**: {reason}\n**Длительность**: {duration_to_text(duration)}"),
+                disnake.ui.Separator(),
+                disnake.ui.TextDisplay("-# Это ошибка? Напиши тикет в ''получить-помощь'' или свяжись с любым админом напрямую!")
+            ))
+        except disnake.Forbidden:
+            pass
 
     # @commands.command(name='lololo')
     # @commands.has_any_role(Roles.admin, Roles.st_admin)
