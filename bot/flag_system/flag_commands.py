@@ -2,15 +2,27 @@ import disnake
 from disnake.ext import commands
 
 from bot.storage import Roles
+from bot.utils import parse_duration
 from .flag_system import flags
 
 
 def _format_flag_list(flag_list: list[tuple]) -> str:
     lines = []
+    total = 0
+    shown = 0
     for flag_key, flag_value, flag_expires in flag_list:
         expires_str = f"<t:{flag_expires}:R>" if flag_expires else "Никогда"
-        lines.append(f"**{flag_key}**\n`{flag_value}`\n**Истекает:** {expires_str}\n")
-    return "\n".join(lines)
+        entry = f"**{flag_key}**\n`{flag_value}`\n**Истекает:** {expires_str}\n"
+        if total + len(entry) > 3500:
+            break
+        lines.append(entry)
+        total += len(entry)
+        shown += 1
+    text = "\n".join(lines)
+    remaining = len(flag_list) - shown
+    if remaining > 0:
+        text += f"\n-# …и ещё {remaining}"
+    return text
 
 
 class FlagCommands(commands.Cog):
@@ -72,7 +84,15 @@ class FlagCommands(commands.Cog):
                                  flag: str,
                                  value: str = None,
                                  expires_at: str = None):
-        await flags.setFlag(member, flag, value, expires_at)
+        if expires_at is not None and parse_duration(expires_at) is None:
+            await inter.send("Неверный формат времени. Примеры: 30сек, 15мин, 8ч, 1д, 2н, 1мес",
+                             ephemeral=True)
+            return
+        ok = await flags.setFlag(member, flag, value, expires_at)
+        if not ok:
+            await inter.send("Не удалось установить флаг (неподдерживаемый тип канала или "
+                             "нечисловое значение для +N).", ephemeral=True)
+            return
         await inter.send(f"Флаг `{flag}` установлен для {member.mention}.", ephemeral=True,
                          allowed_mentions=disnake.AllowedMentions(users=False))
 
@@ -83,7 +103,15 @@ class FlagCommands(commands.Cog):
                                     flag: str,
                                     value: str = None,
                                     expires_at: str = None):
-        await flags.setFlag(channel, flag, value, expires_at)
+        if expires_at is not None and parse_duration(expires_at) is None:
+            await inter.send("Неверный формат времени. Примеры: 30сек, 15мин, 8ч, 1д, 2н, 1мес",
+                             ephemeral=True)
+            return
+        ok = await flags.setFlag(channel, flag, value, expires_at)
+        if not ok:
+            await inter.send("Не удалось установить флаг (неподдерживаемый тип канала или "
+                             "нечисловое значение для +N).", ephemeral=True)
+            return
         await inter.send(f"Флаг `{flag}` установлен для {channel.mention}.", ephemeral=True,
                          allowed_mentions=disnake.AllowedMentions(users=False))
 

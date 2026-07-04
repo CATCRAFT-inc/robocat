@@ -41,7 +41,7 @@ class Flags:
             return "textchannel"
         elif isinstance(entity, disnake.VoiceChannel):
             return "voicechannel"
-        elif isinstance(entity, disnake.Member):
+        elif isinstance(entity, (disnake.Member, disnake.User)):
             return "member"
         elif isinstance(entity, disnake.CategoryChannel):
             return "category"
@@ -59,27 +59,64 @@ class Flags:
         entity_id = -1 if entity_type == "abstract" else entity.id
         return entity_type, entity_id
 
-    async def setFlag(self, entity, flag: str, value=None, expires_at: int | str | None = None):
+    async def setFlag(self, entity, flag: str, value=None, expires_at: int | str | None = None) -> bool:
         entity_type, entity_id = self._resolveEntity(entity)
         if entity_type is None:
-            return None
+            return False
 
         if isinstance(expires_at, str):
             seconds = parse_duration(expires_at)
+            if seconds is None:
+                self.logger.warning("Invalid expires_at %r for flag %s", expires_at, flag)
+                return False
             expires_at = int(time.time()) + seconds
 
-        # +N / -N arithmetic on existing numeric value
-        if isinstance(value, str) and len(value) > 1 and value[0] in ('+', '-') and value[1:].isdigit():
-            current = await self.getFlag(entity, flag)
-            if current is not None:
+        is_increment = (isinstance(value, str) and len(value) > 1
+                        and value[0] in ('+', '-') and value[1:].isdigit())
+
+        # +N / -N: атомарный read-modify-write в одной транзакции, expires_at
+        # сохраняется (COALESCE), если новый явно не передан.
+        if is_increment:
+            async with aiosqlite.connect(self.dbpath, isolation_level=None) as db:
+                await db.execute("BEGIN IMMEDIATE")
                 try:
-                    base = int(current.value)
-                except (ValueError, TypeError):
-                    self.logger.warning("Flag %s is not numeric, cannot apply %s", flag, value)
-                    return None
-                value = base + int(value)
-            else:
-                value = int(value)
+                    cursor = await db.execute(
+                        "SELECT value FROM flags WHERE entity_type=? AND entity_id=? AND flag=?",
+                        (entity_type, entity_id, flag),
+                    )
+                    row = await cursor.fetchone()
+                    if row is not None and row[0] is not None:
+                        try:
+                            base = int(row[0])
+                        except (ValueError, TypeError):
+                            self.logger.warning("Flag %s is not numeric, cannot apply %s", flag, value)
+                            await db.execute("ROLLBACK")
+                            return False
+                        new_value = base + int(value)
+                    else:
+                        new_value = int(value)
+                    await db.execute(
+                        """
+                        INSERT INTO flags (entity_type, entity_id, flag, value, expires_at)
+                        VALUES (:entity_type, :entity_id, :flag, :value, :expires_at)
+                        ON CONFLICT(entity_type, entity_id, flag) DO UPDATE SET
+                            value = :value,
+                            expires_at = COALESCE(:expires_at, flags.expires_at)
+                        """,
+                        {
+                            "entity_type": entity_type,
+                            "entity_id": entity_id,
+                            "flag": flag,
+                            "value": str(new_value),
+                            "expires_at": expires_at,
+                        },
+                    )
+                    await db.execute("COMMIT")
+                except BaseException:
+                    await db.execute("ROLLBACK")
+                    raise
+            self.logger.info("[FLAG SET] %s on (%s, %s) = %s", flag, entity_type, entity_id, new_value)
+            return True
 
         async with aiosqlite.connect(self.dbpath) as db:
             await db.execute(
@@ -100,6 +137,7 @@ class Flags:
             )
             await db.commit()
         self.logger.info("[FLAG SET] %s on (%s, %s) = %s", flag, entity_type, entity_id, value)
+        return True
 
     async def getFlag(self, entity, flag: str) -> "FlagRow | None":
         entity_type, entity_id = self._resolveEntity(entity)
