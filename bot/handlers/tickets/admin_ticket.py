@@ -58,7 +58,19 @@ class AdminTicket(commands.Cog):
                     content=bug_description
                 ),
                 disnake.ui.TextDisplay(
-                    content=f"-# ||<@&{Roles.admin}> <@&{Roles.moderator}> {inter.author.mention}||"
+                    content=f"-# ||<@&{Roles.st_admin}> <@&{Roles.admin}> <@&{Roles.moderator}> {inter.author.mention}||"
+                ),
+                disnake.ui.ActionRow(
+                    disnake.ui.Button(
+                        style=disnake.ButtonStyle.green,
+                        label="✅ Завершить",
+                        custom_id="TICKET_DONE",
+                    ),
+                    disnake.ui.Button(
+                        style=disnake.ButtonStyle.danger,
+                        label="⛔ Отклонить",
+                        custom_id="TICKET_DECLINE",
+                    ),
                 ),
                 accent_colour=disnake.Color.from_hex(ColorStorage.main),
             )

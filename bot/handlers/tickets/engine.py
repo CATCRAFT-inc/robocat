@@ -85,6 +85,75 @@ class TicketEngine(commands.Cog):
             return False
         return True
 
+    async def _finishTicket(self, inter, thread: disnake.Thread, comment: str | None):
+        """Успешное закрытие бага/админ-тикета. Интеракция ДОЛЖНА быть уже
+        defer'нута снаружи (слэш /done и модалка кнопки делают это сами)."""
+        is_support = thread.parent_id == Channels.support
+        ticket_type = "Админ-тикет" if is_support else "Баг-репорт"
+        if not await self._archiveTicket(thread, ticket_type=ticket_type, closer=inter.author, note=comment):
+            await inter.edit_original_response("⚠️ Не удалось сохранить лог тикета — тред НЕ удалён. Проверь канал логов и повтори.")
+            return
+
+        if is_support:
+            closed_embed = disnake.ui.Container(
+                disnake.ui.TextDisplay("## ⭐️ Твой админский тикет закрыт!"),
+                disnake.ui.Separator(),
+                disnake.ui.TextDisplay(f"### Решение:\n{comment}\n-# Закрыл: <@{inter.author.id}>")
+            )
+        else:
+            description = "Огромное спасибо за репорт бага! Ты помогаешь делать сервер лучше 💖"
+            if comment:
+                description += f"\n**Комментарий:**\n{comment}"
+            closed_embed = create_container(
+                title="💫 Сообщённый тобой баг пофикшен!",
+                description=description
+            )
+
+        user_id_flag = await flags.getFlag(thread, "created_by")
+        if user_id_flag:
+            member = inter.guild.get_member(int(user_id_flag.value))
+            if member:
+                try:
+                    await member.send(components=closed_embed)
+                except disnake.HTTPException:
+                    pass
+        await flags.removeFlag(thread, "created_by")
+        if not is_support:
+            await remove_bug_from_index(thread.id)
+        await thread.delete(reason=f"Тикет закрыт {inter.author.id}")
+
+    async def _rejectTicket(self, inter, thread: disnake.Thread, reason: str | None):
+        """Отклонение бага/админ-тикета. Интеракция ДОЛЖНА быть уже defer'нута снаружи."""
+        is_support = thread.parent_id == Channels.support
+        ticket_type = "Админ-тикет (отклонён)" if is_support else "Баг-репорт (отклонён)"
+        if not await self._archiveTicket(thread, ticket_type=ticket_type, closer=inter.author, note=reason):
+            await inter.edit_original_response("⚠️ Не удалось сохранить лог тикета — тред НЕ удалён. Проверь канал логов и повтори.")
+            return
+
+        if is_support:
+            declined_embed = create_container(
+                title="😔 Твой админский тикет отклонён...",
+                description=f"К сожалению, твой тикет был отклонён...\n**Причина:** {reason or 'Не указали...'}"
+            )
+        else:
+            declined_embed = create_container(
+                title="😔 Сообщённый тобой баг отклонён...",
+                description=f"Огромное спасибо за репорт бага, но он был отклонён...\n**Причина:** {reason or 'Не указали...'}"
+            )
+
+        user_id_flag = await flags.getFlag(thread, "created_by")
+        if user_id_flag:
+            member = inter.guild.get_member(int(user_id_flag.value))
+            if member:
+                try:
+                    await member.send(components=declined_embed)
+                except disnake.HTTPException:
+                    pass
+        await flags.removeFlag(thread, "created_by")
+        if not is_support:
+            await remove_bug_from_index(thread.id)
+        await thread.delete(reason=f"Тикет отклонён {inter.author.id}")
+
     @tasks.loop(time=datetime.time(hour=12, tzinfo=_MSK))  # 12:00 МСК
     async def staleTicketReminder(self):
         """Раз в сутки напоминает в Channels.secret о зависших (>5 дней) багах и тикетах."""
@@ -188,51 +257,14 @@ class TicketEngine(commands.Cog):
 
             case Channels.bugs:
                 await inter.response.defer()
-                if not await self._archiveTicket(thread, ticket_type="Баг-репорт", closer=inter.author, note=comment):
-                    await inter.edit_original_response("⚠️ Не удалось сохранить лог тикета — тред НЕ удалён. Проверь канал логов и повтори.")
-                    return
-                description = "Огромное спасибо за репорт бага! Ты помогаешь делать сервер лучше 💖"
-                if comment:
-                    description += f"\n**Комментарий:**\n{comment}"
-                bug_fixed_embed = create_container(
-                    title="💫 Сообщённый тобой баг пофикшен!",
-                    description=description
-                )
-                user_id_flag = await flags.getFlag(thread, "created_by")
-                if user_id_flag:
-                    member = inter.guild.get_member(int(user_id_flag.value))
-                    if member:
-                        try:
-                            await member.send(components=bug_fixed_embed)
-                        except disnake.HTTPException:
-                            pass
-                await flags.removeFlag(thread, "created_by")
-                await remove_bug_from_index(thread.id)
-                await thread.delete(reason=f"Баг закрыт {inter.author.id}")
+                await self._finishTicket(inter, thread, comment)
 
             case Channels.support:
                 if not comment:
                     await inter.send("Для админских тикетов обязательно нужен комментарий с итогом!", ephemeral=True)
                     return
                 await inter.response.defer()
-                if not await self._archiveTicket(thread, ticket_type="Админ-тикет", closer=inter.author, note=comment):
-                    await inter.edit_original_response("⚠️ Не удалось сохранить лог тикета — тред НЕ удалён. Проверь канал логов и повтори.")
-                    return
-                ticket_closed_embed = disnake.ui.Container(
-                    disnake.ui.TextDisplay("## ⭐️ Твой админский тикет закрыт!"),
-                    disnake.ui.Separator(),
-                    disnake.ui.TextDisplay(f"### Решение:\n{comment}\n-# Закрыл: <@{inter.author.id}>")
-                )
-                user_id_flag = await flags.getFlag(thread, "created_by")
-                if user_id_flag:
-                    member = inter.guild.get_member(int(user_id_flag.value))
-                    if member:
-                        try:
-                            await member.send(components=ticket_closed_embed)
-                        except disnake.HTTPException:
-                            pass
-                await flags.removeFlag(thread, "created_by")
-                await thread.delete(reason=f"Тикет закрыт {inter.author.id}")
+                await self._finishTicket(inter, thread, comment)
 
             case _:
                 await inter.send("Команду можно прописывать только в тредах багов, идей, тикетов или запросов!", ephemeral=True)
@@ -283,27 +315,77 @@ class TicketEngine(commands.Cog):
 
             case Channels.bugs:
                 await inter.response.defer()
-                if not await self._archiveTicket(thread, ticket_type="Баг-репорт (отклонён)", closer=inter.author, note=reason):
-                    await inter.edit_original_response("⚠️ Не удалось сохранить лог тикета — тред НЕ удалён. Проверь канал логов и повтори.")
-                    return
-                bug_declined_embed = create_container(
-                    title="😔 Сообщённый тобой баг отклонён...",
-                    description=f"Огромное спасибо за репорт бага, но он был отклонён...\n**Причина:** {reason or 'Не указали...'}"
-                )
-                user_id_flag = await flags.getFlag(thread, "created_by")
-                if user_id_flag:
-                    member = inter.guild.get_member(int(user_id_flag.value))
-                    if member:
-                        try:
-                            await member.send(components=bug_declined_embed)
-                        except disnake.HTTPException:
-                            pass
-                await flags.removeFlag(thread, "created_by")
-                await remove_bug_from_index(thread.id)
-                await thread.delete(reason=f"Баг отклонён {inter.author.id}")
+                await self._rejectTicket(inter, thread, reason)
+
+            case Channels.support:
+                await inter.response.defer()
+                await self._rejectTicket(inter, thread, reason)
 
             case _:
                 await inter.send("Команду можно прописывать только в тредах багов, идей, тикетов или запросов!", ephemeral=True)
+
+    @commands.Cog.listener("on_button_click")
+    async def ticketButtons(self, inter: disnake.MessageInteraction):
+        custom_id = inter.component.custom_id or ""
+        if custom_id not in ("TICKET_DONE", "TICKET_DECLINE"):
+            return
+        thread = inter.channel
+        if not isinstance(thread, disnake.Thread) or thread.parent_id not in (Channels.bugs, Channels.support):
+            await inter.response.send_message("Эти кнопки работают только в тредах багов и админ-тикетов.", ephemeral=True)
+            return
+
+        # Право: admin / st_admin (по образцу honeypot — ручная проверка ролей)
+        allowed = {Roles.admin, Roles.st_admin}
+        if not any(r.id in allowed for r in getattr(inter.author, "roles", [])):
+            await inter.response.send_message("Недостаточно прав для этого действия.", ephemeral=True)
+            return
+
+        if custom_id == "TICKET_DONE":
+            # для админ-тикетов (support) комментарий обязателен, для багов — нет
+            required = thread.parent_id == Channels.support
+            await inter.response.send_modal(self.TicketDoneModal(self, required=required))
+        else:
+            await inter.response.send_modal(self.TicketDeclineModal(self))
+
+    class TicketDoneModal(disnake.ui.Modal):
+        def __init__(self, cog: "TicketEngine", *, required: bool):
+            self.cog = cog
+            components = [
+                disnake.ui.TextInput(
+                    label="Комментарий/итог",
+                    placeholder="Что сделали / итог по тикету",
+                    custom_id="comment",
+                    style=disnake.TextInputStyle.paragraph,
+                    max_length=1000,
+                    required=required,
+                )
+            ]
+            super().__init__(title="Завершение тикета", components=components)
+
+        async def callback(self, inter: disnake.ModalInteraction):
+            await inter.response.defer()
+            comment = inter.text_values.get("comment") or None
+            await self.cog._finishTicket(inter, inter.channel, comment)
+
+    class TicketDeclineModal(disnake.ui.Modal):
+        def __init__(self, cog: "TicketEngine"):
+            self.cog = cog
+            components = [
+                disnake.ui.TextInput(
+                    label="Причина",
+                    placeholder="Причина отклонения (необязательно)",
+                    custom_id="reason",
+                    style=disnake.TextInputStyle.paragraph,
+                    max_length=1000,
+                    required=False,
+                )
+            ]
+            super().__init__(title="Отклонение тикета", components=components)
+
+        async def callback(self, inter: disnake.ModalInteraction):
+            await inter.response.defer()
+            reason = inter.text_values.get("reason") or None
+            await self.cog._rejectTicket(inter, inter.channel, reason)
 
 
 def setup(bot: commands.Bot):
