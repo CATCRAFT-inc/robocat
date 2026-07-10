@@ -21,6 +21,13 @@ class CatcraftFM(commands.Cog):
     MAX_RECONNECT_DELAY = 120      # потолок exponential backoff
     HEARTBEAT_INTERVAL = 5.0       # как часто будим play_loop проверить коннект
     MAX_TRACK_SECONDS = 20 * 60    # failsafe: ни один трек не висит дольше 20 минут
+    # channel.connect() может зависнуть НАВСЕГДА: внутри disnake handshake есть
+    # UDP ip-discovery (sock_recv) без таймаута, а параметр timeout= его не покрывает.
+    # Потерянный UDP-пакет при ночном обслуживании войсов Discord = мёртвый супервизор.
+    CONNECT_TIMEOUT = 60
+    DISCONNECT_TIMEOUT = 10        # disconnect тоже ждёт сеть — не даём ему повесить нас
+    MAX_PLAYBACK_ERRORS = 3        # столько треков подряд с ошибкой = коннект мёртв, реконнект
+    BACKOFF_RESET_SECONDS = 300    # радио прожило дольше — считаем запуск удачным, сбрасываем backoff
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -30,6 +37,7 @@ class CatcraftFM(commands.Cog):
 
         self._started = False
         self._task: asyncio.Task | None = None
+        self._warned_no_runner = False
 
         self.music_files: list[str] = []
         self.current_track: str = "—"
@@ -72,14 +80,13 @@ class CatcraftFM(commands.Cog):
             if self._current_done is not None:
                 self._current_done.set()
             if self.vc is not None and self.vc.is_connected():
-                try:
-                    await self.vc.disconnect(force=True)
-                except Exception:
-                    self.logger.exception("ошибка disconnect в on_voice_state_update")
+                await self._force_disconnect(self.vc)
 
     async def _radio_supervisor(self):
         delay = self.RECONNECT_DELAY
+        loop = asyncio.get_running_loop()
         while True:
+            started = loop.time()
             try:
                 await self._start_radio()
             except asyncio.CancelledError:
@@ -87,9 +94,53 @@ class CatcraftFM(commands.Cog):
                 return
             except Exception:
                 self.logger.exception("_start_radio упал")
+            if loop.time() - started > self.BACKOFF_RESET_SECONDS:
+                delay = self.RECONNECT_DELAY
             self.logger.info("перезагружаемся через %ss...", delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, self.MAX_RECONNECT_DELAY)
+
+    async def _force_disconnect(self, vc: disnake.VoiceProtocol | None):
+        """Отключить voice client, не дав ему повесить супервизора.
+
+        disconnect() внутри ждёт сеть и может зависнуть так же, как connect().
+        Если не получилось — vc.cleanup() снимает клиент с регистрации в disnake,
+        иначе следующий connect() упадёт с "Already connected to a voice channel".
+        """
+        if vc is None:
+            return
+        try:
+            await asyncio.wait_for(vc.disconnect(force=True), timeout=self.DISCONNECT_TIMEOUT)
+        except Exception:
+            self.logger.exception("disconnect завис/упал — чищу клиент вручную")
+            # cleanup() снимает клиент с регистрации, но НЕ гасит poll-таск диснейка:
+            # живой _runner продолжил бы внутренние реконнекты и воевал с новым клиентом
+            runner = getattr(vc, "_runner", None)
+            if isinstance(runner, asyncio.Task) and not runner.done():
+                runner.cancel()
+            try:
+                vc.cleanup()
+            except Exception:
+                self.logger.exception("cleanup тоже упал")
+
+    def _vc_alive(self, vc: disnake.VoiceClient) -> bool:
+        """is_connected() врёт, если внутренний poll-таск disnake умер с необработанной
+        ошибкой: _connected остаётся выставленным, а сокет мёртв (радио «в канале, но молчит»).
+        Единственный видимый признак такого зомби — завершившийся _runner."""
+        if not vc.is_connected():
+            return False
+        runner = getattr(vc, "_runner", None)
+        if not isinstance(runner, asyncio.Task):
+            # незнакомые внутренности (переименовали в новом disnake?) —
+            # доверяем is_connected(), но не молча: зомби-детект выключен
+            if not self._warned_no_runner:
+                self._warned_no_runner = True
+                self.logger.warning("_runner не найден — зомби-детект коннекта отключён")
+            return True
+        if runner.done():
+            self.logger.warning("внутренний voice-runner disnake умер — коннект зомби")
+            return False
+        return True
 
     async def _start_radio(self):
         guild = self.bot.get_guild(self.GUILD_ID)
@@ -103,15 +154,26 @@ class CatcraftFM(commands.Cog):
             return
 
         if guild.voice_client is not None:
-            try:
-                await guild.voice_client.disconnect(force=True)
-            except Exception:
-                self.logger.exception("не смог дёрнуть существующий voice_client")
+            await self._force_disconnect(guild.voice_client)
 
         try:
-            self.vc = await self.channel.connect(timeout=10.0, reconnect=True)
+            # wait_for снаружи обязателен: timeout=10.0 диснейка НЕ покрывает
+            # весь handshake (см. комментарий у CONNECT_TIMEOUT)
+            self.vc = await asyncio.wait_for(
+                self.channel.connect(timeout=10.0, reconnect=True),
+                timeout=self.CONNECT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            self.logger.error(
+                "connect не завершился за %ss — хендшейк завис, добиваю клиент и ретраюсь",
+                self.CONNECT_TIMEOUT,
+            )
+            # при отмене connect диснейк НЕ снимает полусозданный клиент с регистрации
+            await self._force_disconnect(guild.voice_client)
+            return
         except Exception:
             self.logger.exception("не удалось подключиться к каналу")
+            await self._force_disconnect(guild.voice_client)
             return
 
         try:
@@ -121,21 +183,18 @@ class CatcraftFM(commands.Cog):
         except Exception:
             self.logger.exception("play loop crash")
         finally:
-            if self.vc and self.vc.is_connected():
-                try:
-                    await self.vc.disconnect(force=True)
-                except Exception:
-                    self.logger.exception("ошибка disconnect в finally")
+            await self._force_disconnect(self.vc)
             self._current_done = None
 
     async def _play_loop(self, vc: disnake.VoiceClient):
         dictor_files: list[str] = []
         music_count = 0
+        playback_errors = 0
         loop = asyncio.get_running_loop()
 
         while True:
-            if not vc.is_connected():
-                self.logger.warning("vc не подключён — выхожу из play_loop")
+            if not self._vc_alive(vc):
+                self.logger.warning("vc не живой — выхожу из play_loop")
                 return
 
             # выбор следующего трека
@@ -165,10 +224,12 @@ class CatcraftFM(commands.Cog):
 
             done = asyncio.Event()
             self._current_done = done
+            play_result: dict = {"error": None}
 
-            def _after(error: Exception | None):
+            def _after(error: Exception | None, track=track, done=done, play_result=play_result):
                 if error is not None:
                     self.logger.error("ошибка плейбека в %s: %s", track, error)
+                play_result["error"] = error
                 loop.call_soon_threadsafe(done.set)
 
             try:
@@ -176,11 +237,22 @@ class CatcraftFM(commands.Cog):
             except Exception:
                 self.logger.exception("не смог запустить трек %s", track)
                 self._current_done = None
+                # синхронный фейл play — та же серия ошибок, что и фейл в _after:
+                # иначе мёртвый коннект крутится тут вечно, минуя реконнект
+                playback_errors += 1
+                if playback_errors >= self.MAX_PLAYBACK_ERRORS:
+                    self.logger.warning(
+                        "%s подряд неудачных запусков трека — полный реконнект",
+                        playback_errors,
+                    )
+                    return
                 await asyncio.sleep(1)
                 continue
 
-            # отправка now-playing эмбеда (только для музыки)
-            if not is_dictor:
+            # отправка now-playing эмбеда (только для музыки; трек, мгновенно
+            # упавший в _after, не анонсируем — при мёртвом сокете это флудило
+            # бы канал ложными «Сейчас играет» каждый цикл реконнекта)
+            if not is_dictor and play_result["error"] is None:
                 try:
                     self.current_track = self._getTrackInfo(path)
                     self.current_track_path = str(path)
@@ -207,7 +279,7 @@ class CatcraftFM(commands.Cog):
                     await asyncio.wait_for(done.wait(), timeout=self.HEARTBEAT_INTERVAL)
                 except asyncio.TimeoutError:
                     elapsed += self.HEARTBEAT_INTERVAL
-                    if not vc.is_connected():
+                    if not self._vc_alive(vc):
                         self.logger.warning("vc отвалился во время трека — выхожу из play_loop")
                         try:
                             vc.stop()
@@ -227,6 +299,19 @@ class CatcraftFM(commands.Cog):
                         break
 
             self._current_done = None
+
+            # Мёртвый сокет при живом (на вид) коннекте: каждый трек мгновенно
+            # завершается с ошибкой. Несколько подряд — коннект не жилец, реконнект.
+            if play_result["error"] is not None:
+                playback_errors += 1
+                if playback_errors >= self.MAX_PLAYBACK_ERRORS:
+                    self.logger.warning(
+                        "%s треков подряд с ошибкой плейбека — полный реконнект",
+                        playback_errors,
+                    )
+                    return
+            else:
+                playback_errors = 0
 
     @commands.command(name="очередь", aliases=["queue", "q"])
     async def musicQueue(self, command: disnake.MessageCommand):
@@ -253,7 +338,7 @@ class CatcraftFM(commands.Cog):
             return
         if ctx.author not in ctx.channel.members:
             return
-        if self.vc is None or not self.vc.is_connected():
+        if self.vc is None or not self._vc_alive(self.vc):
             await ctx.reply("я сейчас не в голосовом канале", delete_after=5)
             return
 
