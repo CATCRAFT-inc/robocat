@@ -155,12 +155,10 @@ cython_debug/
 /old_disbot
 *.sqlite
 
-# Claude-сетап: сам сетап трекается, локальное/личное — нет
-.claude/*
-!.claude/settings.json
-!.claude/hooks/
-!.claude/rules/
-!.claude/agents/
+# Claude-сетап и агентские доки — локальные, в публичный репо не попадают
+.claude/
+CLAUDE.md
+AGENTS.md
 CLAUDE.local.md
 STATUS.md
 notify_failure.py
