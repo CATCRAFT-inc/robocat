@@ -6,6 +6,7 @@
 друг с другом.
 """
 
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -13,13 +14,20 @@ import openai
 import pytest
 from pydantic import BaseModel
 
-from bot.ai.llm import LLM, AIUnavailable, _Vendor, strip_thoughts
+from bot.ai.llm import LLM, RATE_LIMIT_COOLDOWN, AIUnavailable, _Vendor, strip_thoughts
 
 
 def _rate_limit_error() -> openai.RateLimitError:
     request = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
     response = httpx.Response(429, request=request, json={"error": {"message": "rate limited"}})
     return openai.RateLimitError("rate limited", response=response, body=None)
+
+
+def _permission_denied_error(message: str = "Consumer has been suspended.") -> openai.PermissionDeniedError:
+    # дефолт — так Gemini отвечает на заблокированный (suspended) ключ
+    request = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
+    response = httpx.Response(403, request=request, json={"error": {"message": message}})
+    return openai.PermissionDeniedError(message, response=response, body=None)
 
 
 def _fake_completion(content: str):
@@ -66,6 +74,58 @@ async def test_rate_limit_on_first_vendor_falls_back_to_second(llm_instance):
     # Первый вендор ушёл в кулдаун (15 минут)
     assert vendor1.available is False
     assert vendor2.available is True
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_cooldowns_vendor_and_falls_back(llm_instance):
+    # заблокированный ключ (403) не должен ронять запрос — вендор в кулдаун, ход следующему
+    vendor1 = make_vendor("V1")
+    vendor2 = make_vendor("V2")
+    vendor1._client.chat.completions.create.side_effect = _permission_denied_error()
+    vendor2._client.chat.completions.create.return_value = _fake_completion("ответ от второго вендора")
+
+    llm_instance.vendors = [vendor1, vendor2]
+
+    answer = await llm_instance.ask("привет")
+
+    assert answer == "ответ от второго вендора"
+    vendor1._client.chat.completions.create.assert_awaited_once()  # без ретрая — сразу кулдаун
+    assert vendor1.available is False
+    assert vendor2.available is True
+    # заблокированный ключ — длинный кулдаун (больше 15-минутного rate-limit)
+    assert vendor1.cooldown_until - time.time() > RATE_LIMIT_COOLDOWN + 60
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_moderation_gets_short_cooldown(llm_instance):
+    # пер-запросный 403 (модерация промпта) не должен выключать вендора на 6 часов
+    vendor1 = make_vendor("V1")
+    vendor2 = make_vendor("V2")
+    vendor1._client.chat.completions.create.side_effect = _permission_denied_error(
+        "Your input was flagged by moderation."
+    )
+    vendor2._client.chat.completions.create.return_value = _fake_completion("ответ")
+
+    llm_instance.vendors = [vendor1, vendor2]
+
+    assert await llm_instance.ask("привет") == "ответ"
+    assert vendor1.available is False
+    assert vendor1.cooldown_until - time.time() <= RATE_LIMIT_COOLDOWN + 60
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_on_all_vendors_raises_ai_unavailable(llm_instance):
+    vendor1 = make_vendor("V1")
+    vendor2 = make_vendor("V2")
+    vendor1._client.chat.completions.create.side_effect = _permission_denied_error()
+    vendor2._client.chat.completions.create.side_effect = _permission_denied_error()
+    llm_instance.vendors = [vendor1, vendor2]
+
+    with pytest.raises(AIUnavailable):
+        await llm_instance.ask("привет")
+
+    assert vendor1.available is False
+    assert vendor2.available is False
 
 
 @pytest.mark.asyncio

@@ -134,10 +134,12 @@ class LLM:
     # -------- учёт токенов --------
 
     async def _track_usage(self, response):
-        # Ленивый импорт: держим импорт модуля свободным от цепочки bot.utils/bot.bot,
-        # чтобы `import bot.ai.llm` не требовал сети/ключей и не ловил циклический импорт.
-        from bot.flag_system.flag_system import flags
         try:
+            # Ленивый импорт: держим импорт модуля свободным от цепочки bot.utils/bot.bot,
+            # чтобы `import bot.ai.llm` не требовал сети/ключей и не ловил циклический
+            # импорт. Именно ВНУТРИ try: скрипт с неканоничным порядком импорта поймал бы
+            # тут ImportError и уронил УСПЕШНЫЙ запрос из-за чистой телеметрии.
+            from bot.flag_system.flag_system import flags
             usage = getattr(response, "usage", None)
             if usage and usage.total_tokens:
                 await flags.setFlag("abstract", "token_used", f"+{usage.total_tokens}")
@@ -166,9 +168,17 @@ class LLM:
                     self.logger.warning("RateLimit у %s — кулдаун 15м", vendor.env)
                     vendor.cooldown(RATE_LIMIT_COOLDOWN)
                     break
-                except openai.AuthenticationError:
-                    self.logger.warning("AuthError у %s — кулдаун 6ч", vendor.env)
-                    vendor.cooldown(AUTH_COOLDOWN)
+                except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
+                    # 401 и 403 уровня ключа (suspended/заблокирован) лечатся только
+                    # руками — кулдаун 6ч. Но 403 бывает и пер-запросным (модерация
+                    # промпта, напр. у OpenRouter) — короткий кулдаун, чтобы один
+                    # флагнутый промпт не выключал живого вендора на 6 часов.
+                    key_level = isinstance(e, openai.AuthenticationError) or "suspend" in str(e).lower()
+                    seconds = AUTH_COOLDOWN if key_level else RATE_LIMIT_COOLDOWN
+                    self.logger.warning(
+                        "%s у %s — кулдаун %sм", type(e).__name__, vendor.env, seconds // 60
+                    )
+                    vendor.cooldown(seconds)
                     break
                 except (openai.InternalServerError, openai.APIConnectionError) as e:
                     self.logger.warning("Транзиентная ошибка у %s (попытка %s): %s", vendor.env, attempt + 1, e)
