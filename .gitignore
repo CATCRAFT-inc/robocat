@@ -155,12 +155,18 @@ cython_debug/
 /old_disbot
 *.sqlite
 
-/.claude
+# Claude-сетап: сам сетап трекается, локальное/личное — нет
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/rules/
+!.claude/agents/
+CLAUDE.local.md
+STATUS.md
 notify_failure.py
 /data/seasons
 data/ai_vendors.json
 #data/ai_settings.yaml
 /playground
 /data/catcraftfm
-CLAUDE.md
 _docs/

@@ -1,0 +1,49 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python main.py*)",
+      "Bash(python3 main.py*)",
+      "Bash(pytest*)",
+      "Bash(python -m pytest*)",
+      "Bash(python3 -m pytest*)",
+      "Bash(pip install -r requirements.txt*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(git fetch*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Grep(./.env)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guards.py\"",
+            "timeout": 10,
+            "statusMessage": "Guard: СТОП-ПРАВИЛА"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${CLAUDE_PROJECT_DIR}/STATUS.md\" ]; then echo '=== STATUS.md (авто-инъекция на старте сессии; обновляй на каждой точке ожидания) ==='; cat \"${CLAUDE_PROJECT_DIR}/STATUS.md\"; else echo 'STATUS.md не найден — создай по дисциплине из CLAUDE.md'; fi",
+            "timeout": 10,
+            "statusMessage": "Инъекция STATUS.md"
+          }
+        ]
+      }
+    ]
+  }
+}
