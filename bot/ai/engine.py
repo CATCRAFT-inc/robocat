@@ -421,14 +421,19 @@ class AIEngine(commands.Cog):
             return
         tool_rounds = 0
         attachment = None
-        while tool_rounds < 2:
+        # Лимит тул-раундов исчерпан → последний вызов идёт БЕЗ тулов: модель обязана
+        # ответить по уже собранному. Раньше цикл просто вываливался в заглушку
+        # «Слетели гайки», не дав модели ответить (вопросы «про все сезоны» стабильно
+        # выжигали оба раунда поисками по вики).
+        force_final = False
+        while True:
             try:
                 # Ротация вендоров, кулдауны и учёт токенов — всё внутри llm.complete
                 # В диалоге есть картинка → ротация только по vision-вендорам
                 needs_vision = any(isinstance(m.get("content"), list) for m in conversation)
                 response = await llm.complete(
                     conversation,
-                    tools=self.tools,
+                    tools=None if force_final else self.tools,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     top_p=self.top_p,
@@ -444,7 +449,7 @@ class AIEngine(commands.Cog):
 
             answer = response.choices[0].message
             conversation.append(answer.model_dump(exclude_none=True))
-            if answer.tool_calls:
+            if answer.tool_calls and not force_final:
                 for tc in answer.tool_calls:
                     result = None
                     async for event in self._executeTool(tc, Context(user)):
@@ -467,13 +472,14 @@ class AIEngine(commands.Cog):
                     })
                 yield Status("🤤 Ещё чуть-чуть думаю...")
                 tool_rounds += 1
+                if tool_rounds >= 2:
+                    force_final = True
                 continue
 
             final_answer = answer.content or " "
             final_answer = self.sanitize_answer(final_answer)
             yield FinalAnswer(final_answer, [attachment] if attachment else [])
             return
-        yield FinalAnswer("😞 *Слетели гайки... Попробуй спросить меня ещё раз.*")
             
     def sanitize_answer(self, text) -> str:
         text = strip_thoughts(text)
