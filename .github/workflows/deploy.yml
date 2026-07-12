@@ -38,7 +38,13 @@ jobs:
           port: ${{ secrets.VDS_PORT }}
           passphrase: ${{ secrets.VDS_KEY_PASSPHRASE }}
           script: |
+            # set -e: упавший pip раньше молча пропускался, и бот рестартовал
+            # с новым кодом без новых зависимостей (прецедент 12.07.2026: ddgs)
+            set -e
             cd /root/robocat
             git pull origin master
-            pip3 install -r requirements.txt --break-system-packages -q
+            # fallback --ignore-installed: apt-пакеты без RECORD (PyYAML и т.п.)
+            # pip удалить не может — ставим поверх в /usr/local, он шэдоувит apt
+            pip3 install -r requirements.txt --break-system-packages -q || \
+              pip3 install -r requirements.txt --break-system-packages --ignore-installed -q
             systemctl restart robocat
