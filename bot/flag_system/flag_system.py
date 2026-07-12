@@ -33,6 +33,9 @@ class Flags:
         p = pathlib.Path(__file__).parent.parent.parent
         self.dbpath = p / "data" / "db.sqlite"
         self.logger = logging.getLogger("robocat.flags")
+        if not self.dbpath.exists():
+            self.logger.warning("Файл БД %s не найден — выполните data/db_init.py, "
+                                "иначе флаги работать не будут", self.dbpath)
 
     def _defineEntityType(self, entity) -> str | None:
         if isinstance(entity, disnake.Thread):
@@ -113,29 +116,35 @@ class Flags:
                     )
                     await db.execute("COMMIT")
                 except BaseException:
+                    self.logger.exception("Ошибка транзакции инкремента флага %s на (%s, %s), откатываю",
+                                          flag, entity_type, entity_id)
                     await db.execute("ROLLBACK")
                     raise
             self.logger.info("[FLAG SET] %s on (%s, %s) = %s", flag, entity_type, entity_id, new_value)
             return True
 
-        async with aiosqlite.connect(self.dbpath) as db:
-            await db.execute(
-                """
-                INSERT INTO flags (entity_type, entity_id, flag, value, expires_at)
-                VALUES (:entity_type, :entity_id, :flag, :value, :expires_at)
-                ON CONFLICT(entity_type, entity_id, flag) DO UPDATE SET
-                    value = :value,
-                    expires_at = :expires_at
-                """,
-                {
-                    "entity_type": entity_type,
-                    "entity_id": entity_id,
-                    "flag": flag,
-                    "value": str(value) if value is not None else None,
-                    "expires_at": expires_at,
-                },
-            )
-            await db.commit()
+        try:
+            async with aiosqlite.connect(self.dbpath) as db:
+                await db.execute(
+                    """
+                    INSERT INTO flags (entity_type, entity_id, flag, value, expires_at)
+                    VALUES (:entity_type, :entity_id, :flag, :value, :expires_at)
+                    ON CONFLICT(entity_type, entity_id, flag) DO UPDATE SET
+                        value = :value,
+                        expires_at = :expires_at
+                    """,
+                    {
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "flag": flag,
+                        "value": str(value) if value is not None else None,
+                        "expires_at": expires_at,
+                    },
+                )
+                await db.commit()
+        except Exception:
+            self.logger.exception("Не удалось записать флаг %s на (%s, %s)", flag, entity_type, entity_id)
+            raise
         self.logger.info("[FLAG SET] %s on (%s, %s) = %s", flag, entity_type, entity_id, value)
         return True
 
@@ -143,12 +152,16 @@ class Flags:
         entity_type, entity_id = self._resolveEntity(entity)
         if entity_type is None:
             return None
-        async with aiosqlite.connect(self.dbpath) as db:
-            cursor = await db.execute(
-                "SELECT value, expires_at FROM flags WHERE entity_type=? AND entity_id=? AND flag=?",
-                (entity_type, entity_id, flag),
-            )
-            row = await cursor.fetchone()
+        try:
+            async with aiosqlite.connect(self.dbpath) as db:
+                cursor = await db.execute(
+                    "SELECT value, expires_at FROM flags WHERE entity_type=? AND entity_id=? AND flag=?",
+                    (entity_type, entity_id, flag),
+                )
+                row = await cursor.fetchone()
+        except Exception:
+            self.logger.exception("Не удалось прочитать флаг %s для (%s, %s)", flag, entity_type, entity_id)
+            raise
         if row is None:
             return None
         flag_row = FlagRow.from_row(row, entity_type, entity_id, flag)
@@ -165,12 +178,16 @@ class Flags:
         entity_type, entity_id = self._resolveEntity(entity)
         if entity_type is None:
             return None
-        async with aiosqlite.connect(self.dbpath) as db:
-            cursor = await db.execute(
-                "SELECT flag, value, expires_at FROM flags WHERE entity_type=? AND entity_id=?",
-                (entity_type, entity_id),
-            )
-            rows = await cursor.fetchall()
+        try:
+            async with aiosqlite.connect(self.dbpath) as db:
+                cursor = await db.execute(
+                    "SELECT flag, value, expires_at FROM flags WHERE entity_type=? AND entity_id=?",
+                    (entity_type, entity_id),
+                )
+                rows = await cursor.fetchall()
+        except Exception:
+            self.logger.exception("Не удалось получить флаги для (%s, %s)", entity_type, entity_id)
+            raise
         if not rows:
             return None
         now = int(time.time())
@@ -183,12 +200,16 @@ class Flags:
         return live or None
 
     async def getAllWithFlag(self, flag: str) -> list[tuple] | None:
-        async with aiosqlite.connect(self.dbpath) as db:
-            cursor = await db.execute(
-                "SELECT entity_type, entity_id, expires_at FROM flags WHERE flag=?",
-                (flag,),
-            )
-            rows = await cursor.fetchall()
+        try:
+            async with aiosqlite.connect(self.dbpath) as db:
+                cursor = await db.execute(
+                    "SELECT entity_type, entity_id, expires_at FROM flags WHERE flag=?",
+                    (flag,),
+                )
+                rows = await cursor.fetchall()
+        except Exception:
+            self.logger.exception("Не удалось получить сущности с флагом %s", flag)
+            raise
         if not rows:
             return None
         now = int(time.time())
@@ -209,12 +230,16 @@ class Flags:
         await self._removeFlagRaw(entity_type, entity_id, flag)
 
     async def _removeFlagRaw(self, entity_type: str, entity_id: int, flag: str):
-        async with aiosqlite.connect(self.dbpath) as db:
-            await db.execute(
-                "DELETE FROM flags WHERE entity_type=? AND entity_id=? AND flag=?",
-                (entity_type, entity_id, flag),
-            )
-            await db.commit()
+        try:
+            async with aiosqlite.connect(self.dbpath) as db:
+                await db.execute(
+                    "DELETE FROM flags WHERE entity_type=? AND entity_id=? AND flag=?",
+                    (entity_type, entity_id, flag),
+                )
+                await db.commit()
+        except Exception:
+            self.logger.exception("Не удалось удалить флаг %s у (%s, %s)", flag, entity_type, entity_id)
+            raise
 
 
 flags = Flags()

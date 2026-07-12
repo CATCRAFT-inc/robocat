@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from hashlib import md5
 from pathlib import Path
+import logging
 import uuid
 
 import aiohttp
@@ -10,6 +11,8 @@ from disnake.ext import commands
 
 from bot.storage import ColorStorage, Roles
 from bot.utils import create_container
+
+logger = logging.getLogger("robocat.search_player")
 
 
 # Ввод: никнейм
@@ -57,12 +60,14 @@ class PlayerInfoFinder(commands.Cog):
                     f"https://playerdb.co/api/player/minecraft/{nickname}"
                 ) as response:
                     if response.status != 200:
+                        logger.warning("playerdb.co вернул статус %s при проверке лицензии ника %s", response.status, nickname)
                         return False, None
                     data = await response.json()
                     if data.get("code") == "player.found":
                         return True, data["data"]["player"]["id"]
                     return False, None
-        except aiohttp.ClientError:
+        except aiohttp.ClientError as e:
+            logger.warning("playerdb.co недоступен, лицензию для ника %s считаем отсутствующей: %s", nickname, e)
             return False, None
 
     async def getOfflineUUID(self, nickname: str):
@@ -96,3 +101,4 @@ class PlayerInfoFinder(commands.Cog):
 
 def setup(bot: commands.Bot):
     bot.add_cog(PlayerInfoFinder(bot))
+    logger.info("Ког PlayerInfoFinder загружен")

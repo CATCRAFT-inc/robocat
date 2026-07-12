@@ -28,8 +28,10 @@ class Honeypot(commands.Cog):
         # Удаляем сообщение-приманку
         try:
             await message.delete()
-        except (disnake.Forbidden, disnake.NotFound, disnake.HTTPException):
+        except disnake.NotFound:
             pass
+        except (disnake.Forbidden, disnake.HTTPException):
+            logger.warning("Не удалось удалить сообщение-приманку %s от %s", message.id, author.id)
 
         # Мутим на максимум (28 дней)
         try:
@@ -37,6 +39,7 @@ class Honeypot(commands.Cog):
                 duration=timedelta(days=28),
                 reason="Ловушка: сообщение в канале-приманке",
             )
+            logger.info("Ловушка: %s (%s) замьючен на 28 дней", author, author.id)
         except disnake.Forbidden:
             logger.warning("Не удалось замутить %s (%s) — недостаточно прав", author, author.id)
         except disnake.HTTPException:
@@ -45,6 +48,7 @@ class Honeypot(commands.Cog):
         # Лог-пост с кнопками модерации
         log_channel = self.bot.get_channel(Channels.discord_logs)
         if log_channel is None:
+            logger.error("Канал логов %s не найден — лог-пост ловушки для %s не отправлен", Channels.discord_logs, author.id)
             return
 
         container = disnake.ui.Container(
@@ -134,6 +138,7 @@ class Honeypot(commands.Cog):
         except disnake.HTTPException:
             logger.exception("Ошибка бана %s", user_id)
             return "⚠️ Не удалось забанить (ошибка Discord)."
+        logger.info("Ловушка: %s забанен модератором %s", user_id, inter.author.id)
         return "🔨 **Забанен.**"
 
     async def _pardon(self, inter: disnake.MessageInteraction, user_id: int) -> str:
@@ -147,6 +152,7 @@ class Honeypot(commands.Cog):
         except disnake.HTTPException:
             logger.exception("Ошибка снятия мьюта %s", user_id)
             return "⚠️ Не удалось снять мут (ошибка Discord)."
+        logger.info("Ловушка: с %s снят мут модератором %s", user_id, inter.author.id)
         return "😇 **Помилован**, мут снят."
 
 

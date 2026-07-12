@@ -1,7 +1,11 @@
+import logging
+
 import disnake
 from disnake.ext import commands
 
 from bot.storage import Channels, FAQStorage, Roles
+
+logger = logging.getLogger("robocat.faq")
 
 
 class FAQ(commands.Cog):
@@ -14,6 +18,10 @@ class FAQ(commands.Cog):
             try:
                 ref_message = await ctx.channel.fetch_message(ctx.message.reference.message_id)
             except (disnake.NotFound, disnake.HTTPException):
+                logger.warning(
+                    "FAQ: не удалось получить reference-сообщение %s в канале %s, отвечаю без reply",
+                    ctx.message.reference.message_id, ctx.channel.id,
+                )
                 await ctx.channel.send(components=embed)
             else:
                 await ref_message.reply(components=embed)
@@ -261,3 +269,4 @@ class FAQ(commands.Cog):
 
 def setup(bot: commands.Bot):
     bot.add_cog(FAQ(bot))
+    logger.info("Ког FAQ загружен")

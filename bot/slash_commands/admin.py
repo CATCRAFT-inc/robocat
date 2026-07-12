@@ -1,9 +1,13 @@
+import logging
+
 import disnake
 from disnake.ext import commands
 
 from bot.flag_system.flag_system import flags
 from bot.storage import Buttons, ColorStorage, Embeds, Roles, Channels
 from bot.utils import create_embed
+
+logger = logging.getLogger("robocat.admin")
 
 # Словарь {имя: объект} доступных эмбедов/контейнеров (без служебных _-атрибутов)
 _EMBEDS = {name: getattr(Embeds, name) for name in vars(Embeds) if not name.startswith("_")}
@@ -44,14 +48,17 @@ class AdminCommands(commands.Cog):
         try:
             message = await inter.channel.fetch_message(int(message_id))
         except (ValueError, disnake.NotFound, disnake.HTTPException):
+            logger.warning("delete_until: не удалось получить сообщение %s в канале %s", message_id, inter.channel.id)
             await inter.send("Такого сообщения не нашёл.", ephemeral=True)
             return
         await inter.response.defer(ephemeral=True)
         try:
             deleted = await inter.channel.purge(limit=None, after=message.created_at)
         except disnake.HTTPException as e:
+            logger.exception("delete_until: не удалось удалить сообщения в канале %s", inter.channel.id)
             await inter.edit_original_response(f"Не удалось удалить сообщения: {e}")
             return
+        logger.info("delete_until: %s удалил %s сообщений в канале %s", inter.author.id, len(deleted), inter.channel.id)
         await inter.edit_original_response(f"Успешно удалено сообщений: {len(deleted)}")
 
     @commands.slash_command(name='test_some_shit', description='Команда тестирования всякого... говна.')
@@ -60,7 +67,7 @@ class AdminCommands(commands.Cog):
         #await Flags().setFlag(inter.author, "expire_test", "privet PIDORASI", "5сек")
         # has_flag = await Flags().hasFlag(inter.author, "expire_test")
         # print(has_flag)
-        print(inter.guild.member_count, len(inter.guild.members))
+        logger.info("test_some_shit: member_count=%s, в кэше=%s", inter.guild.member_count, len(inter.guild.members))
 
 
 
@@ -68,3 +75,4 @@ class AdminCommands(commands.Cog):
 
 def setup(bot: commands.Bot):
     bot.add_cog(AdminCommands(bot))
+    logger.info("Ког AdminCommands загружен")

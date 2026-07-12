@@ -9,6 +9,8 @@ load_dotenv()
 env = os.getenv("BOT_ENV", "prod")
 token = os.getenv("DEV_DISCORD_TOKEN") if env == "dev" else os.getenv("DISCORD_TOKEN")
 
+logger = logging.getLogger("robocat")
+
 def setup_logger():
     os.makedirs("logs", exist_ok=True)
     logger = logging.getLogger("robocat")
@@ -63,7 +65,11 @@ def load_extension():
     ]
     for i in extensions:
         bot.load_extension(f"bot.{i}")
+        logger.info("Загружен ког %s", i)
 
 setup_logger()
+if not token:
+    logger.critical("Токен Discord не найден в окружении (env=%s)", env)
+logger.info("Запуск бота, env=%s", env)
 load_extension()
 bot.run(token)

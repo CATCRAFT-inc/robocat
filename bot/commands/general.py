@@ -1,7 +1,11 @@
+import logging
+
 import disnake
 from disnake.ext import commands
 
 from bot.utils import create_container
+
+logger = logging.getLogger("robocat.general")
 
 
 class GeneralPrefixCommands(commands.Cog):
@@ -16,3 +20,4 @@ class GeneralPrefixCommands(commands.Cog):
 
 def setup(bot: commands.Bot):
     bot.add_cog(GeneralPrefixCommands(bot))
+    logger.info("Ког GeneralPrefixCommands загружен")

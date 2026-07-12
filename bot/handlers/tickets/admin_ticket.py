@@ -1,3 +1,5 @@
+import logging
+
 import disnake
 from disnake.ext import commands
 from disnake import TextInputStyle, GroupOption, RadioGroup
@@ -6,6 +8,8 @@ from disnake.ui import TextDisplay, TextInput, Label, Container, Separator
 from bot.flag_system.flag_system import flags
 from bot.storage import ColorStorage, Roles, Users
 from bot.utils import create_container
+
+logger = logging.getLogger("robocat.admin_ticket")
 
 
 class AdminTicket(commands.Cog):
@@ -41,12 +45,16 @@ class AdminTicket(commands.Cog):
             nick = modal["Никнейм"]
             bug_description = modal["Жалоба"]
             bug_thread_name = " ".join(bug_description.split(" ")[:5])
-            bug_thread = await channel.create_thread(
-                name=bug_thread_name,
-                type=disnake.ChannelType.private_thread,
-                auto_archive_duration=10080,
-                reason=f"Новый админ-тикет от {nick}"
-            )
+            try:
+                bug_thread = await channel.create_thread(
+                    name=bug_thread_name,
+                    type=disnake.ChannelType.private_thread,
+                    auto_archive_duration=10080,
+                    reason=f"Новый админ-тикет от {nick}"
+                )
+            except disnake.HTTPException:
+                logger.exception("Не удалось создать тред админ-тикета в канале %s", channel.id)
+                raise
             bug_container = disnake.ui.Container(
                 disnake.ui.TextDisplay(
                     content=f"# Админ-тикет от {nick} ({inter.author.mention})"
@@ -77,14 +85,19 @@ class AdminTicket(commands.Cog):
             await bug_thread.send(components=[bug_container])
             await inter.edit_original_response(f"Репорт админам создан! Перейди в него: <#{bug_thread.id}>")
             await flags.setFlag(bug_thread,"created_by",inter.author.id)
-            await inter.author.send(
-                components=create_container(
-                    f"## Тред админ-тикета ''{bug_thread_name}'' создан!",
-                    f"Сохраню тред здесь: https://discord.com/channels/{inter.guild_id}/{inter.channel_id}",
-                    "Треды пропадают через некоторое время, но эта ссылка позволяет тебе в любой момент вернуться!"
+            try:
+                await inter.author.send(
+                    components=create_container(
+                        f"## Тред админ-тикета ''{bug_thread_name}'' создан!",
+                        f"Сохраню тред здесь: https://discord.com/channels/{inter.guild_id}/{inter.channel_id}",
+                        "Треды пропадают через некоторое время, но эта ссылка позволяет тебе в любой момент вернуться!"
+                    )
                 )
-            )
+            except disnake.HTTPException:
+                logger.warning("Не удалось отправить ЛС автору админ-тикета %s (закрытые ЛС?)", inter.author.id)
+                raise
 
 
 def setup(bot: commands.Bot):
     bot.add_cog(AdminTicket(bot))
+    logger.info("Ког AdminTicket загружен")

@@ -50,6 +50,7 @@ class Digest(commands.Cog):
         for channel_id in Channels.digest_channels:
             channel = self.bot.get_channel(channel_id)
             if channel is None:
+                logger.warning("Канал дайджеста %s не найден — пропускаю", channel_id)
                 continue
             try:
                 async for msg in channel.history(after=cutoff, limit=200, oldest_first=True):

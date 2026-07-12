@@ -1,6 +1,10 @@
+import logging
+
 import disnake
 from disnake.ext import commands
 import re
+
+logger = logging.getLogger("robocat.idiot_check")
 
 
 class IdiotCheck(commands.Cog):
@@ -47,12 +51,14 @@ class IdiotCheck(commands.Cog):
 
         ai_engine = getattr(self.bot, 'ai_engine', None)
         if ai_engine is None:
+            logger.warning("AI-движок недоступен — проверка возраста для сообщения %s пропущена", message.id)
             return
 
         try:
             is_underage = await ai_engine.idiotCheck(message.content)
         except Exception:
-            return  # ИИ недоступен — молча пропускаем, это не повод ронять листенер
+            logger.exception("idiotCheck не отработал для сообщения %s — пропускаем", message.id)
+            return  # ИИ недоступен — пропускаем, это не повод ронять листенер
         if not is_underage:
             return
 
@@ -61,16 +67,18 @@ class IdiotCheck(commands.Cog):
         except disnake.NotFound:
             return
         except disnake.Forbidden:
+            logger.warning("Нет прав удалить сообщение %s с указанием возраста в канале %s", message.id, message.channel.id)
             note = ("Привет 🐾 На всякий случай удали своё сообщение сам — "
                     "на серверах лучше не писать свой возраст, это для твоей безопасности.")
         else:
+            logger.info("Удалено сообщение %s: пользователь %s указал возраст", message.id, message.author.id)
             note = ("Привет 🐾 Я удалил твоё сообщение — "
                     "на серверах лучше не писать свой возраст, это для твоей безопасности.")
 
         try:
             await message.author.send(note)
         except disnake.Forbidden:
-            pass 
+            logger.info("Не удалось отправить ЛС пользователю %s — закрыты личные сообщения", message.author.id)
 
 
 def setup(bot: commands.Bot):

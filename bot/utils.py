@@ -4,7 +4,10 @@ import disnake
 import datetime
 from .bot import commands
 
+import logging
 import re
+
+logger = logging.getLogger("robocat.utils")
 
 # def guild_check():
 #     async def predicate(ctx):
@@ -34,6 +37,7 @@ def create_embed(title: str = None,
         try:
             color = disnake.Colour.from_hex(color)
         except (ValueError, KeyError):
+            logger.warning("Некорректный HEX-цвет %r в create_embed — использую дефолтный", color)
             color = disnake.Colour.from_hex("#4f2dbe")
             
 

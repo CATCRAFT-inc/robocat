@@ -65,7 +65,7 @@ async def rcon_exec(host: str, port: int, password: str, command: str, timeout: 
         try:
             await writer.wait_closed()
         except Exception:
-            pass
+            logger.debug("RCON: не удалось корректно закрыть соединение", exc_info=True)
 
 
 class RCONHandler(commands.Cog):
@@ -95,13 +95,16 @@ class RCONHandler(commands.Cog):
         try:
             response = await rcon_exec(self.host, self.port, self.password, command)
         except PermissionError as e:
+            logger.error("RCON: аутентификация не прошла — неверный пароль")
             await inter.edit_original_response(f"❌ {e}")
             return
         except asyncio.TimeoutError:
+            logger.warning("RCON: таймаут подключения к серверу")
             await inter.edit_original_response("❌ Таймаут подключения к серверу")
             return
         except OSError as e:
-            logger.error("RCON connection failed: %s", e)
+            # str(e) может содержать адрес из .env — логируем только тип ошибки
+            logger.error("RCON: не удалось подключиться (%s)", type(e).__name__)
             await inter.edit_original_response(f"❌ Не удалось подключиться: `{e}`")
             return
         except Exception as e:
@@ -110,7 +113,7 @@ class RCONHandler(commands.Cog):
             return
 
         response_text = response.strip() if response else "*(Нет ответа)*"
-        logger.info("RCON [%s] by %s → %r → %r", self.host, inter.author, command, response_text[:100])
+        logger.info("RCON by %s → %r → %r", inter.author, command, response_text[:100])
 
         # Discord message limit is 2000; container TextDisplay limit ~4000
         display = response_text[:3900] if len(response_text) > 3900 else response_text

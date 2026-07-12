@@ -1,9 +1,13 @@
+import logging
+
 import disnake
 from disnake.ext import commands
 
 from bot.storage import Roles
 from bot.utils import parse_duration
 from .flag_system import flags
+
+logger = logging.getLogger("robocat.flags")
 
 
 def _format_flag_list(flag_list: list[tuple]) -> str:
@@ -29,6 +33,15 @@ class FlagCommands(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def cog_slash_command_error(self, inter: disnake.ApplicationCommandInteraction,
+                                      error: Exception) -> None:
+        if isinstance(error, commands.CheckFailure):
+            # не-админ ткнул админскую команду — штатный отказ, трейсбек не нужен
+            logger.info("Отказ в доступе к команде флагов %s: юзер %s",
+                        inter.application_command.name, inter.author.id)
+            return
+        logger.error("Ошибка в команде флагов %s", inter.application_command.name, exc_info=error)
 
     @commands.slash_command(name='list_user_flags', description="Показать все флаги пользователя")
     @commands.has_any_role(Roles.admin, Roles.st_admin)
@@ -136,3 +149,4 @@ class FlagCommands(commands.Cog):
 
 def setup(bot: commands.Bot):
     bot.add_cog(FlagCommands(bot))
+    logger.info("Ког FlagCommands загружен")

@@ -1,6 +1,7 @@
 import re
 
 import asyncio
+import logging
 import random
 import time
 
@@ -18,6 +19,8 @@ from bot.storage import Messages, Channels, Guilds
 
 os.environ["PYTHONIOENCODING"] = "UTF-8"
 
+logger = logging.getLogger("robocat.bot")
+
 intents = disnake.Intents.all()
 
 bot = commands.Bot(
@@ -33,10 +36,17 @@ bot = commands.Bot(
 
 @bot.event
 async def on_ready():
-    print("Я родился!")
+    logger.info("Бот готов: залогинен как %s (id=%s)", bot.user, bot.user.id)
     channel = bot.get_channel(Channels.secret)
     if channel:
         await channel.send('Я тут!')
+    else:
+        logger.warning("Секретный канал %s не найден — стартовое сообщение не отправлено", Channels.secret)
+
+@bot.event
+async def on_error(event, *args, **kwargs):
+    """Пишет необработанные исключения из listeners в bot.log (дефолт disnake печатает только в stderr)."""
+    logger.exception("Необработанная ошибка в событии %s", event)
 
 # TODO: Переписать, не работает
 # @bot.slash_command()
@@ -64,7 +74,7 @@ async def on_message(message: disnake.Message):
         try:
             await message.create_thread(name="Обсуждение", reason="Тред на новую новость")
         except disnake.HTTPException:
-            pass
+            logger.warning("Не удалось создать тред под новостью %s в канале %s", message.id, message.channel.id)
     elif isinstance(message.channel, DMChannel):
         # Если сообщение — ровно 4 цифры
         if re.fullmatch(r'\d{4}', message.content):
@@ -78,6 +88,8 @@ async def on_member_join(inter: disnake.Member):
     """
     if inter.guild.id == Guilds.main:
         channel = bot.get_channel(Channels.welcome)
+        if channel is None:
+            logger.error("Канал приветствий %s не найден — отправка welcome для %s сейчас упадёт", Channels.welcome, inter.id)
         if await flags.getFlag(inter, "left"):
             await channel.send(random.choice(Messages.join_again).replace("%1", f"<@{inter.id}>"))
             await flags.removeFlag(inter,"left","Зашёл обратно")

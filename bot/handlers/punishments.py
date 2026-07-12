@@ -1,9 +1,13 @@
+import logging
+
 import disnake
 from disnake.ext import commands
 
 from bot.flag_system.flag_system import Flags
 from bot.storage import Roles
 from bot.utils import duration_to_text, parse_duration
+
+logger = logging.getLogger("robocat.punishments")
 
 
 class PunishmentsHanlder(commands.Cog):
@@ -38,8 +42,10 @@ class PunishmentsHanlder(commands.Cog):
             await inter.send(f'Этого пользователя нельзя замутить!', ephemeral=True)
             return
         except Exception as e:
+            logger.exception("Не удалось замутить %s через /mute", mute_member.id)
             await inter.send(f'Чето пошло не так: {e}', ephemeral=True)
             return
+        logger.info("Мут (/mute): %s замьючен модератором %s на %s, причина: %s", mute_member.id, inter.author.id, duration, reason)
         await inter.send(components=disnake.ui.Container(
             disnake.ui.TextDisplay("## Мут!"),
             disnake.ui.Separator(),
@@ -54,7 +60,7 @@ class PunishmentsHanlder(commands.Cog):
                 disnake.ui.TextDisplay("-# Это ошибка? Напиши тикет в ''получить-помощь'' или свяжись с любым админом напрямую!")
             ))
         except disnake.Forbidden:
-            pass
+            logger.info("Не удалось отправить ЛС о муте пользователю %s — закрыты личные сообщения", mute_member.id)
 
 
     @commands.command(name='мут')
@@ -97,9 +103,11 @@ class PunishmentsHanlder(commands.Cog):
             await ctx.message.delete()
             return
         except Exception as e:
+            logger.exception("Не удалось замутить %s через !мут", mute_member.id)
             await ctx.author.send(f'Чето пошло не так: {e}')
             await ctx.message.delete()
             return
+        logger.info("Мут (!мут): %s замьючен модератором %s на %s, причина: %s", mute_member.id, ctx.author.id, duration, reason)
         await ctx.send(components=disnake.ui.Container(
             disnake.ui.TextDisplay("## Мут!"),
             disnake.ui.Separator(),
@@ -114,7 +122,7 @@ class PunishmentsHanlder(commands.Cog):
                 disnake.ui.TextDisplay("-# Это ошибка? Напиши тикет в ''получить-помощь'' или свяжись с любым админом напрямую!")
             ))
         except disnake.Forbidden:
-            pass
+            logger.info("Не удалось отправить ЛС о муте пользователю %s — закрыты личные сообщения", mute_member.id)
 
     # @commands.command(name='lololo')
     # @commands.has_any_role(Roles.admin, Roles.st_admin)

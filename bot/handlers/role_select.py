@@ -1,5 +1,9 @@
+import logging
+
 import disnake
 from disnake.ext import commands
+
+logger = logging.getLogger("robocat.roles")
 
 
 class RoleSelect(commands.Cog):
@@ -22,9 +26,15 @@ class RoleSelect(commands.Cog):
                         await inter.author.add_roles(role, reason="Выбрал роль в канале выбора ролей")
                         await inter.send(f"Роль {role.mention} успешно выдана!", ephemeral=True)
                 except disnake.Forbidden:
+                    logger.warning("Не хватает прав на роль %s для пользователя %s", role.id, inter.author.id)
                     await inter.send("У меня не хватает прав на эту роль — сообщи админам!", ephemeral=True)
+                except disnake.HTTPException:
+                    logger.exception("Не удалось изменить роль %s пользователю %s", role.id, inter.author.id)
+                    raise
             else:
+                logger.warning("Роль %s из дропдауна выбора ролей не найдена в гильдии %s", selected_role[0], inter.guild.id)
                 await inter.send("Ой-ёй! Бот не нашёл нужную роль... Сообщи пожалуйста в **баг-репорт**!", ephemeral=True)
 
 def setup(bot: commands.Bot):
     bot.add_cog(RoleSelect(bot))
+    logger.info("Ког RoleSelect загружен")

@@ -1,7 +1,11 @@
+import logging
+
 import disnake
 from disnake.ext import commands
 
 from bot.storage import Buttons
+
+logger = logging.getLogger("robocat.get_a_job")
 
 
 class GetAJob(commands.Cog):
@@ -30,3 +34,4 @@ class GetAJob(commands.Cog):
 
 def setup(bot: commands.Bot):
     bot.add_cog(GetAJob(bot))
+    logger.info("Ког GetAJob загружен")

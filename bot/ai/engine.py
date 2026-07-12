@@ -21,6 +21,8 @@ from pathlib import Path
 import yaml
 from PIL import Image
 from .wiki_search import wiki
+from .web_search import web
+from . import media
 from .llm import llm, AIUnavailable, strip_thoughts
 
 from dataclasses import dataclass, field
@@ -35,6 +37,7 @@ IMAGE_BACKEND = "codex"  # "codex" | "gemini"
 CODEX_BIN = "codex"  # на проде можно указать абсолютный путь, если бинарь не в PATH сервиса
 CODEX_IMAGE_TIMEOUT = 240  # секунд
 IMAGE_DAILY_LIMIT = 3  # картинок на юзера в сутки
+VIDEO_MAX_BYTES = 40 * 1024 * 1024
 
 @dataclass
 class Status:
@@ -89,6 +92,24 @@ class AIEngine(commands.Cog):
                 },
                 }
                 
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                "description": "Search the internet (free meta-search). For fresh/current info or anything NOT about Кошкокрафт",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Short search query (like you'd type in Google). Same language as expected sources: russian for ru-topics, english for global/tech."
+                        },
+                    },
+                    "required": ["query"],
+                },
+                }
+
             },
             {
                 "type": "function",
@@ -164,6 +185,35 @@ class AIEngine(commands.Cog):
         image = await attach.read()
         base64_image = base64.b64encode(image).decode('utf-8')
         return f"data:image/jpeg;base64,{base64_image}"
+
+    async def _videoParts(self, attach: disnake.Attachment) -> tuple[str, list[dict]]:
+        """Видео → (заметка для модели, image_url-части кадров).
+
+        Compat-endpoint видео не принимает вовсе, поэтому hosted-Gemma «смотрит»
+        ролик как равномерно выбранные кадры своим зрением (бесплатно и нативно).
+        Аудиодорожка не обрабатывается — платных/внешних транскрибаторов не держим."""
+        if attach.size > VIDEO_MAX_BYTES:
+            self.logger.warning("Видео-аттачмент слишком большой: %d байт", attach.size)
+            return "[[ User sent a video, but it's too large for you to watch. Tell them politely. ]]", []
+        try:
+            data = await attach.read()
+        except Exception:
+            self.logger.exception("Не удалось скачать видео-аттачмент %s", attach.id)
+            return "[[ User sent a video, but you couldn't watch it (processing failed). Tell them politely. ]]", []
+        frames, duration = await media.extract_frames(data)
+        if not frames:
+            return "[[ User sent a video, but you couldn't watch it (processing failed). Tell them politely. ]]", []
+        if duration:
+            intro = f"[[ User sent a video ({duration:.0f}s). You see {len(frames)} frames sampled evenly across it. "
+        else:
+            # без длительности ffmpeg берёт кадры с начала — не врём модели про «равномерно»
+            intro = f"[[ User sent a video of unknown length. You see {len(frames)} frames from its beginning. "
+        note = intro + "You can't hear its audio track. ]]"
+        parts = [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(f).decode()}"}}
+            for f in frames
+        ]
+        return note, parts
     
     async def _generateImage(self, prompt: str):
         try:
@@ -316,9 +366,12 @@ class AIEngine(commands.Cog):
                 content = f"({mes.author.display_name})" + mes.clean_content
                 attachment = mes.attachments[0] if mes.attachments else None
                 # content_type может быть None — защищаемся
-                is_image = attachment is not None and (attachment.content_type or "").startswith("image/")
-                # Картинку кодируем только у ПОСЛЕДНЕГО сообщения (текущее сообщение юзера)
-                # и только если у текущего вендора есть зрение — иначе дорого/бесполезно.
+                ctype = (attachment.content_type or "") if attachment is not None else ""
+                is_image = ctype.startswith("image/")
+                is_video = ctype.startswith("video/")
+                # Медиа обрабатываем только у ПОСЛЕДНЕГО сообщения (текущее сообщение
+                # юзера) — у старых это дорого и бесполезно. Картинки/видео — только
+                # если у текущего вендора есть зрение.
                 if attachment is not None and mes is last_message and has_vision and is_image:
                     processed_attachment = await self._base64Image(attachment)
                     conversation.append({
@@ -336,10 +389,23 @@ class AIEngine(commands.Cog):
                             }
                         ]
                     })
+                elif attachment is not None and mes is last_message and has_vision and is_video:
+                    note, frame_parts = await self._videoParts(attachment)
+                    content += note
+                    if frame_parts:
+                        conversation.append({
+                            "role": "user",
+                            "content": [{"type": "text", "text": content}, *frame_parts],
+                        })
+                    else:
+                        conversation.append({
+                            "role": "user",
+                            "content": content
+                        })
                 else:
                     if attachment is not None:
-                        if is_image and not has_vision:
-                            content += "[[ User provided an image, but you can't view images right now. Tell them about that politely. ]]"
+                        if (is_image or is_video) and not has_vision:
+                            content += "[[ User provided visual media, but you can't view it right now. Tell them about that politely. ]]"
                         elif mes is last_message:
                             content += "[[ User provided attachment that you can't process. Tell them about that politely.]]"
                         else:
@@ -365,6 +431,17 @@ class AIEngine(commands.Cog):
                     if results:
                         content = wiki.build_context(results)
                         yield _ToolDone(content=content, attachment=None)
+            case "web_search":
+                yield Status("🌐 Ищу в интернете...")
+                try:
+                    results = await web.search(args.get("query"))
+                except Exception:
+                    self.logger.exception("Веб-поиск упал на запросе тулзы")
+                    results = []
+                if results:
+                    yield _ToolDone(content=web.build_context(results))
+                else:
+                    yield _ToolDone(content="[[ Web search returned nothing (backends down or rate-limited). Tell user honestly the search failed and answer from your own knowledge, marking it may be outdated. ]]")
             case "generate_image":
                 if Roles.premium_ai & {r.id for r in ctx.user.roles}:
                     image_gen_flag = await self.flags.getFlag(ctx.user, "image_gen")

@@ -1,7 +1,11 @@
+import logging
+
 import disnake
 from disnake.ext import commands
 
 from bot.storage import Channels
+
+logger = logging.getLogger("robocat.misc")
 
 
 class Tests(commands.Cog):
@@ -19,14 +23,18 @@ class Tests(commands.Cog):
             if 'https' in message.content or message.attachments:
                 try:
                     await message.delete()
-                except (disnake.Forbidden, disnake.NotFound):
-                    pass
+                except (disnake.Forbidden, disnake.NotFound) as e:
+                    # NotFound (уже удалено) безобиден, а вот Forbidden — деградация модерации
+                    if isinstance(e, disnake.Forbidden):
+                        logger.warning("Не удалось удалить сообщение %s ограниченного пользователя в канале %s", message.id, message.channel.id)
 
     @commands.command("mess")
     @commands.is_owner()
     @commands.guild_only()
     async def sendMessages(self, inter: commands.Context):
         party_search = inter.guild.get_channel(Channels.requests)
+        if party_search is None:
+            logger.error("Канал запросов %s не найден — создание треда «Запросы» сейчас упадёт", Channels.requests)
         tag = party_search.get_tag(1218152835716354058)
         await party_search.create_thread(name="Запросы!", applied_tags=[tag], components=disnake.ui.Container(
             disnake.ui.TextDisplay("# Запросы!"),

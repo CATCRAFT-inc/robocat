@@ -64,6 +64,16 @@ class CatcraftFM(commands.Cog):
             return
         self._started = True
         self._task = asyncio.create_task(self._radio_supervisor())
+        self._task.add_done_callback(self._log_supervisor_done)
+        self.logger.info("CatCraft FM: радио-супервизор запущен")
+
+    def _log_supervisor_done(self, task: asyncio.Task):
+        """Done-callback таски супервизора: тихая смерть фоновой таски обязана попасть в лог."""
+        if task.cancelled():
+            # штатная отмена (cog_unload / рестарт через !radiostart) — не тревога
+            self.logger.info("радио-супервизор остановлен (отмена таски)")
+            return
+        self.logger.critical("радио-супервизор завершился: %r", task.exception())
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -176,6 +186,8 @@ class CatcraftFM(commands.Cog):
             await self._force_disconnect(guild.voice_client)
             return
 
+        self.logger.info("подключился к войс-каналу %s", self.CHANNEL_ID)
+
         try:
             await self._play_loop(self.vc)
         except asyncio.CancelledError:
@@ -284,7 +296,7 @@ class CatcraftFM(commands.Cog):
                         try:
                             vc.stop()
                         except Exception:
-                            pass
+                            self.logger.exception("vc.stop() упал при выходе из play_loop после отвала vc")
                         self._current_done = None
                         return
                     if elapsed >= self.MAX_TRACK_SECONDS:
@@ -295,7 +307,7 @@ class CatcraftFM(commands.Cog):
                         try:
                             vc.stop()
                         except Exception:
-                            pass
+                            self.logger.exception("vc.stop() упал при форс-скипе трека %s", track)
                         break
 
             self._current_done = None
@@ -376,7 +388,9 @@ class CatcraftFM(commands.Cog):
             return
         await ctx.reply("угу", delete_after=5)
         self._started = True
+        self.logger.info("радио перезапущено вручную (!radiostart) пользователем %s", ctx.author.id)
         self._task = asyncio.create_task(self._radio_supervisor())
+        self._task.add_done_callback(self._log_supervisor_done)
 
     def _requiredVotes(self, listeners: int) -> int:
         if listeners <= 1:
@@ -398,6 +412,7 @@ class CatcraftFM(commands.Cog):
 
     def cog_unload(self):
         if self._task and not self._task.done():
+            self.logger.info("CatCraft FM: ког выгружается, останавливаю радио-супервизор")
             self._task.cancel()
 
 

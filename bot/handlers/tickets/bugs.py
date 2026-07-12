@@ -29,13 +29,20 @@ def _load_bug_index() -> dict:
     try:
         with open(_BUG_INDEX_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        logger.warning("Индекс багов %s повреждён — начинаю с пустого", _BUG_INDEX_PATH)
         return {}
 
 
 def _save_bug_index(data: dict) -> None:
-    with open(_BUG_INDEX_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    try:
+        with open(_BUG_INDEX_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except OSError:
+        logger.exception("Не удалось сохранить индекс багов в %s", _BUG_INDEX_PATH)
+        raise
 
 
 async def remove_bug_from_index(thread_id: int) -> None:
@@ -115,17 +122,23 @@ class BugHandler(commands.Cog):
         async def callback(self, inter: disnake.ModalInteraction):
             await inter.response.defer(ephemeral=True)
             channel = inter.guild.get_channel(Channels.bugs)
+            if channel is None:
+                logger.error("Канал багов %s не найден в кэше — создание треда сейчас упадёт", Channels.bugs)
             modal = inter.resolved_values
             nick = modal["Никнейм"]
             bug_description = modal["Описание бага"]
             priority = modal["Приоритет"]
             bug_thread_name = " ".join(bug_description.split(" ")[:5])
-            bug_thread = await channel.create_thread(
-                name=bug_thread_name,
-                type=disnake.ChannelType.private_thread,
-                auto_archive_duration=10080,
-                reason=f"Новый баг-репорт от {nick}"
-            )
+            try:
+                bug_thread = await channel.create_thread(
+                    name=bug_thread_name,
+                    type=disnake.ChannelType.private_thread,
+                    auto_archive_duration=10080,
+                    reason=f"Новый баг-репорт от {nick}"
+                )
+            except disnake.HTTPException:
+                logger.exception("Не удалось создать тред баг-репорта в канале %s", Channels.bugs)
+                raise
             bug_container = disnake.ui.Container(
                 disnake.ui.TextDisplay(
                     content=f"# Баг! \nОт {nick} ({inter.author.mention})"
@@ -159,13 +172,17 @@ class BugHandler(commands.Cog):
             )
             await bug_thread.send(components=[bug_container])
             await inter.edit_original_response(f"Баг-репорт создан! Перейди в него: <#{bug_thread.id}>")
-            await inter.author.send(
-                components=create_container( 
-                    f"## Спасибо за репорт бага ''{bug_thread_name}''!",
-                    f"Сохраню канал баг-репорта здесь: https://discord.com/channels/{inter.guild_id}/{inter.channel_id}",
-                    "Треды пропадают через некоторое время, но эта ссылка позволяет тебе в любой момент вернуться!"
+            try:
+                await inter.author.send(
+                    components=create_container(
+                        f"## Спасибо за репорт бага ''{bug_thread_name}''!",
+                        f"Сохраню канал баг-репорта здесь: https://discord.com/channels/{inter.guild_id}/{inter.channel_id}",
+                        "Треды пропадают через некоторое время, но эта ссылка позволяет тебе в любой момент вернуться!"
+                    )
                 )
-            )
+            except disnake.HTTPException:
+                logger.warning("Не удалось отправить ЛС автору баг-репорта %s (закрытые ЛС?)", inter.author.id)
+                raise
             await flags.setFlag(bug_thread,"created_by",inter.author.id)
 
             # Дедупликация: ищем похожие баги по эмбеддингу описания
@@ -187,12 +204,17 @@ class BugHandler(commands.Cog):
                                 if cosine(vector, vec) >= 0.72:
                                     similar.append(entry)
                             except Exception:
+                                logger.exception("Ошибка сравнения эмбеддингов с багом %s", entry.get("url"))
                                 continue
                         if similar:
                             links = "\n".join(f"- {e['url']}" for e in similar[:3])
-                            await bug_thread.send(components=create_container(
-                                "🔍 Возможно, этот баг уже репортили:", links
-                            ))
+                            try:
+                                await bug_thread.send(components=create_container(
+                                    "🔍 Возможно, этот баг уже репортили:", links
+                                ))
+                            except disnake.HTTPException:
+                                logger.exception("Не удалось отправить подсказку о дубликатах в тред %s", bug_thread.id)
+                                raise
                         index[str(bug_thread.id)] = {
                             "text": bug_description,
                             "url": f"https://discord.com/channels/{inter.guild_id}/{bug_thread.id}",
@@ -201,10 +223,14 @@ class BugHandler(commands.Cog):
                         _save_bug_index(index)
 
             if 'getsockopt' in bug_description or 'гетсокопт' in bug_description:
-                await bug_thread.send(components=create_container(
-                    "## Авто-ответ по частой проблеме: `getsockopt`",
-                    FAQStorage.getsockopt
-                ))
+                try:
+                    await bug_thread.send(components=create_container(
+                        "## Авто-ответ по частой проблеме: `getsockopt`",
+                        FAQStorage.getsockopt
+                    ))
+                except disnake.HTTPException:
+                    logger.exception("Не удалось отправить авто-ответ getsockopt в тред %s", bug_thread.id)
+                    raise
 
 
     @commands.slash_command(name='clearbugs', description='Удаляет все треды с багами')
@@ -214,7 +240,11 @@ class BugHandler(commands.Cog):
             amount = len(threads)
             for trd in threads:
                 await remove_bug_from_index(trd.id)
-                await trd.delete()
+                try:
+                    await trd.delete()
+                except disnake.HTTPException:
+                    logger.exception("Не удалось удалить тред бага %s при чистке", trd.id)
+                    raise
             await inter.send(f"Удалено {amount} тредов!")
 
     @commands.slash_command(name='rebuild_bug_index', description='Перестроить индекс дедупликации багов')
@@ -232,10 +262,14 @@ class BugHandler(commands.Cog):
         count = 0
         for thread in channel.threads:
             first_bot_msg = None
-            async for msg in thread.history(limit=None, oldest_first=True):
-                if msg.author and self.bot.user and msg.author.id == self.bot.user.id:
-                    first_bot_msg = msg
-                    break
+            try:
+                async for msg in thread.history(limit=None, oldest_first=True):
+                    if msg.author and self.bot.user and msg.author.id == self.bot.user.id:
+                        first_bot_msg = msg
+                        break
+            except disnake.HTTPException:
+                logger.exception("Не удалось прочитать историю треда %s при перестройке индекса", thread.id)
+                raise
             if first_bot_msg is None:
                 continue
             text = first_bot_msg.content or _extract_component_text(first_bot_msg.components)
@@ -261,6 +295,7 @@ class BugHandler(commands.Cog):
             count += 1
         async with _bug_index_lock:
             _save_bug_index(index)
+        logger.info("Индекс багов перестроен: %d записей", count)
         await inter.edit_original_response(f"Индекс перестроен: {count} багов.")
 
 
