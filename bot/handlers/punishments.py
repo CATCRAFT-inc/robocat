@@ -65,10 +65,14 @@ class PunishmentsHanlder(commands.Cog):
 
     @commands.command(name='мут')
     @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.moderator)
-    async def prefixMute(self, 
+    async def prefixMute(self,
                         ctx: commands.Context,
                         duration: str = '3д',
+                        *,
                         reason: str = 'Без причины'):
+        # reason — keyword-only (после *): парсер disnake отдаёт такому аргументу
+        # весь остаток сообщения. Без этого причина обрезалась до первого слова
+        # (issue #3): `!мут 3д привет мир` клал в reason только «привет».
         if not ctx.message.reference:
             await ctx.author.send("Замутить можно только ответом на сообщение!")
             await ctx.message.delete()
