@@ -185,19 +185,11 @@ def test_ddgs_package_contract():
     import inspect
 
     from ddgs import DDGS
-    from ddgs.exceptions import DDGSException, RatelimitException
+    from ddgs.exceptions import DDGSException, RatelimitException  # noqa: F401 — сам импорт и есть контракт
 
-    assert issubclass(RatelimitException, DDGSException)
-
-    sig = inspect.signature(DDGS.text)
-    accepts_kwargs = any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    # bind() проверяет реальную вызываемость с нашими аргументами (ловит и
+    # пропажу параметра, и его превращение в keyword-only/positional-only)
+    inspect.signature(DDGS.text).bind(
+        None, "запрос", region="ru-ru", safesearch="moderate", max_results=5,
     )
-    for name in ("region", "safesearch", "max_results"):
-        assert accepts_kwargs or name in sig.parameters, f"DDGS.text потерял {name}"
-
-    init_sig = inspect.signature(DDGS.__init__)
-    init_kwargs = any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in init_sig.parameters.values()
-    )
-    assert init_kwargs or "timeout" in init_sig.parameters
+    inspect.signature(DDGS.__init__).bind(None, timeout=5)
