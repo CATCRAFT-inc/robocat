@@ -492,11 +492,16 @@ class AIEngine(commands.Cog):
                     if attachment:
                         # Счётчик ДО yield: после FinalAnswer потребитель делает return,
                         # оставляя этот генератор подвешенным — код за yield недостижим,
-                        # и дневной лимит картинок не считался вовсе.
-                        if image_gen_flag:
-                            await self.flags.setFlag(ctx.user, "image_gen", value="+1")
-                        else:
-                            await self.flags.setFlag(ctx.user, "image_gen", value="1", expires_at="1д")
+                        # и дневной лимит картинок не считался вовсе. Сбой записи лимита
+                        # (залоченная SQLite) НЕ должен выбрасывать готовую картинку —
+                        # fail-open: хуже несчитанный лимит, чем потерянная минута codex.
+                        try:
+                            if image_gen_flag:
+                                await self.flags.setFlag(ctx.user, "image_gen", value="+1")
+                            else:
+                                await self.flags.setFlag(ctx.user, "image_gen", value="1", expires_at="1д")
+                        except Exception:
+                            self.logger.exception("Не удалось учесть лимит картинки для %s", getattr(ctx.user, "id", "?"))
                         yield FinalAnswer(content="Твоя картиночка готова!", attachments=attachment)
                     else:
                         yield _ToolDone(content="[[ Image generation failed. Tell user that something went wrong and they should try again later. ]]")
