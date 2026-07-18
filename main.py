@@ -53,6 +53,7 @@ def load_extension():
         "handlers.rcon",          # RCON команды
         "handlers.honeypot",      # Ловушка для ботов
         "handlers.digest",        # /digest — выжимка новостей
+        "handlers.news_editor",   # /news — редактор новостей
 
         ### AI
         "ai.handler",
