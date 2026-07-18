@@ -63,8 +63,14 @@ class Channels:
     welcome = 1138425079231938683
 
     honeypot = 1520843204591751178  # войс "Для Ботов" — ловушка для спам-ботов
-    news_reaction_channels = [1139036448201392218, 1139036637519683584]  # объявления, газета — реакции + тред
-    digest_channels = [1139036448201392218, 1139036637519683584, 1298348275514216478, 1209527512091070505]  # объявления, газета, медиа, информатор
+
+    ## Новостные каналы
+    announcements = 1139036448201392218  # Объявления
+    newspaper = 1139036637519683584      # Газета
+    media_news = 1298348275514216478     # Медиа
+    informator = 1209527512091070505     # Информатор
+    news_reaction_channels = [announcements, newspaper]  # реакции + тред
+    digest_channels = [announcements, newspaper, media_news, informator]
 
 # TODO: Сделать динамично
 
