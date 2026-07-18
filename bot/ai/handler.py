@@ -120,12 +120,22 @@ class AIMessageHandler(commands.Cog):
     async def _streamAnswer(self, message: disnake.Message, conversation: list, *, ping: bool):
         async with message.channel.typing():
             thinking_message = None
+            # История вызовов тулов (issue #2): прошлые статусы остаются в сообщении
+            # мелкими -#-строками, текущий — обычным текстом. buildConverstaion
+            # срезает этот лог при чтении истории, чтобы модель не ела его как свой ответ.
+            status_log: list[str] = []
             async for event in self.ai_engine.generateAnswer(conversation, message.author):
                 if isinstance(event, FinalAnswer):
-                    if len(event.content) > 1999:
+                    log = "\n".join(f"-# {s}" for s in status_log)
+                    combined = f"{log}\n\n{event.content}" if log else event.content
+                    if len(combined) > 1999:
                         chunks = await self._buildLongMessage(event.content)
                         if thinking_message:
-                            await thinking_message.delete()
+                            if log:
+                                # лог остаётся отдельным сообщением над нарезкой
+                                await thinking_message.edit(log)
+                            else:
+                                await thinking_message.delete()
                             thinking_message = None
                         for mes in chunks:
                             await self._send(message, ping, content="-# cut", components=disnake.ui.Container(
@@ -136,24 +146,29 @@ class AIMessageHandler(commands.Cog):
                     else:
                         if thinking_message:
                             if event.attachments:
-                                await thinking_message.edit(event.content, files=event.attachments)
+                                await thinking_message.edit(combined, files=event.attachments)
                             else:
-                                await thinking_message.edit(event.content)
+                                await thinking_message.edit(combined)
                         else:
                             if event.attachments:
-                                await self._send(message, ping, content=event.content, files=event.attachments)
+                                await self._send(message, ping, content=combined, files=event.attachments)
                             else:
-                                await self._send(message, ping, content=event.content)
+                                await self._send(message, ping, content=combined)
                 elif isinstance(event, Status):
+                    log = "\n".join(f"-# {s}" for s in status_log)
+                    text = f"{log}\n{event.content}" if log else event.content
+                    status_log.append(event.content)
                     if thinking_message:
-                        await thinking_message.edit(event.content)
+                        await thinking_message.edit(text)
                     else:
-                        thinking_message = await self._send(message, ping, content=event.content)
+                        thinking_message = await self._send(message, ping, content=text)
                 elif isinstance(event, AIError):
+                    log = "\n".join(f"-# {s}" for s in status_log)
+                    text = f"{log}\n{event.content}" if log else event.content
                     if thinking_message:
-                        await thinking_message.edit(event.content)
+                        await thinking_message.edit(text)
                     else:
-                        thinking_message = await self._send(message, ping, content=event.content)
+                        await self._send(message, ping, content=text)
                     return
 
     @commands.Cog.listener("on_message")

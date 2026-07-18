@@ -363,6 +363,16 @@ class AIEngine(commands.Cog):
                 if content.count("-# cut") > 0:
                     content = "[[ This message was cutted out due to Discord message length limit, but the answer was full. ]]"
                     content = content.replace("-# cut", "")
+                # Срезаем -#-лог действий (историю вызовов тулов, issue #2) с начала
+                # своего же ответа: модель не должна перечитывать его как свой текст
+                log_lines = 0
+                lines = content.split("\n")
+                while log_lines < len(lines) and lines[log_lines].startswith("-# "):
+                    log_lines += 1
+                if log_lines:
+                    content = "\n".join(lines[log_lines:]).lstrip("\n")
+                    if not content.strip():
+                        continue  # сообщение целиком было логом (длинные ответы)
                 conversation.append({
                     "role": "assistant",
                     "content": content
