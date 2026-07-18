@@ -20,8 +20,10 @@ _THREAD_SUMMARY_TRIGGER = 6000
 _THREAD_HISTORY_LIMIT = 40
 
 _MSK = datetime.timezone(datetime.timedelta(hours=3))
-# Все флаги AI-треда — снимаем их скопом при удалении/очистке
-_AICHAT_FLAGS = ("ai_chat", "ai_summary", "ai_summary_upto", "created_by", "ai_delete_warn")
+# Все флаги AI-треда — снимаем их скопом при удалении/очистке.
+# ai_chat — ПОСЛЕДНИМ: это маркер обнаружения для клинера; сбой уборки на
+# полпути без него оставил бы остальные флаги невидимыми сиротами
+_AICHAT_FLAGS = ("ai_summary", "ai_summary_upto", "created_by", "ai_delete_warn", "ai_chat")
 
 
 class AIMessageHandler(commands.Cog):
@@ -33,6 +35,9 @@ class AIMessageHandler(commands.Cog):
 
         self.user_request_limit: int = 35
         self._bg_tasks: set = set()  # ссылки на фоновые таски, чтобы GC их не убил
+        # треды с бегущим сжатием: параллельные _compressSummary иначе
+        # перемешивали пары (ai_summary, ai_summary_upto) между собой
+        self._compressing: set[int] = set()
 
     async def cog_load(self):
         await self.ai_engine.load_ai(self.bot)
@@ -42,31 +47,24 @@ class AIMessageHandler(commands.Cog):
     def cog_unload(self):
         self.aiChatCleaner.cancel()
 
-    async def _reachedLimit(self, user: disnake.User):
-        """Ограничен ли юзер по лимиту запросов нейросети
+    async def _consumeRequest(self, user: disnake.Member) -> bool:
+        """Атомарно списать один запрос лимита 35 RPD. False — лимит исчерпан.
 
-        Args:
-            user (disnake.User): _description_
-        """
-        # User - 35 RPD
-        # Admins, K+, Boosters - inf RPD
+        Раньше проверка и списание были разделены всем LLM-вызовом: пачка
+        одновременных сообщений на 34-м запросе проходила проверку вся разом,
+        а параллельный старт счётчика терял списания. Теперь решение принимает
+        атомарный инкремент в SQL (Admins/K+/Boosters — без лимита)."""
         if Roles.premium_ai & {r.id for r in user.roles}:
-            return False
-        is_locked = await flags.getFlag(user, "ai_locked")
-        if is_locked:
             return True
-        return False
-
-    async def _limiter(self, user: disnake.User):
-        if Roles.premium_ai & {r.id for r in user.roles}:
-            return
-        current_req = await flags.getFlag(user, "airequests")
-        if current_req is None:
-            await flags.setFlag(user, "airequests", 1, expires_at="8ч")
-        else:
-            await flags.incrementFlag(user, "airequests", 1)
-            if int(current_req.value) + 1 >= self.user_request_limit:
-                await flags.setFlag(user, "ai_locked", None, "8ч")
+        # пре-чек: уже залоченный юзер не крутит счётчик (и не продлевает его)
+        if await flags.getFlag(user, "ai_locked"):
+            return False
+        count = await flags.incrementFlag(user, "airequests", 1, create_expires_at="8ч")
+        if count is None:
+            return True  # ponytail: сбой учёта не блокирует ответ (fail-open)
+        if count == self.user_request_limit:
+            await flags.setFlag(user, "ai_locked", None, "8ч")
+        return count <= self.user_request_limit
 
     async def _buildLongMessage(self, text: str) -> list[str]:
         chunks = []
@@ -220,9 +218,9 @@ class AIMessageHandler(commands.Cog):
         if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
             await message.reply("*Робокотик остужает свой процессор... Поговори с ним попозже.*")
             return
-        if await self._reachedLimit(message.author):
+        if not await self._consumeRequest(message.author):
             ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
-            # Флаг мог истечь между _reachedLimit и этим чтением (ленивый expiry) → None
+            # Флаг мог истечь между проверкой и этим чтением (ленивый expiry) → None
             expires_raw = ai_locked_flag.expires_at if ai_locked_flag else None
             expires_at = f"<t:{expires_raw}:R>" if expires_raw else "попозже"
             await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
@@ -245,9 +243,6 @@ class AIMessageHandler(commands.Cog):
             current_msg = prev_msg
 
         conversation = await self.ai_engine.buildConverstaion(messages)
-        # Списание ДО запроса: раньше пачка одновременных сообщений успевала
-        # пройти проверку лимита, пока первый ответ ещё генерился (обход 35 RPD)
-        await self._limiter(message.author)
         await self._streamAnswer(message, conversation, ping=True)
 
     async def _handleThreadMessage(self, message: disnake.Message):
@@ -257,7 +252,7 @@ class AIMessageHandler(commands.Cog):
             return
         # Лимит 35 RPD действует и в тредах: раньше участник AI-треда слал
         # запросы без ограничений (премиум/бустер — без лимита, как и в упоминаниях)
-        if await self._reachedLimit(message.author):
+        if not await self._consumeRequest(message.author):
             ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
             expires_raw = ai_locked_flag.expires_at if ai_locked_flag else None
             expires_at = f"<t:{expires_raw}:R>" if expires_raw else "попозже"
@@ -296,14 +291,15 @@ class AIMessageHandler(commands.Cog):
                 "content": f"[[ Summary of the earlier part of this conversation: {summary_flag.value} ]]"
             })
 
-        # списание до запроса — как в _handleMention (анти-обход пачкой сообщений)
-        await self._limiter(message.author)
         await self._streamAnswer(message, conversation, ping=False)
 
         # Фоновое сжатие только НОВОЙ обрезанной части: ai_summary_upto хранит id
         # последнего уже сжатого сообщения — раньше каждое сообщение треда заново
         # пересжимало тот же хвост (жгло utility-квоту, гонка last-write-wins).
         # -#-лог действий срезаем, чтобы он не утекал в выжимку.
+        # Известный потолок: хвост копится только в окне последних 40 сообщений —
+        # медленная струйка коротких сообщений может выпасть из окна, не добравшись
+        # до порога сжатия. Отслеживание полной истории с upto не стоит сложности.
         upto_flag = await flags.getFlag(thread, "ai_summary_upto")
         upto = int(upto_flag.value) if upto_flag else 0
         fresh = [m for m in trimmed if m.id > upto]
@@ -313,13 +309,20 @@ class AIMessageHandler(commands.Cog):
             if text:
                 parts.append(f"({m.author.display_name}): {text}")
         trimmed_text = "\n".join(parts)
-        if len(trimmed_text) > _THREAD_SUMMARY_TRIGGER:
+        if len(trimmed_text) > _THREAD_SUMMARY_TRIGGER and thread.id not in self._compressing:
+            # single-flight на тред: пара (summary, upto) пишется одним таском
+            self._compressing.add(thread.id)
             old_summary = summary_flag.value if summary_flag else ""
             task = asyncio.create_task(
                 self._compressSummary(thread, old_summary, trimmed_text, fresh[-1].id)
             )
             self._bg_tasks.add(task)
-            task.add_done_callback(self._bg_tasks.discard)
+
+            def _compressDone(t, tid=thread.id):
+                self._bg_tasks.discard(t)
+                self._compressing.discard(tid)
+
+            task.add_done_callback(_compressDone)
 
     async def _compressSummary(self, thread: disnake.Thread, old_summary: str,
                                trimmed_text: str, upto_id: int):

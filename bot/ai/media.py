@@ -68,9 +68,10 @@ async def extract_frames(data: bytes, *, max_frames: int = MAX_VIDEO_FRAMES) -> 
     """Равномерно распределённые кадры видео (jpg) и его длительность.
 
     Кадров не больше max_frames независимо от длины ролика."""
-    # дисковый I/O (запись до 40 МБ, чтение кадров, rmtree) — в поток,
-    # медленный диск VDS не должен подвешивать event loop на каждое видео
-    workdir = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="robocat_media_"))
+    # Тяжёлый дисковый I/O (запись до 40 МБ, чтение кадров, rmtree) — в поток.
+    # mkdtemp остаётся синхронным: он дёшев, а отменённый to_thread мог бы
+    # создать каталог уже после отмены — без ссылки и без cleanup (утечка /tmp)
+    workdir = Path(tempfile.mkdtemp(prefix="robocat_media_"))
     try:
         src = workdir / "in.bin"
         await asyncio.to_thread(src.write_bytes, data)
