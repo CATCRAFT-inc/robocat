@@ -289,6 +289,8 @@ class BugHandler(commands.Cog):
         # Снапшот времени старта: баги, созданные ВО ВРЕМЯ скана, при записи
         # индекса сохраняем из текущего индекса, а не теряем перезаписью
         scan_start_snowflake = disnake.utils.time_snowflake(datetime.now(timezone.utc))
+        async with _bug_index_lock:
+            keys_before_scan = set(_load_bug_index())
         index = {}
         count = 0
         for thread in channel.threads:
@@ -326,6 +328,9 @@ class BugHandler(commands.Cog):
             count += 1
         async with _bug_index_lock:
             current = _load_bug_index()
+            # тред, закрытый /done ВО ВРЕМЯ скана (был до, исчез сейчас), — не воскрешаем
+            for tid in keys_before_scan - set(current):
+                index.pop(tid, None)
             for tid, entry in current.items():
                 if tid not in index and int(tid) >= scan_start_snowflake:
                     index[tid] = entry  # свежий баг, добавленный параллельно скану
