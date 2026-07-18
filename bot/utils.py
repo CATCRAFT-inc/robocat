@@ -116,7 +116,11 @@ def parse_duration(duration_str):
     if not digits or unit not in _TIME_MULTIPLIERS:
         return None
 
-    return int(digits) * _TIME_MULTIPLIERS[unit]
+    try:
+        # str.isdigit пропускает суперскрипты/circled digits ('⁵'), а int() на них падает
+        return int(digits) * _TIME_MULTIPLIERS[unit]
+    except ValueError:
+        return None
 
 def duration_to_text(dur_str):
     """
@@ -135,7 +139,10 @@ def duration_to_text(dur_str):
     if not digits or unit not in _TIME_FORMS:
         return dur_str
 
-    nums = int(digits)
+    try:
+        nums = int(digits)
+    except ValueError:  # суперскрипты/circled digits проходят isdigit, но не int()
+        return dur_str
     one, few, many = _TIME_FORMS[unit]
 
     if nums % 10 == 1 and nums % 100 != 11:

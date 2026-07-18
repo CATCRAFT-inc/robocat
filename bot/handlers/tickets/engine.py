@@ -260,9 +260,10 @@ class TicketEngine(commands.Cog):
                     if comment:
                         idea_embed.add_field(name="Комментарий", value=comment)
                     await thread.send(f"{owner.mention if owner else ''}", embed=idea_embed)
+                    await inter.send("💫 Идея отмечена как добавленная!", ephemeral=True)
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/done)", thread.id)
-                    raise
+                    await inter.send("Не удалось отметить идею — детали в логах.", ephemeral=True)
 
             case Channels.requests:
                 tag_done = forum.get_tag_by_name('Исполнено')
@@ -278,9 +279,10 @@ class TicketEngine(commands.Cog):
                     if comment:
                         request_embed.add_field(name="Комментарий", value=comment)
                     await thread.send(f"{owner.mention if owner else ''}", embed=request_embed)
+                    await inter.send("💫 Запрос отмечен как выполненный!", ephemeral=True)
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/done)", thread.id)
-                    raise
+                    await inter.send("Не удалось отметить запрос — детали в логах.", ephemeral=True)
 
             case Channels.bugs:
                 await inter.response.defer()
@@ -327,9 +329,10 @@ class TicketEngine(commands.Cog):
                     )
                     idea_embed.add_field(name="Причина:", value=reason or "Не указали...")
                     await thread.send(f"{owner.mention if owner else ''}", embed=idea_embed)
+                    await inter.send("Идея отклонена.", ephemeral=True)
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/decline)", thread.id)
-                    raise
+                    await inter.send("Не удалось отклонить идею — детали в логах.", ephemeral=True)
 
             case Channels.requests:
                 tag_done = forum.get_tag_by_name('Исполнено')
@@ -344,9 +347,10 @@ class TicketEngine(commands.Cog):
                     request_embed = create_embed(title="😔 Запрос отклонён", color=disnake.Colour.yellow)
                     request_embed.add_field(name="Причина", value=reason or "Не указали...")
                     await thread.send(f"{owner.mention if owner else ''}", embed=request_embed)
+                    await inter.send("Запрос отклонён.", ephemeral=True)
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/decline)", thread.id)
-                    raise
+                    await inter.send("Не удалось отклонить запрос — детали в логах.", ephemeral=True)
 
             case Channels.bugs:
                 await inter.response.defer()

@@ -123,6 +123,45 @@ async def test_20_parallel_increments_give_20(flags_db):
 
 
 @pytest.mark.asyncio
+async def test_increment_on_expired_flag_starts_fresh(flags_db):
+    # +N поверх протухшего счётчика не должен складывать со старым значением
+    member = make_member(666)
+    await flags_db.setFlag(member, "cnt", 5)
+    past = int(time.time()) - 10
+    async with aiosqlite.connect(flags_db.dbpath) as db:
+        await db.execute(
+            "UPDATE flags SET expires_at=? WHERE entity_type='member' AND entity_id=? AND flag='cnt'",
+            (past, member.id),
+        )
+        await db.commit()
+    await flags_db.setFlag(member, "cnt", "+1", expires_at="8ч")
+    row = await flags_db.getFlag(member, "cnt")
+    assert row.value == "1"  # не "6": стартовали заново
+
+
+@pytest.mark.asyncio
+async def test_expired_cleanup_does_not_delete_fresh_flag(flags_db):
+    """TOCTOU: условное удаление не должно снести свежепоставленный флаг того же ключа."""
+    member = make_member(777)
+    # кладём протухший ai_locked
+    await flags_db.setFlag(member, "ai_locked", "v")
+    past = int(time.time()) - 10
+    async with aiosqlite.connect(flags_db.dbpath) as db:
+        await db.execute(
+            "UPDATE flags SET expires_at=? WHERE entity_type='member' AND entity_id=? AND flag='ai_locked'",
+            (past, member.id),
+        )
+        await db.commit()
+    # эмулируем гонку: свежий флаг поставлен ДО того, как ленивое удаление добралось до DELETE
+    await flags_db.setFlag(member, "ai_locked", "fresh", expires_at="8ч")
+    # прямой вызов условного удаления (как из getFlag на протухшей строке) не должен снести свежий
+    await flags_db._removeExpiredRaw("member", member.id, "ai_locked")
+    row = await flags_db.getFlag(member, "ai_locked")
+    assert row is not None
+    assert row.value == "fresh"
+
+
+@pytest.mark.asyncio
 async def test_non_numeric_increment_fails_and_keeps_value(flags_db):
     member = make_member(666)
     await flags_db.setFlag(member, "text_flag", "hello")

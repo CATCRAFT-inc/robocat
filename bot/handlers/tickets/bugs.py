@@ -128,7 +128,9 @@ class BugHandler(commands.Cog):
             nick = modal["Никнейм"]
             bug_description = modal["Описание бага"]
             priority = modal["Приоритет"]
-            bug_thread_name = " ".join(bug_description.split(" ")[:5])
+            # Первые 5 слов, но не длиннее лимита имени треда Discord (100): URL/лог-строка
+            # в начале описания легко его превышает и роняет create_thread с 400.
+            bug_thread_name = " ".join(bug_description.split(" ")[:5])[:100] or "Баг-репорт"
             try:
                 bug_thread = await channel.create_thread(
                     name=bug_thread_name,
@@ -181,8 +183,9 @@ class BugHandler(commands.Cog):
                     )
                 )
             except disnake.HTTPException:
+                # Закрытые ЛС — штатная ситуация; НЕ роняем callback, иначе теряются
+                # created_by (архив «Автор: неизвестен») и вся дедупликация ниже.
                 logger.warning("Не удалось отправить ЛС автору баг-репорта %s (закрытые ЛС?)", inter.author.id)
-                raise
             await flags.setFlag(bug_thread,"created_by",inter.author.id)
 
             # Дедупликация: ищем похожие баги по эмбеддингу описания

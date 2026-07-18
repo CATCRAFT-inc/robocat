@@ -70,6 +70,67 @@ async def test_tool_rounds_exhausted_forces_final_answer_without_tools(engine, m
     assert tools_per_call[2] is None
 
 
+async def test_empty_choices_yields_error_not_indexerror(engine, monkeypatch):
+    async def fake_complete(conversation, *, tools=None, **kwargs):
+        response = MagicMock()
+        response.choices = []  # safety-фильтр вендора вернул пустой список
+        return response
+
+    monkeypatch.setattr("bot.ai.engine.llm.complete", fake_complete)
+
+    from bot.ai.engine import AIError
+    events = [e async for e in engine.generateAnswer(
+        [{"role": "user", "content": "(вася)привет"}], user=None,
+    )]
+    assert any(isinstance(e, AIError) for e in events)
+    assert not any(isinstance(e, FinalAnswer) for e in events)
+
+
+async def test_tool_crash_does_not_kill_answer(engine, monkeypatch):
+    # wiki.search падает → тул-раунд не должен убить весь ответ, модель дответит
+    monkeypatch.setattr("bot.ai.engine.wiki.search", AsyncMock(side_effect=RuntimeError("БД лежит")))
+    calls = []
+
+    async def fake_complete(conversation, *, tools=None, **kwargs):
+        calls.append(tools)
+        if len(calls) == 1:
+            return _response(tool_calls=[_tool_call("search_wiki", {"query": "x"})])
+        return _response(content="Ответил по памяти.")
+
+    monkeypatch.setattr("bot.ai.engine.llm.complete", fake_complete)
+
+    events = [e async for e in engine.generateAnswer(
+        [{"role": "user", "content": "(вася)что там по вики"}], user=None,
+    )]
+    finals = [e for e in events if isinstance(e, FinalAnswer)]
+    assert len(finals) == 1
+    assert finals[0].content == "Ответил по памяти."
+
+
+async def test_malformed_tool_arguments_do_not_crash(engine, monkeypatch):
+    # Gemma иногда отдаёт tool_calls с невалидным JSON в arguments
+    bad_tc = MagicMock()
+    bad_tc.id = "tc-bad"
+    bad_tc.function.name = "search_wiki"
+    bad_tc.function.arguments = "{не json"
+    calls = []
+
+    async def fake_complete(conversation, *, tools=None, **kwargs):
+        calls.append(tools)
+        if len(calls) == 1:
+            return _response(tool_calls=[bad_tc])
+        return _response(content="Всё равно ответил.")
+
+    monkeypatch.setattr("bot.ai.engine.llm.complete", fake_complete)
+
+    events = [e async for e in engine.generateAnswer(
+        [{"role": "user", "content": "(вася)вопрос"}], user=None,
+    )]
+    finals = [e for e in events if isinstance(e, FinalAnswer)]
+    assert len(finals) == 1
+    assert finals[0].content == "Всё равно ответил."
+
+
 async def test_plain_answer_returns_immediately(engine, monkeypatch):
     calls = []
 

@@ -162,6 +162,10 @@ class AIMessageHandler(commands.Cog):
             return
         if message.content.startswith("!"):
             return
+        # Только на сервере: в ЛС message.author — User без .roles, и лимитер падал
+        # AttributeError на любой ответ игрока на DM-уведомление бота (тикеты, муты).
+        if message.guild is None:
+            return
 
         # AI-треды: любое сообщение в треде с флагом ai_chat обрабатывается без пинга
         if isinstance(message.channel, disnake.Thread):
@@ -183,11 +187,9 @@ class AIMessageHandler(commands.Cog):
             return
         if await self._reachedLimit(message.author):
             ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
-            expires_at = ai_locked_flag.expires_at or None
-            if expires_at:
-                expires_at = f"<t:{expires_at}:R>"
-            else:
-                expires_at = "попозже"
+            # Флаг мог истечь между _reachedLimit и этим чтением (ленивый expiry) → None
+            expires_raw = ai_locked_flag.expires_at if ai_locked_flag else None
+            expires_at = f"<t:{expires_raw}:R>" if expires_raw else "попозже"
             await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
             return
 

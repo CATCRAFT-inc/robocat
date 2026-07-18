@@ -463,11 +463,14 @@ class AIEngine(commands.Cog):
                     else:
                         attachment = await self._generateImage(prompt)
                     if attachment:
-                        yield FinalAnswer(content="Твоя картиночка готова!", attachments=attachment)
+                        # Счётчик ДО yield: после FinalAnswer потребитель делает return,
+                        # оставляя этот генератор подвешенным — код за yield недостижим,
+                        # и дневной лимит картинок не считался вовсе.
                         if image_gen_flag:
                             await self.flags.setFlag(ctx.user, "image_gen", value="+1")
                         else:
                             await self.flags.setFlag(ctx.user, "image_gen", value="1", expires_at="1д")
+                        yield FinalAnswer(content="Твоя картиночка готова!", attachments=attachment)
                     else:
                         yield _ToolDone(content="[[ Image generation failed. Tell user that something went wrong and they should try again later. ]]")
                 else:
@@ -529,19 +532,33 @@ class AIEngine(commands.Cog):
                 yield AIError("😞 *У Робокотика полетели гайки...*")
                 return
 
+            # Пустой choices (напр. сработал safety-фильтр вендора) — не роняем ответ
+            # необработанным IndexError, а отдаём честную ошибку.
+            if not response.choices:
+                self.logger.warning("LLM вернул пустой choices — вероятно, safety-фильтр вендора")
+                yield AIError("😞 *У Робокотика полетели гайки...*")
+                return
+
             answer = response.choices[0].message
             conversation.append(answer.model_dump(exclude_none=True))
             if answer.tool_calls and not force_final:
                 for tc in answer.tool_calls:
                     result = None
-                    async for event in self._executeTool(tc, Context(user)):
-                        if isinstance(event, _ToolDone):
-                            result = event
-                        elif isinstance(event, FinalAnswer):
-                            yield event
-                            return
-                        else:
-                            yield event
+                    # Падение тула (битые args модели, ошибка БД памяти, не-Member)
+                    # не должно молча убивать весь ответ — превращаем в tool-result,
+                    # чтобы модель дответила по собранному.
+                    try:
+                        async for event in self._executeTool(tc, Context(user)):
+                            if isinstance(event, _ToolDone):
+                                result = event
+                            elif isinstance(event, FinalAnswer):
+                                yield event
+                                return
+                            else:
+                                yield event
+                    except Exception:
+                        self.logger.exception("Тул %s упал", getattr(tc.function, "name", "?"))
+                        result = _ToolDone("[[ The tool crashed. Tell the user something went wrong; answer from your own knowledge if you can. ]]")
                     if result is None:
                         result = _ToolDone("[[ Tool returned nothing ]]")
                     if result.attachment:

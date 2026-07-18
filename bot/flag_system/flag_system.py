@@ -84,11 +84,15 @@ class Flags:
                 await db.execute("BEGIN IMMEDIATE")
                 try:
                     cursor = await db.execute(
-                        "SELECT value FROM flags WHERE entity_type=? AND entity_id=? AND flag=?",
+                        "SELECT value, expires_at FROM flags WHERE entity_type=? AND entity_id=? AND flag=?",
                         (entity_type, entity_id, flag),
                     )
                     row = await cursor.fetchone()
-                    if row is not None and row[0] is not None:
+                    # Протухшую строку трактуем как отсутствующую: иначе +N сложил бы
+                    # новое значение поверх мёртвого счётчика (стартуем с value).
+                    row_live = (row is not None and row[0] is not None
+                                and (row[1] is None or row[1] >= int(time.time())))
+                    if row_live:
                         try:
                             base = int(row[0])
                         except (ValueError, TypeError):
@@ -166,7 +170,7 @@ class Flags:
             return None
         flag_row = FlagRow.from_row(row, entity_type, entity_id, flag)
         if flag_row.is_expired:
-            await self.removeFlag(entity, flag, "expired")
+            await self._removeExpiredRaw(entity_type, entity_id, flag)
             return None
         return flag_row
 
@@ -194,7 +198,7 @@ class Flags:
         live = []
         for flag_name, value, exp in rows:
             if exp is not None and exp < now:
-                await self._removeFlagRaw(entity_type, entity_id, flag_name)
+                await self._removeExpiredRaw(entity_type, entity_id, flag_name)
             else:
                 live.append((flag_name, value, exp))
         return live or None
@@ -216,7 +220,7 @@ class Flags:
         live = []
         for entity_type, entity_id, exp in rows:
             if exp is not None and exp < now:
-                await self._removeFlagRaw(entity_type, entity_id, flag)
+                await self._removeExpiredRaw(entity_type, entity_id, flag)
             else:
                 live.append((entity_type, entity_id, exp))
         return live or None
@@ -239,6 +243,22 @@ class Flags:
                 await db.commit()
         except Exception:
             self.logger.exception("Не удалось удалить флаг %s у (%s, %s)", flag, entity_type, entity_id)
+            raise
+
+    async def _removeExpiredRaw(self, entity_type: str, entity_id: int, flag: str):
+        """Ленивое удаление протухшего флага. Условие `expires_at < now` в самом
+        DELETE закрывает TOCTOU: между чтением протухшей строки и удалением другой
+        таск мог поставить свежий флаг (напр. новый ai_locked) — его не сносим."""
+        try:
+            async with aiosqlite.connect(self.dbpath) as db:
+                await db.execute(
+                    "DELETE FROM flags WHERE entity_type=? AND entity_id=? AND flag=? "
+                    "AND expires_at IS NOT NULL AND expires_at < ?",
+                    (entity_type, entity_id, flag, int(time.time())),
+                )
+                await db.commit()
+        except Exception:
+            self.logger.exception("Не удалось удалить протухший флаг %s у (%s, %s)", flag, entity_type, entity_id)
             raise
 
 

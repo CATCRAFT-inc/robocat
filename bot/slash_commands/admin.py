@@ -33,11 +33,11 @@ class AdminCommands(commands.Cog):
             await inter.send("Такого эмбеда/контейнера нет!", ephemeral=True)
             return
         if isinstance(embed, disnake.ui.Container):
-            await inter.send(f"Container {embed_name} отправлен.", ephemeral=True)
             await inter.channel.send(components=[embed])
+            await inter.send(f"Container {embed_name} отправлен.", ephemeral=True)
         elif isinstance(embed, disnake.Embed):
-            await inter.send(f"Embed {embed_name} отправлен.", ephemeral=True)
             await inter.channel.send(content=message, embed=embed)
+            await inter.send(f"Embed {embed_name} отправлен.", ephemeral=True)
         else:
             await inter.send("Этот объект нельзя отправить как эмбед/контейнер.", ephemeral=True)
 
