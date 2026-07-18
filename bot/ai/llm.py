@@ -142,7 +142,7 @@ class LLM:
             from bot.flag_system.flag_system import flags
             usage = getattr(response, "usage", None)
             if usage and usage.total_tokens:
-                await flags.setFlag("abstract", "token_used", f"+{usage.total_tokens}")
+                await flags.incrementFlag("abstract", "token_used", usage.total_tokens)
         except Exception:
             self.logger.exception("Не удалось записать использованные токены")
 

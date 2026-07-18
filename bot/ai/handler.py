@@ -64,7 +64,7 @@ class AIMessageHandler(commands.Cog):
         if current_req is None:
             await flags.setFlag(user, "airequests", 1, expires_at="8ч")
         else:
-            await flags.setFlag(user, "airequests", "+1")
+            await flags.incrementFlag(user, "airequests", 1)
             if int(current_req.value) + 1 >= self.user_request_limit:
                 await flags.setFlag(user, "ai_locked", None, "8ч")
 

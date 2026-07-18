@@ -74,8 +74,8 @@ async def bug_rate_limit_ok(inter: disnake.MessageInteraction) -> bool:
             await flags.setFlag(inter.author, "create_bug_cooldown", "true", "15мин")
             return False
         if created_bugs:
-            # "+1" — атомарный инкремент в SQL, а не read-modify-write в питоне
-            await flags.setFlag(inter.author, "created_bugs", "+1", expires_at="15мин")
+            # атомарный инкремент в SQL, а не read-modify-write в питоне
+            await flags.incrementFlag(inter.author, "created_bugs", 1, expires_at="15мин")
         else:
             await flags.setFlag(inter.author, "created_bugs", 1, expires_at="15мин")
         return True

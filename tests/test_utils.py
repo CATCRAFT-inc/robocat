@@ -36,9 +36,17 @@ def test_parse_duration_valid_units(raw, expected_seconds):
     123,         # не строка
     "⁵мин",      # суперскрипт проходит isdigit, но int() кидает — не должно ронять
     "①ч",        # circled digit — то же самое
+    "1.5ч",      # дробь: раньше фильтр съедал точку и парсил как 15ч
+    "-1д",       # знак: раньше парсился как +1д
+    "1д2ч",      # составные строки не поддерживаются
+    "мут 5мин",  # мусор вокруг числа
 ])
 def test_parse_duration_invalid_returns_none(raw):
     assert parse_duration(raw) is None
+
+
+def test_parse_duration_allows_space_before_unit():
+    assert parse_duration("5 мин") == 300
 
 
 def test_duration_to_text_unicode_digit_returns_input():

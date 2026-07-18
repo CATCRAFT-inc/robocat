@@ -34,14 +34,34 @@ bot = commands.Bot(
     owner_id=531208170098655233
 )
 
+_greeted = False  # «Я тут!» — только на первый ready: reconnect-ready дёргается постоянно
+
+
 @bot.event
 async def on_ready():
     logger.info("Бот готов: залогинен как %s (id=%s)", bot.user, bot.user.id)
+    global _greeted
+    if _greeted:
+        return
+    _greeted = True
     channel = bot.get_channel(Channels.secret)
     if channel:
         await channel.send('Я тут!')
     else:
         logger.warning("Секретный канал %s не найден — стартовое сообщение не отправлено", Channels.secret)
+
+
+@bot.listen()
+async def on_slash_command_error(inter: disnake.ApplicationCommandInteraction, error: commands.CommandError):
+    """Глобальный обработчик слэш-команд: не-админ получает внятный ephemeral-отказ
+    вместо «Приложение не отвечает», остальные ошибки — в bot.log."""
+    if isinstance(error, commands.CheckFailure):
+        try:
+            await inter.response.send_message("Эта команда не для тебя :3", ephemeral=True)
+        except disnake.HTTPException:
+            pass  # интеракция протухла/уже отвечена — отказ и так случился
+        return
+    logger.error("Ошибка слэш-команды %s", inter.application_command.name, exc_info=error)
 
 @bot.event
 async def on_error(event, *args, **kwargs):
