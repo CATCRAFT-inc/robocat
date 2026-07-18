@@ -8,7 +8,7 @@ from disnake.ext import commands, tasks
 from bot.flag_system.flag_system import flags
 from bot.storage import Channels, ColorStorage, Roles
 from .admin_ticket import AdminTicket
-from bot.handlers.tickets.bugs import BugHandler, remove_bug_from_index, _extract_component_text
+from bot.handlers.tickets.bugs import BugHandler, remove_bug_from_index, bug_rate_limit_ok, _extract_component_text
 from bot.utils import create_container, create_embed
 
 try:  # W3 создаёт этот модуль; выжимка — необязательная фича
@@ -49,7 +49,10 @@ class TicketEngine(commands.Cog):
                     content = (content + " " + " ".join(a.url for a in msg.attachments)).strip()
                 lines.append(f"[{ts}] {author}: {content}")
         except disnake.HTTPException:
-            logger.exception("Не удалось собрать историю тикета %s", thread.id)
+            # Транскрипт неполон — НЕ рапортуем успех, иначе вызывающий удалит тред
+            # и переписка потеряется навсегда. Тред остаётся для повтора.
+            logger.exception("Не удалось собрать историю тикета %s — архив прерван, тред не трогаем", thread.id)
+            return False
         transcript = "\n".join(lines) if lines else "(пусто)"
 
         summary = "⚠️ Выжимка недоступна"
@@ -224,7 +227,8 @@ class TicketEngine(commands.Cog):
             case "TICKET_POLICE":
                 await inter.send(components=create_container("## КСБ пока что нет!", "Сезон-то не начался, хех!"), ephemeral=True)
             case "TICKET_BUGREPORT":
-                await inter.response.send_modal(BugHandler.BugModal())
+                if await bug_rate_limit_ok(inter):
+                    await inter.response.send_modal(BugHandler.BugModal())
             case _:
                 await inter.send("Бот не нашёл такой тип тикета — сообщи в **баг-репорт**!", ephemeral=True)
 
@@ -260,9 +264,10 @@ class TicketEngine(commands.Cog):
                     if comment:
                         idea_embed.add_field(name="Комментарий", value=comment)
                     await thread.send(f"{owner.mention if owner else ''}", embed=idea_embed)
+                    await inter.send("💫 Идея отмечена как добавленная!", ephemeral=True)
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/done)", thread.id)
-                    raise
+                    await inter.send("Не удалось отметить идею — детали в логах.", ephemeral=True)
 
             case Channels.requests:
                 tag_done = forum.get_tag_by_name('Исполнено')
@@ -278,9 +283,10 @@ class TicketEngine(commands.Cog):
                     if comment:
                         request_embed.add_field(name="Комментарий", value=comment)
                     await thread.send(f"{owner.mention if owner else ''}", embed=request_embed)
+                    await inter.send("💫 Запрос отмечен как выполненный!", ephemeral=True)
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/done)", thread.id)
-                    raise
+                    await inter.send("Не удалось отметить запрос — детали в логах.", ephemeral=True)
 
             case Channels.bugs:
                 await inter.response.defer()
@@ -327,9 +333,10 @@ class TicketEngine(commands.Cog):
                     )
                     idea_embed.add_field(name="Причина:", value=reason or "Не указали...")
                     await thread.send(f"{owner.mention if owner else ''}", embed=idea_embed)
+                    await inter.send("Идея отклонена.", ephemeral=True)
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/decline)", thread.id)
-                    raise
+                    await inter.send("Не удалось отклонить идею — детали в логах.", ephemeral=True)
 
             case Channels.requests:
                 tag_done = forum.get_tag_by_name('Исполнено')
@@ -344,9 +351,10 @@ class TicketEngine(commands.Cog):
                     request_embed = create_embed(title="😔 Запрос отклонён", color=disnake.Colour.yellow)
                     request_embed.add_field(name="Причина", value=reason or "Не указали...")
                     await thread.send(f"{owner.mention if owner else ''}", embed=request_embed)
+                    await inter.send("Запрос отклонён.", ephemeral=True)
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/decline)", thread.id)
-                    raise
+                    await inter.send("Не удалось отклонить запрос — детали в логах.", ephemeral=True)
 
             case Channels.bugs:
                 await inter.response.defer()

@@ -89,7 +89,13 @@ async def on_member_join(inter: disnake.Member):
     if inter.guild.id == Guilds.main:
         channel = bot.get_channel(Channels.welcome)
         if channel is None:
-            logger.error("Канал приветствий %s не найден — отправка welcome для %s сейчас упадёт", Channels.welcome, inter.id)
+            # cache-miss (частый после реконнекта) — пробуем дозапросить, иначе выходим,
+            # а не падаем на channel.send(None), теряя welcome каждому входящему
+            try:
+                channel = await bot.fetch_channel(Channels.welcome)
+            except (disnake.NotFound, disnake.Forbidden, disnake.HTTPException):
+                logger.error("Канал приветствий %s недоступен — welcome для %s не отправлен", Channels.welcome, inter.id)
+                return
         if await flags.getFlag(inter, "left"):
             await channel.send(random.choice(Messages.join_again).replace("%1", f"<@{inter.id}>"))
             await flags.removeFlag(inter,"left","Зашёл обратно")

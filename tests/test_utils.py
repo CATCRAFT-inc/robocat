@@ -34,9 +34,16 @@ def test_parse_duration_valid_units(raw, expected_seconds):
     "5",         # нет единицы
     None,        # не строка
     123,         # не строка
+    "⁵мин",      # суперскрипт проходит isdigit, но int() кидает — не должно ронять
+    "①ч",        # circled digit — то же самое
 ])
 def test_parse_duration_invalid_returns_none(raw):
     assert parse_duration(raw) is None
+
+
+def test_duration_to_text_unicode_digit_returns_input():
+    # «⁵д» не должно ронять ValueError — контракт «не кидает, возвращает исходное»
+    assert duration_to_text("⁵д") == "⁵д"
 
 
 # -------------------- duration_to_text --------------------

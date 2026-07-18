@@ -197,6 +197,10 @@ class AIMessageHandler(commands.Cog):
             return
         if message.content.startswith("!"):
             return
+        # Только на сервере: в ЛС message.author — User без .roles, и лимитер падал
+        # AttributeError на любой ответ игрока на DM-уведомление бота (тикеты, муты).
+        if message.guild is None:
+            return
 
         # AI-треды: любое сообщение в треде с флагом ai_chat обрабатывается без пинга
         if isinstance(message.channel, disnake.Thread):
@@ -218,11 +222,9 @@ class AIMessageHandler(commands.Cog):
             return
         if await self._reachedLimit(message.author):
             ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
-            expires_at = ai_locked_flag.expires_at or None
-            if expires_at:
-                expires_at = f"<t:{expires_at}:R>"
-            else:
-                expires_at = "попозже"
+            # Флаг мог истечь между _reachedLimit и этим чтением (ленивый expiry) → None
+            expires_raw = ai_locked_flag.expires_at if ai_locked_flag else None
+            expires_at = f"<t:{expires_raw}:R>" if expires_raw else "попозже"
             await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
             return
 
@@ -319,7 +321,14 @@ class AIMessageHandler(commands.Cog):
     @commands.slash_command(name='aichat', description="Создать приватный чат с нейросетью")
     @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.booster, Roles.kotikplus)
     async def aiChat(self, inter: disnake.MessageCommandInteraction):
+        # defer сразу: создание треда + 2 флага + send не укладываются в 3с-дедлайн
+        # интеракции, иначе токен протухал и оставался бы осиротевший тред
+        await inter.response.defer(ephemeral=True)
         channel = inter.guild.get_channel(Channels.for_bots)
+        if channel is None:
+            self.logger.error("Канал для тредов %s не найден — /aichat не сработал", Channels.for_bots)
+            await inter.edit_original_response("Не нашёл канал для приватных тредов — сообщи админам.")
+            return
         thread = await channel.create_thread(
                 name=f'ии-{inter.author.display_name}',
                 type=disnake.ChannelType.private_thread,
@@ -343,7 +352,7 @@ class AIMessageHandler(commands.Cog):
             ),
             )
         )
-        await inter.send(f"Приватный тред создан - <#{thread.id}>", ephemeral=True)
+        await inter.edit_original_response(f"Приватный тред создан - <#{thread.id}>")
 
     @commands.Cog.listener("on_button_click")
     async def aiChatClose(self, inter: disnake.MessageInteraction):

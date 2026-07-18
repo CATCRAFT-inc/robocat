@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from hashlib import md5
 from pathlib import Path
+import asyncio
 import logging
 import uuid
 
@@ -64,15 +65,20 @@ class PlayerInfoFinder(commands.Cog):
                         return False, None
                     data = await response.json()
                     if data.get("code") == "player.found":
-                        return True, data["data"]["player"]["id"]
+                        pid = data.get("data", {}).get("player", {}).get("id")
+                        return (True, pid) if pid else (False, None)
                     return False, None
-        except aiohttp.ClientError as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.warning("playerdb.co недоступен, лицензию для ника %s считаем отсутствующей: %s", nickname, e)
             return False, None
 
     async def getOfflineUUID(self, nickname: str):
-        digest = md5(f'OfflinePlayer:{nickname}'.encode('utf-8')).digest()
-        return str(uuid.UUID(bytes=digest))
+        # Как Java UUID.nameUUIDFromBytes: сырой md5 надо пометить версией 3 и
+        # IETF-variant, иначе UUID не совпадёт с настоящим офлайн-UUID пиратки.
+        b = bytearray(md5(f'OfflinePlayer:{nickname}'.encode('utf-8')).digest())
+        b[6] = (b[6] & 0x0f) | 0x30  # версия 3
+        b[8] = (b[8] & 0x3f) | 0x80  # variant
+        return str(uuid.UUID(bytes=bytes(b)))
 
     @commands.slash_command(name='get_player_data', description='Найти всю возможную информацию по нику/пользователю ДС')
     @commands.has_any_role(Roles.admin, Roles.st_admin)

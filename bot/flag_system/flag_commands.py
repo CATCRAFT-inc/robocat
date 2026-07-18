@@ -53,7 +53,7 @@ class FlagCommands(commands.Cog):
                 disnake.ui.TextDisplay(f"Флаги пользователя {user.mention}"),
                 disnake.ui.Separator(),
                 disnake.ui.TextDisplay(_format_flag_list(flag_list))
-            ), allowed_mentions=disnake.AllowedMentions(users=False))
+            ), ephemeral=True, allowed_mentions=disnake.AllowedMentions(users=False))
         else:
             await inter.send("У данного пользователя нет флагов.", ephemeral=True)
 
@@ -70,7 +70,7 @@ class FlagCommands(commands.Cog):
                 disnake.ui.TextDisplay(f"Флаг `{flag}` пользователя {user.mention}"),
                 disnake.ui.Separator(),
                 disnake.ui.TextDisplay(value_str)
-            ), allowed_mentions=disnake.AllowedMentions(users=False))
+            ), ephemeral=True, allowed_mentions=disnake.AllowedMentions(users=False))
         else:
             await inter.send("У данного пользователя нет такого флага.", ephemeral=True)
 
@@ -86,7 +86,7 @@ class FlagCommands(commands.Cog):
                 disnake.ui.TextDisplay(f"Флаги канала {channel.mention}"),
                 disnake.ui.Separator(),
                 disnake.ui.TextDisplay(_format_flag_list(flag_list))
-            ), allowed_mentions=disnake.AllowedMentions(users=False))
+            ), ephemeral=True, allowed_mentions=disnake.AllowedMentions(users=False))
         else:
             await inter.send("У данного канала нет флагов.", ephemeral=True)
 

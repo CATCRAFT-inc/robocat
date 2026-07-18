@@ -57,6 +57,7 @@ cover/
 
 # Django stuff:
 *.log
+logs/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -154,6 +155,10 @@ cython_debug/
 
 /old_disbot
 *.sqlite
+data/db.sqlite*
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 
 # Claude-сетап и агентские доки — локальные, в публичный репо не попадают
 .claude/

@@ -50,7 +50,9 @@ async def test_build_long_message_splits_and_reopens_code_block(handler):
     # тем же языком, кроме последнего куска (это конец сообщения)
     for chunk in chunks[:-1]:
         assert chunk.endswith("```")
-    for chunk in chunks[1:-1]:
+    # chunks[1:] (не [1:-1]): при ровно 2 чанках срез [1:-1] пуст и проверка
+    # переоткрытия не выполнялась ни разу — регрессия прошла бы незамеченной
+    for chunk in chunks[1:]:
         assert chunk.startswith("```python\n")
     # Всё содержимое сохранено (без потери текста), с поправкой на служебные ```
     rebuilt_plain = chunks[0]
