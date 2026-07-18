@@ -44,7 +44,7 @@ class AdminTicket(commands.Cog):
             modal = inter.resolved_values
             nick = modal["Никнейм"]
             bug_description = modal["Жалоба"]
-            bug_thread_name = " ".join(bug_description.split(" ")[:5])
+            bug_thread_name = " ".join(bug_description.split(" ")[:5])[:100] or "Админ-тикет"
             try:
                 bug_thread = await channel.create_thread(
                     name=bug_thread_name,
@@ -89,13 +89,13 @@ class AdminTicket(commands.Cog):
                 await inter.author.send(
                     components=create_container(
                         f"## Тред админ-тикета ''{bug_thread_name}'' создан!",
-                        f"Сохраню тред здесь: https://discord.com/channels/{inter.guild_id}/{inter.channel_id}",
+                        f"Сохраню тред здесь: https://discord.com/channels/{inter.guild_id}/{bug_thread.id}",
                         "Треды пропадают через некоторое время, но эта ссылка позволяет тебе в любой момент вернуться!"
                     )
                 )
             except disnake.HTTPException:
+                # закрытые ЛС — штатно; тикет уже создан, не роняем callback
                 logger.warning("Не удалось отправить ЛС автору админ-тикета %s (закрытые ЛС?)", inter.author.id)
-                raise
 
 
 def setup(bot: commands.Bot):
