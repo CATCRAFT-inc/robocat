@@ -282,7 +282,14 @@ class AIMessageHandler(commands.Cog):
     @commands.slash_command(name='aichat', description="Создать приватный чат с нейросетью")
     @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.booster, Roles.kotikplus)
     async def aiChat(self, inter: disnake.MessageCommandInteraction):
+        # defer сразу: создание треда + 2 флага + send не укладываются в 3с-дедлайн
+        # интеракции, иначе токен протухал и оставался бы осиротевший тред
+        await inter.response.defer(ephemeral=True)
         channel = inter.guild.get_channel(Channels.for_bots)
+        if channel is None:
+            self.logger.error("Канал для тредов %s не найден — /aichat не сработал", Channels.for_bots)
+            await inter.edit_original_response("Не нашёл канал для приватных тредов — сообщи админам.")
+            return
         thread = await channel.create_thread(
                 name=f'ии-{inter.author.display_name}',
                 type=disnake.ChannelType.private_thread,
@@ -306,7 +313,7 @@ class AIMessageHandler(commands.Cog):
             ),
             )
         )
-        await inter.send(f"Приватный тред создан - <#{thread.id}>", ephemeral=True)
+        await inter.edit_original_response(f"Приватный тред создан - <#{thread.id}>")
 
     @commands.Cog.listener("on_button_click")
     async def aiChatClose(self, inter: disnake.MessageInteraction):

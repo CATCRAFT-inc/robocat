@@ -8,7 +8,7 @@ from disnake.ext import commands, tasks
 from bot.flag_system.flag_system import flags
 from bot.storage import Channels, ColorStorage, Roles
 from .admin_ticket import AdminTicket
-from bot.handlers.tickets.bugs import BugHandler, remove_bug_from_index, _extract_component_text
+from bot.handlers.tickets.bugs import BugHandler, remove_bug_from_index, bug_rate_limit_ok, _extract_component_text
 from bot.utils import create_container, create_embed
 
 try:  # W3 создаёт этот модуль; выжимка — необязательная фича
@@ -49,7 +49,10 @@ class TicketEngine(commands.Cog):
                     content = (content + " " + " ".join(a.url for a in msg.attachments)).strip()
                 lines.append(f"[{ts}] {author}: {content}")
         except disnake.HTTPException:
-            logger.exception("Не удалось собрать историю тикета %s", thread.id)
+            # Транскрипт неполон — НЕ рапортуем успех, иначе вызывающий удалит тред
+            # и переписка потеряется навсегда. Тред остаётся для повтора.
+            logger.exception("Не удалось собрать историю тикета %s — архив прерван, тред не трогаем", thread.id)
+            return False
         transcript = "\n".join(lines) if lines else "(пусто)"
 
         summary = "⚠️ Выжимка недоступна"
@@ -224,7 +227,8 @@ class TicketEngine(commands.Cog):
             case "TICKET_POLICE":
                 await inter.send(components=create_container("## КСБ пока что нет!", "Сезон-то не начался, хех!"), ephemeral=True)
             case "TICKET_BUGREPORT":
-                await inter.response.send_modal(BugHandler.BugModal())
+                if await bug_rate_limit_ok(inter):
+                    await inter.response.send_modal(BugHandler.BugModal())
             case _:
                 await inter.send("Бот не нашёл такой тип тикета — сообщи в **баг-репорт**!", ephemeral=True)
 

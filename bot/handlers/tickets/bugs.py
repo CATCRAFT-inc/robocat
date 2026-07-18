@@ -54,6 +54,25 @@ async def remove_bug_from_index(thread_id: int) -> None:
             _save_bug_index(index)
 
 
+async def bug_rate_limit_ok(inter: disnake.MessageInteraction) -> bool:
+    """Анти-спам баг-репортов. True → можно открывать модалку; False → лимит,
+    отказ уже отправлен. Общая точка для кнопки и дропдауна выбора тикета —
+    иначе дропдаун открывал модалку в обход кулдауна (обход рейт-лимита)."""
+    if await flags.hasFlag(inter.author, "create_bug_cooldown"):
+        await inter.send("Ты отправлял(а) слишком много багов за короткое время! Отдохни и сообщи о них попозже =)", ephemeral=True)
+        return False
+    created_bugs = await flags.getFlag(inter.author, "created_bugs")
+    if created_bugs and int(created_bugs.value) > 3:
+        await inter.send("Воу-воу, котик! Мы очень ценим твою помощь, но твои действия смахивают на спам тикетами... Я вынужден дать тебе КД, попробуй попозже.", ephemeral=True)
+        await flags.setFlag(inter.author, "create_bug_cooldown", "true", "15мин")
+        return False
+    if created_bugs:
+        await flags.setFlag(inter.author, "created_bugs", int(created_bugs.value) + 1, expires_at="15мин")
+    else:
+        await flags.setFlag(inter.author, "created_bugs", 1, expires_at="15мин")
+    return True
+
+
 class BugHandler(commands.Cog):
     """
     Хендлер репорта багов
@@ -67,19 +86,7 @@ class BugHandler(commands.Cog):
     @commands.Cog.listener("on_button_click")
     async def bugThreadCreate(self, inter: disnake.MessageInteraction):
         if inter.component.custom_id == Buttons.BUG_REPORT.id:
-            has_bug_cd = await flags.hasFlag(inter.author,"create_bug_cooldown")
-            if has_bug_cd:
-                await inter.send("Ты отправлял(а) слишком много багов за короткое время! Отдохни и сообщи о них попозже =)", ephemeral=True)
-            else:
-                created_bugs = await flags.getFlag(inter.author,"created_bugs")
-                if created_bugs and int(created_bugs.value) > 3:
-                    await inter.send("Воу-воу, котик! Мы очень ценим твою помощь, но твои действия смахивают на спам тикетами... Я вынужден дать тебе КД, попробуй попозже.")
-                    await flags.setFlag(inter.author,"create_bug_cooldown", "true","15мин")
-                    return
-                elif created_bugs:
-                    await flags.setFlag(inter.author, "created_bugs", int(created_bugs.value) + 1, expires_at="15мин")
-                else:
-                    await flags.setFlag(inter.author, "created_bugs", 1, expires_at="15мин")
+            if await bug_rate_limit_ok(inter):
                 await inter.response.send_modal(modal=self.BugModal())
 
     class BugModal(disnake.ui.Modal):
@@ -123,7 +130,11 @@ class BugHandler(commands.Cog):
             await inter.response.defer(ephemeral=True)
             channel = inter.guild.get_channel(Channels.bugs)
             if channel is None:
-                logger.error("Канал багов %s не найден в кэше — создание треда сейчас упадёт", Channels.bugs)
+                # без канала create_thread упал бы AttributeError мимо except ниже,
+                # и юзер остался бы с вечным «думает» и потерянным текстом репорта
+                logger.error("Канал багов %s не найден в кэше — репорт не создан", Channels.bugs)
+                await inter.edit_original_response("Не получилось создать баг-репорт (канал недоступен). Сообщи админам!")
+                return
             modal = inter.resolved_values
             nick = modal["Никнейм"]
             bug_description = modal["Описание бага"]
@@ -178,7 +189,7 @@ class BugHandler(commands.Cog):
                 await inter.author.send(
                     components=create_container(
                         f"## Спасибо за репорт бага ''{bug_thread_name}''!",
-                        f"Сохраню канал баг-репорта здесь: https://discord.com/channels/{inter.guild_id}/{inter.channel_id}",
+                        f"Сохраню канал баг-репорта здесь: https://discord.com/channels/{inter.guild_id}/{bug_thread.id}",
                         "Треды пропадают через некоторое время, но эта ссылка позволяет тебе в любой момент вернуться!"
                     )
                 )
