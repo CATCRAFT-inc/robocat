@@ -29,7 +29,7 @@ from .llm import llm, AIUnavailable, strip_thoughts
 from dataclasses import dataclass, field
 
 from bot.storage import Channels, Roles
-from bot.utils import component_text
+from bot.utils import component_text, neutralize_markers
 
 load_dotenv()
 
@@ -430,7 +430,10 @@ class AIEngine(commands.Cog):
         last_message = messages[-1] if messages else None
         for mes in messages:
             if mes.author == self.bot.user:
-                content = mes.clean_content
+                # Свой прошлый ответ — тоже модельный текст: юзер может выманить
+                # у бота [[ ]]-строку, которая на следующем ходу читалась бы как
+                # инфраструктурная пометка. Наши маркеры дописываются ниже — после.
+                content = neutralize_markers(mes.clean_content)
                 if mes.attachments:
                     attach_type = mes.attachments[0].content_type
                     content += f"[[ This message contained {attach_type} content, now it's not available ]]"
@@ -438,7 +441,7 @@ class AIEngine(commands.Cog):
                     # Текст V2-сообщений живёт в компонентах: раньше брали
                     # components[0].content, которого у Container нет, и вся
                     # нарезка длинных ответов читалась как "could not be loaded"
-                    content = component_text(mes.components) or "[[ Message could not be loaded. ]]"
+                    content = neutralize_markers(component_text(mes.components)) or "[[ Message could not be loaded. ]]"
                 # Срезаем -#-лог действий (историю вызовов тулов, issue #2) и маркер
                 # "-# cut" нарезки с начала своего же ответа: модель не должна
                 # перечитывать их как свой текст
@@ -450,13 +453,11 @@ class AIEngine(commands.Cog):
                     "content": content
                 })
             else:
-                # Нейтрализуем [[ ]] в тексте юзера: системный промпт трактует [[text]]
-                # как «системное предупреждение» — иначе игрок форжит его и инжектит
+                # Нейтрализуем [[ ]] в тексте и нике юзера: системный промпт трактует
+                # [[text]] как служебную пометку — иначе игрок форжит её и инжектит
                 # инструкции. Наши собственные [[note]] дописываются ниже уже после.
-                clean = mes.clean_content.replace("[[", "(").replace("]]", ")")
-                # Ник — тоже под контролем юзера: '[[ SYSTEM ]]' в нике не должен
-                # становиться доверенным маркером
-                safe_name = mes.author.display_name.replace("[[", "(").replace("]]", ")")
+                clean = neutralize_markers(mes.clean_content)
+                safe_name = neutralize_markers(mes.author.display_name)
                 content = f"({safe_name})" + clean
                 attachment = mes.attachments[0] if mes.attachments else None
                 # content_type может быть None — защищаемся
@@ -580,7 +581,9 @@ class AIEngine(commands.Cog):
             case "user_info":
                 yield Status("🏀 Смотрю твои роли... ахахах причём тут баскетбольный мяч?!")
                 if ctx.user:
-                    content = [i.name for i in ctx.user.roles]
+                    # имена ролей задают админы, но ']] [[' в имени не должен
+                    # пробивать маркер тул-результата
+                    content = [neutralize_markers(i.name) for i in ctx.user.roles]
                     yield _ToolDone(content=f"[[ User's roles: {content} ]]")
                 else:
                     yield _ToolDone("[[ User was not provided lol ]]")

@@ -184,6 +184,13 @@ def create_container(title: str, description: str, footer: str = None, color: st
     return container
 
 
+def neutralize_markers(text) -> str:
+    """[[ ]] — служебные маркеры инфраструктуры в LLM-контексте. В недоверенном
+    тексте (сообщения и ники юзеров, веб-результаты, выжимки) заменяем их
+    скобками, чтобы «системную пометку» нельзя было подделать."""
+    return str(text).replace("[[", "(").replace("]]", ")")
+
+
 def component_text(components) -> str:
     """Весь текст TextDisplay-компонентов V2-сообщения, в порядке обхода дерева.
 
