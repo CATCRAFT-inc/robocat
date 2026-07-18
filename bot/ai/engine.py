@@ -89,8 +89,10 @@ class AIEngine(commands.Cog):
 
     def __init__(self):
         self.logger = logging.getLogger("robocat.ai")
-        
-        
+        # Юзеры с картинкой в работе: параллельные запросы одного юзера иначе
+        # проходят проверку лимита все разом (окно = вся минута генерации)
+        self._imagegen_inflight: set[int] = set()
+
         # self.image_gen = data["image_gen"]
         self.tools = [
             {
@@ -282,8 +284,10 @@ class AIEngine(commands.Cog):
         try:
             reply = await llm.ask(guard, use_utility=True)
         except Exception:
-            self.logger.exception("Модерация промпта картинки не сработала, пропускаю без гейта")
-            return True
+            # fail-closed: модерация — граница безопасности перед codex-подпроцессом
+            # с чтением ФС; без гейта запрос не пускаем (лимит юзера не тратится)
+            self.logger.exception("Модерация промпта картинки недоступна — отказываю без гейта")
+            return False
         return "DENY" not in reply.upper()
 
     async def _generateImageCodex(self, prompt: str) -> list[disnake.File] | None:
@@ -394,7 +398,10 @@ class AIEngine(commands.Cog):
                 # как «системное предупреждение» — иначе игрок форжит его и инжектит
                 # инструкции. Наши собственные [[note]] дописываются ниже уже после.
                 clean = mes.clean_content.replace("[[", "(").replace("]]", ")")
-                content = f"({mes.author.display_name})" + clean
+                # Ник — тоже под контролем юзера: '[[ SYSTEM ]]' в нике не должен
+                # становиться доверенным маркером
+                safe_name = mes.author.display_name.replace("[[", "(").replace("]]", ")")
+                content = f"({safe_name})" + clean
                 attachment = mes.attachments[0] if mes.attachments else None
                 # content_type может быть None — защищаемся
                 ctype = (attachment.content_type or "") if attachment is not None else ""
@@ -481,14 +488,21 @@ class AIEngine(commands.Cog):
                         yield _ToolDone(content=f"[[ User has reached their daily limit of {IMAGE_DAILY_LIMIT} images. Tell them they can generate more in <t:{image_gen_flag.expires_at}:R>. ]]")
                         return
                     prompt = args.get("prompt")
+                    if ctx.user.id in self._imagegen_inflight:
+                        yield _ToolDone(content="[[ This user's previous image is still generating. Tell them to wait for it before asking for another. ]]")
+                        return
                     if IMAGE_BACKEND == "codex" and not await self._imagePromptAllowed(prompt):
                         yield _ToolDone(content="[[ The image request violates content policy and was blocked before generation. Politely refuse and suggest a safer idea. Their daily limit was NOT spent. ]]")
                         return
-                    yield Status(":paintbrush: Создаю картинку... (это может занять минуту-другую)")
-                    if IMAGE_BACKEND == "codex":
-                        attachment = await self._generateImageCodex(prompt)
-                    else:
-                        attachment = await self._generateImage(prompt)
+                    self._imagegen_inflight.add(ctx.user.id)
+                    try:
+                        yield Status(":paintbrush: Создаю картинку... (это может занять минуту-другую)")
+                        if IMAGE_BACKEND == "codex":
+                            attachment = await self._generateImageCodex(prompt)
+                        else:
+                            attachment = await self._generateImage(prompt)
+                    finally:
+                        self._imagegen_inflight.discard(ctx.user.id)
                     if attachment:
                         # Счётчик ДО yield: после FinalAnswer потребитель делает return,
                         # оставляя этот генератор подвешенным — код за yield недостижим,

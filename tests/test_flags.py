@@ -195,3 +195,38 @@ async def test_set_flag_returns_false_for_unrecognised_entity(flags_db):
     # entity, не подходящий ни под один тип из _defineEntityType
     ok = await flags_db.setFlag(object(), "whatever", "val")
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_increment_over_expired_row_resets_expiry(flags_db):
+    """+N поверх протухшего счётчика стартует заново и НЕ наследует мёртвый
+    expires_at: иначе следующий getFlag снёс бы свежий счётчик как протухший."""
+    member = make_member(777)
+    entity_type, entity_id = flags_db._resolveEntity(member)
+    async with aiosqlite.connect(flags_db.dbpath) as db:
+        await db.execute(
+            "INSERT INTO flags VALUES (?, ?, 'image_gen', '3', ?)",
+            (entity_type, entity_id, int(time.time()) - 100),  # уже протух
+        )
+        await db.commit()
+
+    ok = await flags_db.setFlag(member, "image_gen", "+1")
+    assert ok is True
+
+    row = await flags_db.getFlag(member, "image_gen")
+    assert row is not None
+    assert row.value == "1"  # стартовали заново, не 4
+    assert row.expires_at is None  # мёртвый срок не унаследован
+
+
+@pytest.mark.asyncio
+async def test_increment_alive_row_keeps_expiry(flags_db):
+    member = make_member(778)
+    future = int(time.time()) + 3600
+    await flags_db.setFlag(member, "cnt", "1", expires_at=future)
+
+    await flags_db.setFlag(member, "cnt", "+1")
+
+    row = await flags_db.getFlag(member, "cnt")
+    assert row.value == "2"
+    assert row.expires_at == future  # живой срок сохранён без явного нового

@@ -54,23 +54,31 @@ async def remove_bug_from_index(thread_id: int) -> None:
             _save_bug_index(index)
 
 
+# ponytail: один лок на всех — репорты редки, контенции нет; per-user при необходимости
+_bug_rate_lock = asyncio.Lock()
+
+
 async def bug_rate_limit_ok(inter: disnake.MessageInteraction) -> bool:
     """Анти-спам баг-репортов. True → можно открывать модалку; False → лимит,
     отказ уже отправлен. Общая точка для кнопки и дропдауна выбора тикета —
-    иначе дропдаун открывал модалку в обход кулдауна (обход рейт-лимита)."""
-    if await flags.hasFlag(inter.author, "create_bug_cooldown"):
-        await inter.send("Ты отправлял(а) слишком много багов за короткое время! Отдохни и сообщи о них попозже =)", ephemeral=True)
-        return False
-    created_bugs = await flags.getFlag(inter.author, "created_bugs")
-    if created_bugs and int(created_bugs.value) > 3:
-        await inter.send("Воу-воу, котик! Мы очень ценим твою помощь, но твои действия смахивают на спам тикетами... Я вынужден дать тебе КД, попробуй попозже.", ephemeral=True)
-        await flags.setFlag(inter.author, "create_bug_cooldown", "true", "15мин")
-        return False
-    if created_bugs:
-        await flags.setFlag(inter.author, "created_bugs", int(created_bugs.value) + 1, expires_at="15мин")
-    else:
-        await flags.setFlag(inter.author, "created_bugs", 1, expires_at="15мин")
-    return True
+    иначе дропдаун открывал модалку в обход кулдауна (обход рейт-лимита).
+    Лок сериализует check-then-act: одновременные клики кнопки и дропдауна
+    иначе читали одинаковый счётчик и открывали пачку модалок."""
+    async with _bug_rate_lock:
+        if await flags.hasFlag(inter.author, "create_bug_cooldown"):
+            await inter.send("Ты отправлял(а) слишком много багов за короткое время! Отдохни и сообщи о них попозже =)", ephemeral=True)
+            return False
+        created_bugs = await flags.getFlag(inter.author, "created_bugs")
+        if created_bugs and int(created_bugs.value) > 3:
+            await inter.send("Воу-воу, котик! Мы очень ценим твою помощь, но твои действия смахивают на спам тикетами... Я вынужден дать тебе КД, попробуй попозже.", ephemeral=True)
+            await flags.setFlag(inter.author, "create_bug_cooldown", "true", "15мин")
+            return False
+        if created_bugs:
+            # "+1" — атомарный инкремент в SQL, а не read-modify-write в питоне
+            await flags.setFlag(inter.author, "created_bugs", "+1", expires_at="15мин")
+        else:
+            await flags.setFlag(inter.author, "created_bugs", 1, expires_at="15мин")
+        return True
 
 
 class BugHandler(commands.Cog):

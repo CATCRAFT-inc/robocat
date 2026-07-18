@@ -100,22 +100,27 @@ class Flags:
                             await db.execute("ROLLBACK")
                             return False
                         new_value = base + int(value)
+                        # живая строка: без явного нового expires_at сохраняем старый
+                        final_expires = expires_at if expires_at is not None else row[1]
                     else:
                         new_value = int(value)
+                        # мёртвая/отсутствующая строка = как INSERT: протухший
+                        # expires_at не должен переживать перезапуск счётчика
+                        final_expires = expires_at
                     await db.execute(
                         """
                         INSERT INTO flags (entity_type, entity_id, flag, value, expires_at)
                         VALUES (:entity_type, :entity_id, :flag, :value, :expires_at)
                         ON CONFLICT(entity_type, entity_id, flag) DO UPDATE SET
                             value = :value,
-                            expires_at = COALESCE(:expires_at, flags.expires_at)
+                            expires_at = :expires_at
                         """,
                         {
                             "entity_type": entity_type,
                             "entity_id": entity_id,
                             "flag": flag,
                             "value": str(new_value),
-                            "expires_at": expires_at,
+                            "expires_at": final_expires,
                         },
                     )
                     await db.execute("COMMIT")
@@ -258,8 +263,9 @@ class Flags:
                 )
                 await db.commit()
         except Exception:
+            # НЕ пробрасываем: вызывающие уже трактуют строку как протухшую, сбой
+            # ленивой уборки не должен превращать чтение флага в крэш ответа
             self.logger.exception("Не удалось удалить протухший флаг %s у (%s, %s)", flag, entity_type, entity_id)
-            raise
 
 
 flags = Flags()
