@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from bot.ai.engine import AIEngine, FinalAnswer
+from bot.ai.engine import AIEngine, FinalAnswer, _codex_safe_env
 
 
 def _tool_call(name: str, args: dict):
@@ -68,6 +68,19 @@ async def test_tool_rounds_exhausted_forces_final_answer_without_tools(engine, m
     assert len(tools_per_call) == 3
     assert tools_per_call[0] is not None and tools_per_call[1] is not None
     assert tools_per_call[2] is None
+
+
+def test_codex_safe_env_strips_bot_secrets(monkeypatch):
+    # codex-подпроцесс не должен видеть секреты бота (стоп-правило №1)
+    monkeypatch.setenv("DISCORD_TOKEN", "secret")
+    monkeypatch.setenv("GEMINI", "key")
+    monkeypatch.setenv("RCON_PASSWORD", "pw")
+    monkeypatch.setenv("FAILURE_WEBHOOK_URL", "url")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = _codex_safe_env()
+    for secret in ("DISCORD_TOKEN", "GEMINI", "RCON_PASSWORD", "FAILURE_WEBHOOK_URL"):
+        assert secret not in env
+    assert "PATH" in env  # нужное для запуска codex остаётся
 
 
 async def test_empty_choices_yields_error_not_indexerror(engine, monkeypatch):
