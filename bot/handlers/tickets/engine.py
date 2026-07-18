@@ -28,6 +28,9 @@ class TicketEngine(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Треды в процессе закрытия: два админа, закрывающие тикет одновременно,
+        # иначе делают двойной архив + необработанный 404 на втором delete
+        self._closing: set[int] = set()
 
     async def cog_load(self):
         self.staleTicketReminder.start()
@@ -98,6 +101,16 @@ class TicketEngine(commands.Cog):
     async def _finishTicket(self, inter, thread: disnake.Thread, comment: str | None):
         """Успешное закрытие бага/админ-тикета. Интеракция ДОЛЖНА быть уже
         defer'нута снаружи (слэш /done и модалка кнопки делают это сами)."""
+        if thread.id in self._closing:
+            await inter.edit_original_response("Этот тикет уже закрывает другой админ.")
+            return
+        self._closing.add(thread.id)
+        try:
+            await self._finishTicketInner(inter, thread, comment)
+        finally:
+            self._closing.discard(thread.id)
+
+    async def _finishTicketInner(self, inter, thread: disnake.Thread, comment: str | None):
         is_support = thread.parent_id == Channels.support
         ticket_type = "Админ-тикет" if is_support else "Баг-репорт"
         if not await self._archiveTicket(thread, ticket_type=ticket_type, closer=inter.author, note=comment):
@@ -138,6 +151,16 @@ class TicketEngine(commands.Cog):
 
     async def _rejectTicket(self, inter, thread: disnake.Thread, reason: str | None):
         """Отклонение бага/админ-тикета. Интеракция ДОЛЖНА быть уже defer'нута снаружи."""
+        if thread.id in self._closing:
+            await inter.edit_original_response("Этот тикет уже закрывает другой админ.")
+            return
+        self._closing.add(thread.id)
+        try:
+            await self._rejectTicketInner(inter, thread, reason)
+        finally:
+            self._closing.discard(thread.id)
+
+    async def _rejectTicketInner(self, inter, thread: disnake.Thread, reason: str | None):
         is_support = thread.parent_id == Channels.support
         ticket_type = "Админ-тикет (отклонён)" if is_support else "Баг-репорт (отклонён)"
         if not await self._archiveTicket(thread, ticket_type=ticket_type, closer=inter.author, note=reason):
@@ -244,6 +267,9 @@ class TicketEngine(commands.Cog):
             await inter.send("Не могу определить родительский канал треда — попробуй позже.", ephemeral=True)
             return
         owner = thread.owner
+        # defer сразу: ветки ниже делают несколько Discord-запросов до ответа,
+        # на rate limit 3с-дедлайн интеракции протухал вместе с подтверждением
+        await inter.response.defer(ephemeral=True)
 
         match forum.id:
             case Channels.ideas:
@@ -289,14 +315,12 @@ class TicketEngine(commands.Cog):
                     await inter.send("Не удалось отметить запрос — детали в логах.", ephemeral=True)
 
             case Channels.bugs:
-                await inter.response.defer()
                 await self._finishTicket(inter, thread, comment)
 
             case Channels.support:
                 if not comment:
                     await inter.send("Для админских тикетов обязательно нужен комментарий с итогом!", ephemeral=True)
                     return
-                await inter.response.defer()
                 await self._finishTicket(inter, thread, comment)
 
             case _:
@@ -314,6 +338,9 @@ class TicketEngine(commands.Cog):
             await inter.send("Не могу определить родительский канал треда — попробуй позже.", ephemeral=True)
             return
         owner = thread.owner
+        # defer сразу: ветки ниже делают несколько Discord-запросов до ответа,
+        # на rate limit 3с-дедлайн интеракции протухал вместе с подтверждением
+        await inter.response.defer(ephemeral=True)
 
         match forum.id:
             case Channels.ideas:
@@ -357,11 +384,9 @@ class TicketEngine(commands.Cog):
                     await inter.send("Не удалось отклонить запрос — детали в логах.", ephemeral=True)
 
             case Channels.bugs:
-                await inter.response.defer()
                 await self._rejectTicket(inter, thread, reason)
 
             case Channels.support:
-                await inter.response.defer()
                 await self._rejectTicket(inter, thread, reason)
 
             case _:

@@ -212,7 +212,8 @@ class CatcraftFM(commands.Cog):
             # выбор следующего трека
             if music_count < self.random:
                 if not self.music_files:
-                    self.music_files = os.listdir(self.music_path)
+                    # to_thread: диск VDS бывает медленным, event loop не блокируем
+                    self.music_files = await asyncio.to_thread(os.listdir, self.music_path)
                     shuffle(self.music_files)
                 if not self.music_files:
                     self.logger.error("папка music пуста")
@@ -223,7 +224,7 @@ class CatcraftFM(commands.Cog):
                 is_dictor = False
             else:
                 if not dictor_files:
-                    dictor_files = os.listdir(self.dictor_path)
+                    dictor_files = await asyncio.to_thread(os.listdir, self.dictor_path)
                     shuffle(dictor_files)
                 if not dictor_files:
                     music_count = 0
@@ -266,13 +267,16 @@ class CatcraftFM(commands.Cog):
             # бы канал ложными «Сейчас играет» каждый цикл реконнекта)
             if not is_dictor and play_result["error"] is None:
                 try:
-                    self.current_track = self._getTrackInfo(path)
+                    # TinyTag читает файл с диска — в поток, не в event loop
+                    self.current_track = await asyncio.to_thread(self._getTrackInfo, path)
                     self.current_track_path = str(path)
 
-                    next_info = (
-                        self._getTrackInfo(self.music_path / self.music_files[0])
-                        if self.music_files else "—"
-                    )
+                    if self.music_files:
+                        next_info = await asyncio.to_thread(
+                            self._getTrackInfo, self.music_path / self.music_files[0]
+                        )
+                    else:
+                        next_info = "—"
                     embed = disnake.ui.Container(
                         disnake.ui.TextDisplay(f"🎵 Сейчас играет: **{self.current_track}**"),
                         disnake.ui.Separator(),
@@ -327,10 +331,11 @@ class CatcraftFM(commands.Cog):
 
     @commands.command(name="очередь", aliases=["queue", "q"])
     async def musicQueue(self, command: disnake.MessageCommand):
-        queue = "".join(
-            f"{self._getTrackInfo(self.music_path / i)}\n"
-            for i in self.music_files[:4]
+        tracks = list(self.music_files[:4])
+        infos = await asyncio.to_thread(
+            lambda: [self._getTrackInfo(self.music_path / i) for i in tracks]
         )
+        queue = "".join(f"{info}\n" for info in infos)
         embed = disnake.ui.Container(
             disnake.ui.TextDisplay(f"## 🎵 Текущий трек: {self.current_track}"),
             disnake.ui.TextDisplay(queue or "—"),
@@ -362,22 +367,27 @@ class CatcraftFM(commands.Cog):
                 await ctx.reply("ты уже проголосовал(а) за пропуск песни!", delete_after=5)
                 return
 
+            # голос фиксируем ДО await: быстрый повтор команды иначе успевал
+            # пройти проверку выше и посчитаться несколько раз
+            self.votes_list.append(ctx.author.id)
             self.skip_votes += 1
+            self.last_skip = datetime.now().timestamp()
             if self.skip_votes >= required_votes:
-                await ctx.channel.send(
-                    f"{self.skip_votes} котика проголосовали за скип трека, пропускаем..."
-                )
-                self.vc.stop()
+                # сброс состояния и stop() ДО await: второй голос, пришедший во
+                # время send, иначе тоже проходил кворум и стопил уже новый трек
+                votes = self.skip_votes
                 self.votes_list = []
                 self.last_skip = 0
                 self.skip_votes = 0
+                self.vc.stop()
+                await ctx.channel.send(
+                    f"{votes} котика проголосовали за скип трека, пропускаем..."
+                )
             else:
                 await ctx.channel.send(
                     f"{ctx.author.mention} проголосовал за пропуск песни! "
                     f"({self.skip_votes}/{required_votes})"
                 )
-                self.votes_list.append(ctx.author.id)
-                self.last_skip = datetime.now().timestamp()
         else:
             self.vc.stop()
 

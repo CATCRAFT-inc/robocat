@@ -7,7 +7,7 @@ from disnake.ext import commands
 from bot.ai.llm import llm, AIUnavailable
 from bot.flag_system.flag_system import flags
 from bot.storage import Channels, ColorStorage, Roles
-from bot.utils import create_container
+from bot.utils import component_text, create_container
 
 logger = logging.getLogger("robocat.digest")
 
@@ -45,7 +45,7 @@ class Digest(commands.Cog):
 
         # Собираем сообщения
         cutoff = datetime.now(timezone.utc) - timedelta(days=дней)
-        collected: list[str] = []
+        collected: list[tuple] = []  # (created_at, строка) — для глобальной хронологии
         total = 0
         for channel_id in Channels.digest_channels:
             channel = self.bot.get_channel(channel_id)
@@ -53,21 +53,29 @@ class Digest(commands.Cog):
                 logger.warning("Канал дайджеста %s не найден — пропускаю", channel_id)
                 continue
             try:
-                async for msg in channel.history(after=cutoff, limit=200, oldest_first=True):
-                    if msg.author.bot or msg.type != disnake.MessageType.default:
+                # oldest_first=False: с after= дефолт отдаёт СТАРЕЙШИЕ 200 окна,
+                # и свежие новости систематически терялись; берём свежие 200
+                async for msg in channel.history(after=cutoff, limit=200, oldest_first=False):
+                    if msg.author.id == self.bot.user.id and msg.components:
+                        # новости /news — V2-контейнеры нашего бота: текст в компонентах
+                        text = component_text(msg.components).strip()
+                    elif msg.author.bot or msg.type != disnake.MessageType.default:
                         continue
-                    text = (msg.content or "").strip()
+                    else:
+                        text = (msg.content or "").strip()
                     if not text:
                         continue
                     line = f"[#{channel.name}] {msg.author.display_name}: {text}"
-                    collected.append(line)
+                    collected.append((msg.created_at, line))
                     total += len(line)
             except disnake.HTTPException:
                 logger.exception("Не удалось прочитать историю канала %s", channel_id)
 
-        # Бюджет символов — отбрасываем самое старое
+        # Глобальная хронология по всем каналам: бюджет режет действительно
+        # самое старое, а не свежие сообщения первого канала списка
+        collected.sort(key=lambda pair: pair[0])
         while total > _CHAR_BUDGET and collected:
-            total -= len(collected.pop(0))
+            total -= len(collected.pop(0)[1])
 
         if not collected:
             await inter.edit_original_response(content="За этот период новостей не было =(")
@@ -76,7 +84,7 @@ class Digest(commands.Cog):
         prompt = (
             "Сделай короткую выжимку новостей сервера по темам, с маркерами (списком). "
             "Пиши только по фактам из сообщений ниже, без выдумок.\n\n"
-            + "\n".join(collected)
+            + "\n".join(line for _, line in collected)
         )
         try:
             answer = await llm.ask(prompt, system=_SYSTEM, max_tokens=1024)

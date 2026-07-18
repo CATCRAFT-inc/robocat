@@ -144,7 +144,15 @@ class Honeypot(commands.Cog):
     async def _pardon(self, inter: disnake.MessageInteraction, user_id: int) -> str:
         member = inter.guild.get_member(user_id)
         if member is None:
-            return "😇 Помилован (пользователя уже нет на сервере — мут снимать не с кого)."
+            # cache-miss ≠ «ушёл с сервера»: дозапрашиваем, иначе рапортуем
+            # «Помилован», хотя мут на самом деле не снят
+            try:
+                member = await inter.guild.fetch_member(user_id)
+            except disnake.NotFound:
+                return "😇 Помилован (пользователя уже нет на сервере — мут снимать не с кого)."
+            except disnake.HTTPException:
+                logger.exception("Не удалось дозапросить участника %s при помиловании", user_id)
+                return "⚠️ Не удалось проверить участника — попробуй ещё раз."
         try:
             await member.timeout(duration=None, reason=f"Ловушка: помилован {inter.author}")
         except disnake.Forbidden:
