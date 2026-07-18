@@ -104,8 +104,8 @@ async def test_increment_preserves_expires_at(flags_db):
     assert row1.value == "1"
     assert row1.expires_at is not None
 
-    ok = await flags_db.incrementFlag(member, "counter", 1)
-    assert ok is True
+    new_value = await flags_db.incrementFlag(member, "counter", 1)
+    assert new_value == 2
 
     row2 = await flags_db.getFlag(member, "counter")
     assert row2.value == "2"
@@ -166,8 +166,8 @@ async def test_non_numeric_increment_fails_and_keeps_value(flags_db):
     member = make_member(666)
     await flags_db.setFlag(member, "text_flag", "hello")
 
-    ok = await flags_db.incrementFlag(member, "text_flag", 1)
-    assert ok is False
+    result = await flags_db.incrementFlag(member, "text_flag", 1)
+    assert result is None
 
     row = await flags_db.getFlag(member, "text_flag")
     assert row.value == "hello"
@@ -210,8 +210,8 @@ async def test_increment_over_expired_row_resets_expiry(flags_db):
         )
         await db.commit()
 
-    ok = await flags_db.incrementFlag(member, "image_gen", 1)
-    assert ok is True
+    new_value = await flags_db.incrementFlag(member, "image_gen", 1)
+    assert new_value == 1  # стартовали заново
 
     row = await flags_db.getFlag(member, "image_gen")
     assert row is not None
@@ -240,3 +240,19 @@ async def test_set_flag_stores_plus_digits_literally(flags_db):
     await flags_db.setFlag(member, "phone", "+79261234567")
     row = await flags_db.getFlag(member, "phone")
     assert row.value == "+79261234567"
+
+
+@pytest.mark.asyncio
+async def test_increment_create_expires_only_on_fresh_start(flags_db):
+    """create_expires_at даёт фиксированное окно: применяется при старте
+    счётчика, НЕ обновляется последующими инкрементами (не скользящее)."""
+    member = make_member(780)
+    first = await flags_db.incrementFlag(member, "rpd", 1, create_expires_at="8ч")
+    assert first == 1
+    row1 = await flags_db.getFlag(member, "rpd")
+    assert row1.expires_at is not None
+
+    second = await flags_db.incrementFlag(member, "rpd", 1, create_expires_at="8ч")
+    assert second == 2
+    row2 = await flags_db.getFlag(member, "rpd")
+    assert row2.expires_at == row1.expires_at  # окно не поехало
