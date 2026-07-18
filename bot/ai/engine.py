@@ -29,7 +29,7 @@ from .llm import llm, AIUnavailable, strip_thoughts
 from dataclasses import dataclass, field
 
 from bot.storage import Channels, Roles
-from bot.utils import component_text
+from bot.utils import component_text, neutralize_markers
 
 load_dotenv()
 
@@ -450,13 +450,11 @@ class AIEngine(commands.Cog):
                     "content": content
                 })
             else:
-                # Нейтрализуем [[ ]] в тексте юзера: системный промпт трактует [[text]]
-                # как «системное предупреждение» — иначе игрок форжит его и инжектит
+                # Нейтрализуем [[ ]] в тексте и нике юзера: системный промпт трактует
+                # [[text]] как служебную пометку — иначе игрок форжит её и инжектит
                 # инструкции. Наши собственные [[note]] дописываются ниже уже после.
-                clean = mes.clean_content.replace("[[", "(").replace("]]", ")")
-                # Ник — тоже под контролем юзера: '[[ SYSTEM ]]' в нике не должен
-                # становиться доверенным маркером
-                safe_name = mes.author.display_name.replace("[[", "(").replace("]]", ")")
+                clean = neutralize_markers(mes.clean_content)
+                safe_name = neutralize_markers(mes.author.display_name)
                 content = f"({safe_name})" + clean
                 attachment = mes.attachments[0] if mes.attachments else None
                 # content_type может быть None — защищаемся

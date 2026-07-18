@@ -11,6 +11,7 @@ import datetime
 import time
 
 from bot.flag_system.flag_system import flags
+from bot.utils import neutralize_markers
 
 FACT_PREFIX = "fact:"
 MAX_FACTS = 15
@@ -27,7 +28,7 @@ def _sanitize_fact(fact: str) -> str:
     инкремент (+N) и молча исказит значение (напр. телефон)."""
     # str(): compat-вендор может прислать в args число/список вместо строки
     fact = " ".join(str(fact or "").split())  # переводы строк/повторные пробелы → один пробел
-    fact = fact.replace("[[", "").replace("]]", "")
+    fact = neutralize_markers(fact)
     fact = fact.strip()[:MAX_FACT_LEN]
     if len(fact) > 1 and fact[0] in "+-" and fact[1:].isdigit():
         fact = f"({fact})"
@@ -89,7 +90,7 @@ async def facts_block(user, display_name: str) -> str | None:
         else:
             lines.append(f"- {value}")
     # Ник — тоже под контролем юзера: ']] SYSTEM: ...' не должен пробивать маркер-блок
-    safe_name = str(display_name or "").replace("[[", "(").replace("]]", ")")
+    safe_name = neutralize_markers(display_name or "")
     return (
         f"[[ Your long-term memory about {safe_name} (current requester), "
         "saved earlier via remember_fact.\n"
