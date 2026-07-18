@@ -14,9 +14,23 @@ from bot.flag_system.flag_system import flags
 
 FACT_PREFIX = "fact:"
 MAX_FACTS = 15
+MAX_FACT_LEN = 300  # факт — короткая заметка, а не роман; режем раздувание контекста
 TEMP_TTL = "60д"  # ponytail: один TTL на все временные факты; per-fact — когда понадобится
 
 _MSK = datetime.timezone(datetime.timedelta(hours=3))
+
+
+def _sanitize_fact(fact: str) -> str:
+    """Факт пишется моделью и потом вставляется в system-роль — это граница доверия.
+    Убираем маркеры [[ ]] (иначе stored prompt-injection), схлопываем переводы строк,
+    режем длину. Ведущий +/-цифры экранируем: иначе flags.setFlag примет факт за
+    инкремент (+N) и молча исказит значение (напр. телефон)."""
+    fact = " ".join((fact or "").split())  # переводы строк/повторные пробелы → один пробел
+    fact = fact.replace("[[", "").replace("]]", "")
+    fact = fact.strip()[:MAX_FACT_LEN]
+    if len(fact) > 1 and fact[0] in "+-" and fact[1:].isdigit():
+        fact = f"({fact})"
+    return fact
 
 
 def _fact_date(flag_name: str) -> str:
@@ -35,14 +49,16 @@ async def _user_facts(user) -> list[tuple]:
 
 async def remember(user, fact: str, lifetime: str) -> bool:
     """Записать факт; при переполнении выкидывает самый старый."""
-    fact = (fact or "").strip()
+    fact = _sanitize_fact(fact)
     if not fact:
         return False
     existing = await _user_facts(user)
     while len(existing) >= MAX_FACTS:
         oldest = existing.pop(0)
         await flags.removeFlag(user, oldest[0], "memory full")
-    expires = TEMP_TTL if lifetime == "temporary" else None
+    # Безопасный дефолт — временный: модель промахивается мимо enum на compat-endpoint,
+    # и любой мусор («temp», обрезанный токен) не должен становиться вечным фактом.
+    expires = None if lifetime == "permanent" else TEMP_TTL
     # ns, не ms: два факта в одну миллисекунду перезаписали бы друг друга (upsert)
     return await flags.setFlag(user, f"{FACT_PREFIX}{time.time_ns()}", fact, expires)
 
