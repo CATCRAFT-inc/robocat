@@ -214,6 +214,9 @@ class LLM:
                 params["extra_body"] = vendor.extra_body
             return params
 
+        # _ensure_loaded ДО чтения self.vendors: первый вызов нового потребителя
+        # через complete иначе видел пустой список и ловил ложный AIUnavailable
+        self._ensure_loaded()
         vendors = [v for v in self.vendors if v.has_vision] if require_vision else self.vendors
         return await self._execute(vendors, build)
 

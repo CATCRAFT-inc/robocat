@@ -21,7 +21,7 @@ _THREAD_HISTORY_LIMIT = 40
 
 _MSK = datetime.timezone(datetime.timedelta(hours=3))
 # Все флаги AI-треда — снимаем их скопом при удалении/очистке
-_AICHAT_FLAGS = ("ai_chat", "ai_summary", "created_by", "ai_delete_warn")
+_AICHAT_FLAGS = ("ai_chat", "ai_summary", "ai_summary_upto", "created_by", "ai_delete_warn")
 
 
 class AIMessageHandler(commands.Cog):
@@ -245,13 +245,23 @@ class AIMessageHandler(commands.Cog):
             current_msg = prev_msg
 
         conversation = await self.ai_engine.buildConverstaion(messages)
-        await self._streamAnswer(message, conversation, ping=True)
+        # Списание ДО запроса: раньше пачка одновременных сообщений успевала
+        # пройти проверку лимита, пока первый ответ ещё генерился (обход 35 RPD)
         await self._limiter(message.author)
+        await self._streamAnswer(message, conversation, ping=True)
 
     async def _handleThreadMessage(self, message: disnake.Message):
         thread = message.channel
         if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
             await thread.send("*Робокотик остужает свой процессор... Поговори с ним попозже.*")
+            return
+        # Лимит 35 RPD действует и в тредах: раньше участник AI-треда слал
+        # запросы без ограничений (премиум/бустер — без лимита, как и в упоминаниях)
+        if await self._reachedLimit(message.author):
+            ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
+            expires_raw = ai_locked_flag.expires_at if ai_locked_flag else None
+            expires_at = f"<t:{expires_raw}:R>" if expires_raw else "попозже"
+            await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
             return
 
         # История треда: старые → новые, до _THREAD_HISTORY_LIMIT сообщений
@@ -286,23 +296,33 @@ class AIMessageHandler(commands.Cog):
                 "content": f"[[ Summary of the earlier part of this conversation: {summary_flag.value} ]]"
             })
 
+        # списание до запроса — как в _handleMention (анти-обход пачкой сообщений)
+        await self._limiter(message.author)
         await self._streamAnswer(message, conversation, ping=False)
 
-        # Фоновое сжатие обрезанной части, если её накопилось много.
-        # -#-лог действий срезаем и здесь, чтобы он не утекал в выжимку.
+        # Фоновое сжатие только НОВОЙ обрезанной части: ai_summary_upto хранит id
+        # последнего уже сжатого сообщения — раньше каждое сообщение треда заново
+        # пересжимало тот же хвост (жгло utility-квоту, гонка last-write-wins).
+        # -#-лог действий срезаем, чтобы он не утекал в выжимку.
+        upto_flag = await flags.getFlag(thread, "ai_summary_upto")
+        upto = int(upto_flag.value) if upto_flag else 0
+        fresh = [m for m in trimmed if m.id > upto]
         parts = []
-        for m in trimmed:
+        for m in fresh:
             text = strip_action_log(m.clean_content)
             if text:
                 parts.append(f"({m.author.display_name}): {text}")
         trimmed_text = "\n".join(parts)
         if len(trimmed_text) > _THREAD_SUMMARY_TRIGGER:
             old_summary = summary_flag.value if summary_flag else ""
-            task = asyncio.create_task(self._compressSummary(thread, old_summary, trimmed_text))
+            task = asyncio.create_task(
+                self._compressSummary(thread, old_summary, trimmed_text, fresh[-1].id)
+            )
             self._bg_tasks.add(task)
             task.add_done_callback(self._bg_tasks.discard)
 
-    async def _compressSummary(self, thread: disnake.Thread, old_summary: str, trimmed_text: str):
+    async def _compressSummary(self, thread: disnake.Thread, old_summary: str,
+                               trimmed_text: str, upto_id: int):
         try:
             prompt = (
                 "Сожми историю диалога в краткое содержание на русском (не более 1500 символов). "
@@ -315,6 +335,8 @@ class AIMessageHandler(commands.Cog):
             summary = (summary or "").strip()[:1500]
             if summary:
                 await flags.setFlag(thread, "ai_summary", summary)
+                # граница сжатого: следующие сообщения не пересжимают этот хвост
+                await flags.setFlag(thread, "ai_summary_upto", upto_id)
         except Exception:
             self.logger.exception("Не удалось сжать историю AI-треда %s", thread.id)
 
@@ -376,12 +398,15 @@ class AIMessageHandler(commands.Cog):
             return
 
         await inter.response.send_message("Чат завершён! Удаляю тред... 👋", ephemeral=True)
-        for f in _AICHAT_FLAGS:
-            await flags.removeFlag(thread, f)
+        # Флаги — только ПОСЛЕ удачного delete: иначе упавшее удаление оставляло
+        # тред-зомби, который клинер больше не видел (флагов-то нет)
         try:
             await thread.delete()
         except disnake.HTTPException:
-            self.logger.exception("Не удалось удалить AI-тред %s", thread.id)
+            self.logger.exception("Не удалось удалить AI-тред %s — флаги не сняты, клинер повторит", thread.id)
+            return
+        for f in _AICHAT_FLAGS:
+            await flags.removeFlag(thread, f)
 
     @tasks.loop(time=datetime.time(hour=12, tzinfo=_MSK))  # 12:00 МСК
     async def aiChatCleaner(self):
@@ -417,7 +442,9 @@ class AIMessageHandler(commands.Cog):
                             try:
                                 await thread.delete()
                             except disnake.HTTPException:
-                                self.logger.exception("Не удалось удалить AI-тред %s", eid)
+                                # флаги не трогаем — иначе тред-зомби выпадает из клинера
+                                self.logger.exception("Не удалось удалить AI-тред %s — повторим завтра", eid)
+                                continue
                             for f in _AICHAT_FLAGS:
                                 await flags.removeFlag(thread, f)
                     else:
