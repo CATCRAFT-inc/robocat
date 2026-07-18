@@ -1,12 +1,14 @@
-disnake[music]>=2.12.0
-aiosqlite>=0.22.1
-python-dotenv>=1.2.2
-openai>=2.32.0
+# Верхние границы по мажору: CI ставит свежие версии, прод-venv замороженный —
+# без капов пересборка venv может молча подтянуть breaking-релиз (disnake/openai).
+disnake[music]>=2.12.0,<3
+aiosqlite>=0.22.1,<1
+python-dotenv>=1.2.2,<2
+openai>=2.32.0,<3
 # >=6.0.1: на VDS PyYAML стоит из apt (без RECORD) — пин выше заставляет pip
 # его апгрейдить и роняет ВЕСЬ install; нам хватает 6.0.1 (только safe_load)
-pyyaml>=6.0.1
-pillow>=12.2.0
-pynacl>=1.6.2
-tinytag>=2.2.1
-dave.py>=0.1.2
-ddgs>=9.0
+pyyaml>=6.0.1,<7
+pillow>=12.2.0,<13
+pynacl>=1.6.2,<2
+tinytag>=2.2.1,<3
+dave.py>=0.1.2,<1
+ddgs>=9.0,<10

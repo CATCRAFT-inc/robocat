@@ -5,6 +5,12 @@ on:
     branches:
       - master
 
+# Два быстрых пуша в master не должны деплоиться параллельно
+# (рестарт посреди чужого pip install); очередь без отмены.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -19,7 +25,8 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest pytest-asyncio
+        # пины тулов: breaking-релиз pytest не должен блокировать срочный хотфикс
+        run: pip install -r requirements.txt "pytest~=9.1" "pytest-asyncio~=1.4"
 
       - name: Run tests
         run: pytest -q
@@ -27,22 +34,34 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 15   # зависший SSH иначе держит ран до 6 часов
 
     steps:
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+        # Пин по commit SHA тега v1.0.3: мутабельный тег с доступом
+        # к прод-SSH-ключу — вектор supply-chain
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262
         with:
           host: ${{ secrets.VDS_IP }}
           username: ${{ secrets.VDS_USER }}
           key: ${{ secrets.VDS_SSH_KEY }}
           port: ${{ secrets.VDS_PORT }}
           script: |
-            # set -e: упавший pip раньше молча пропускался, и бот рестартовал
-            # с новым кодом без новых зависимостей (прецедент 12.07.2026: ddgs)
+            # set -e: упавший шаг валит деплой (прецедент 12.07.2026: ddgs)
             set -e
             cd /opt/robocat
-            git pull origin master
-            # venv вместо системного pip3 --break-system-packages:
-            # после сноса VDS 18.07.2026 бот живёт в /opt/robocat под юзером bots
-            .venv/bin/pip install -r requirements.txt -q
+            # Деплоим ровно тот SHA, что прошёл тесты, а не движущийся master:
+            # пуш B во время деплоя A иначе обходит тест-гейт полностью
+            git fetch origin master
+            # Зависимости протестированного коммита ставим ДО переключения дерева:
+            # упавший pip не оставляет новый код без новых зависимостей
+            git show ${{ github.sha }}:requirements.txt > /tmp/robocat-req.txt
+            .venv/bin/pip install -r /tmp/robocat-req.txt -q
+            git reset --hard ${{ github.sha }}
+            # Идемпотентная миграция схемы: новая таблица не ждёт ручного db_init
+            .venv/bin/python data/db_init.py
             sudo -n systemctl restart robocat
+            # systemctl restart зелёный сразу после fork'а — ждём и проверяем,
+            # что бот не умер на старте (упавший старт красит деплой)
+            sleep 5
+            systemctl is-active --quiet robocat || { echo "robocat не поднялся после рестарта"; exit 1; }
