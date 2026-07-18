@@ -1,0 +1,21 @@
+[Unit]
+Description=Robocat Discord Bot
+After=network-online.target
+Wants=network-online.target
+# не сдаваться после серии падений; ключ живёт в [Unit], в [Service] игнорируется
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=bots
+WorkingDirectory=/opt/robocat
+ExecStart=/opt/robocat/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
