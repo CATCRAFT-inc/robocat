@@ -11,6 +11,7 @@ from bot.flag_system.flag_system import flags
 
 from .engine import AIEngine, Status, FinalAnswer, AIError, strip_action_log
 from .llm import llm
+from . import memory
 
 
 # Бюджет контекста AI-треда (символы) и порог фонового сжатия обрезанной части
@@ -127,6 +128,15 @@ class AIMessageHandler(commands.Cog):
         return await message.channel.send(allowed_mentions=mentions, **kwargs)
 
     async def _streamAnswer(self, message: disnake.Message, conversation: list, *, ping: bool):
+        # Мини-память (issue #6): факты о собеседнике — системной вставкой сразу
+        # после system prompt'а. Память лежит в flags, падение БД ответ не блокирует.
+        try:
+            facts = await memory.facts_block(message.author, message.author.display_name)
+        except Exception:
+            self.logger.exception("Не удалось прочитать память о юзере %s", message.author.id)
+            facts = None
+        if facts:
+            conversation.insert(1, {"role": "system", "content": facts})
         async with message.channel.typing():
             thinking_message = None
             # История вызовов тулов (issue #2): прошлые статусы остаются в сообщении
