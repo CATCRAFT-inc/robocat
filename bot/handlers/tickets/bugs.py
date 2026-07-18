@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import pathlib
+from datetime import datetime, timezone
 
 import aiosqlite
 import disnake
@@ -257,17 +258,22 @@ class BugHandler(commands.Cog):
 
     @commands.slash_command(name='clearbugs', description='Удаляет все треды с багами')
     async def doneCommand(self, inter: disnake.ApplicationCommandInteraction):
-        if inter.channel_id == Channels.temp_bugs and inter.author.id == 531208170098655233:
-            threads = inter.channel.threads
-            amount = len(threads)
-            for trd in threads:
-                await remove_bug_from_index(trd.id)
-                try:
-                    await trd.delete()
-                except disnake.HTTPException:
-                    logger.exception("Не удалось удалить тред бага %s при чистке", trd.id)
-                    raise
-            await inter.send(f"Удалено {amount} тредов!")
+        if inter.channel_id != Channels.temp_bugs or inter.author.id != 531208170098655233:
+            await inter.send("Эта команда не для тебя (или не для этого канала).", ephemeral=True)
+            return
+        # defer: удаление десятков тредов не укладывается в 3с-дедлайн интеракции
+        await inter.response.defer(ephemeral=True)
+        threads = inter.channel.threads
+        deleted = 0
+        for trd in threads:
+            await remove_bug_from_index(trd.id)
+            try:
+                await trd.delete()
+                deleted += 1
+            except disnake.HTTPException:
+                # один упавший тред не должен обрывать чистку остальных
+                logger.exception("Не удалось удалить тред бага %s при чистке", trd.id)
+        await inter.edit_original_response(f"Удалено {deleted} из {len(threads)} тредов!")
 
     @commands.slash_command(name='rebuild_bug_index', description='Перестроить индекс дедупликации багов')
     @commands.has_any_role(Roles.admin, Roles.st_admin)
@@ -280,6 +286,9 @@ class BugHandler(commands.Cog):
         if channel is None:
             await inter.edit_original_response("Канал багов не найден.")
             return
+        # Снапшот времени старта: баги, созданные ВО ВРЕМЯ скана, при записи
+        # индекса сохраняем из текущего индекса, а не теряем перезаписью
+        scan_start_snowflake = disnake.utils.time_snowflake(datetime.now(timezone.utc))
         index = {}
         count = 0
         for thread in channel.threads:
@@ -316,6 +325,10 @@ class BugHandler(commands.Cog):
             }
             count += 1
         async with _bug_index_lock:
+            current = _load_bug_index()
+            for tid, entry in current.items():
+                if tid not in index and int(tid) >= scan_start_snowflake:
+                    index[tid] = entry  # свежий баг, добавленный параллельно скану
             _save_bug_index(index)
         logger.info("Индекс багов перестроен: %d записей", count)
         await inter.edit_original_response(f"Индекс перестроен: {count} багов.")

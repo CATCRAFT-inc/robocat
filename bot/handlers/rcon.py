@@ -115,13 +115,16 @@ class RCONHandler(commands.Cog):
         response_text = response.strip() if response else "*(Нет ответа)*"
         logger.info("RCON by %s → %r → %r", inter.author, command, response_text[:100])
 
-        # Discord message limit is 2000; container TextDisplay limit ~4000
-        display = response_text[:3900] if len(response_text) > 3900 else response_text
-        truncated = len(response_text) > 3900
+        # Лимит V2 — 4000 символов на ВСЕ TextDisplay сообщения разом:
+        # длинная команда + ответ раньше пробивали его и ловили HTTP 400
+        cmd_display = command if len(command) <= 300 else command[:300] + "…"
+        limit = 3500 - len(cmd_display)
+        display = response_text[:limit] if len(response_text) > limit else response_text
+        truncated = len(response_text) > limit
 
         await inter.edit_original_response(
             components=disnake.ui.Container(
-                disnake.ui.TextDisplay(f"**`{command}`**"),
+                disnake.ui.TextDisplay(f"**`{cmd_display}`**"),
                 disnake.ui.Separator(),
                 disnake.ui.TextDisplay(f"```\n{display}\n```"),
                 *([disnake.ui.TextDisplay(f"-# Ответ обрезан ({len(response_text)} символов)")] if truncated else []),

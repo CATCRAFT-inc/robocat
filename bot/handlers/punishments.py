@@ -63,6 +63,18 @@ class PunishmentsHanlder(commands.Cog):
             logger.info("Не удалось отправить ЛС о муте пользователю %s — закрыты личные сообщения", mute_member.id)
 
 
+    @staticmethod
+    async def _dmModerator(ctx, text: str):
+        """Ошибки !мут уходят модератору в ЛС; при закрытых ЛС — фолбэк в канал
+        (иначе команда молча исчезала вместе с удалённым сообщением)."""
+        try:
+            await ctx.author.send(text)
+        except disnake.HTTPException:
+            try:
+                await ctx.send(f"{ctx.author.mention} {text}", delete_after=15)
+            except disnake.HTTPException:
+                logger.warning("Не удалось доставить модератору %s ответ !мут", ctx.author.id)
+
     @commands.command(name='мут')
     @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.moderator)
     async def prefixMute(self,
@@ -74,41 +86,41 @@ class PunishmentsHanlder(commands.Cog):
         # весь остаток сообщения. Без этого причина обрезалась до первого слова
         # (issue #3): `!мут 3д привет мир` клал в reason только «привет».
         if not ctx.message.reference:
-            await ctx.author.send("Замутить можно только ответом на сообщение!")
+            await self._dmModerator(ctx, "Замутить можно только ответом на сообщение!")
             await ctx.message.delete()
             return
 
         try:
             ref_message = await ctx.channel.fetch_message(ctx.message.reference.message_id)
         except disnake.NotFound:
-            await ctx.author.send("Не могу найти это сообщение.")
+            await self._dmModerator(ctx, "Не могу найти это сообщение.")
             await ctx.message.delete()
             return
 
         mute_member = ref_message.author
         if not isinstance(mute_member, disnake.Member):
-            await ctx.author.send("Замутить можно только участника сервера (не бота/вебхук).")
+            await self._dmModerator(ctx, "Замутить можно только участника сервера (не бота/вебхук).")
             await ctx.message.delete()
             return
         time = parse_duration(duration)
         if not time:
-            await ctx.author.send("Неправильный формат времени. Используй `1d`, `12h`, `10m`.")
+            await self._dmModerator(ctx, "Неправильный формат времени. Используй `1d`, `12h`, `10m`.")
             await ctx.message.delete()
             return
 
         try:
             await ctx.guild.timeout(user=mute_member, reason=reason, duration=time)
         except ValueError as e:
-            await ctx.author.send(f'Ошибка: {e}')
+            await self._dmModerator(ctx, f'Ошибка: {e}')
             await ctx.message.delete()
             return
         except disnake.Forbidden as e:
-            await ctx.author.send(f'Этого пользователя нельзя замутить!')
+            await self._dmModerator(ctx, 'Этого пользователя нельзя замутить!')
             await ctx.message.delete()
             return
         except Exception as e:
             logger.exception("Не удалось замутить %s через !мут", mute_member.id)
-            await ctx.author.send(f'Чето пошло не так: {e}')
+            await self._dmModerator(ctx, f'Чето пошло не так: {e}')
             await ctx.message.delete()
             return
         logger.info("Мут (!мут): %s замьючен модератором %s на %s, причина: %s", mute_member.id, ctx.author.id, duration, reason)

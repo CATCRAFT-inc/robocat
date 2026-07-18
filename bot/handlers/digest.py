@@ -7,7 +7,7 @@ from disnake.ext import commands
 from bot.ai.llm import llm, AIUnavailable
 from bot.flag_system.flag_system import flags
 from bot.storage import Channels, ColorStorage, Roles
-from bot.utils import create_container
+from bot.utils import component_text, create_container
 
 logger = logging.getLogger("robocat.digest")
 
@@ -52,18 +52,27 @@ class Digest(commands.Cog):
             if channel is None:
                 logger.warning("Канал дайджеста %s не найден — пропускаю", channel_id)
                 continue
+            channel_lines: list[str] = []
             try:
-                async for msg in channel.history(after=cutoff, limit=200, oldest_first=True):
-                    if msg.author.bot or msg.type != disnake.MessageType.default:
+                # oldest_first=False: с after= дефолт отдаёт СТАРЕЙШИЕ 200 окна,
+                # и свежие новости систематически терялись; берём свежие 200
+                async for msg in channel.history(after=cutoff, limit=200, oldest_first=False):
+                    if msg.author.id == self.bot.user.id and msg.components:
+                        # новости /news — V2-контейнеры нашего бота: текст в компонентах
+                        text = component_text(msg.components).strip()
+                    elif msg.author.bot or msg.type != disnake.MessageType.default:
                         continue
-                    text = (msg.content or "").strip()
+                    else:
+                        text = (msg.content or "").strip()
                     if not text:
                         continue
                     line = f"[#{channel.name}] {msg.author.display_name}: {text}"
-                    collected.append(line)
+                    channel_lines.append(line)
                     total += len(line)
             except disnake.HTTPException:
                 logger.exception("Не удалось прочитать историю канала %s", channel_id)
+            channel_lines.reverse()  # обратно в хронологический порядок
+            collected.extend(channel_lines)
 
         # Бюджет символов — отбрасываем самое старое
         while total > _CHAR_BUDGET and collected:
