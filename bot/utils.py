@@ -171,5 +171,23 @@ def create_container(title: str, description: str, footer: str = None, color: st
     container = disnake.ui.Container(*components, accent_colour=disnake.Color.from_hex(color))
     return container
 
+
+def component_text(components) -> str:
+    """Весь текст TextDisplay-компонентов V2-сообщения, в порядке обхода дерева.
+
+    Работает и с read-side классами (message.components), и с ui-классами из
+    тестов: у обоих текстовые ноды несут .content, контейнеры — .children.
+    """
+    parts = []
+    stack = list(components or [])
+    while stack:
+        c = stack.pop(0)
+        content = getattr(c, "content", None)
+        if isinstance(content, str) and content:
+            parts.append(content)
+        stack[:0] = list(getattr(c, "children", None) or [])
+    return "\n".join(parts)
+
+
 def setup(bot: commands.Bot):
     pass

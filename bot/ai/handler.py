@@ -9,7 +9,7 @@ from disnake.ext import commands, tasks
 from bot.storage import Channels, Roles
 from bot.flag_system.flag_system import flags
 
-from .engine import AIEngine, Status, FinalAnswer, AIError
+from .engine import AIEngine, Status, FinalAnswer, AIError, strip_action_log
 from .llm import llm
 
 
@@ -106,6 +106,15 @@ class AIMessageHandler(commands.Cog):
 
         return lang if in_block else None
 
+    @staticmethod
+    def _withLog(status_log: list[str], current: str) -> str:
+        """Текущий статус/ошибка под -#-логом прошлых статусов, с защитой от
+        переполнения лимита сообщения (десятки параллельных тул-вызовов)."""
+        log = "\n".join(f"-# {s}" for s in status_log)
+        text = f"{log}\n{current}" if log else current
+        # хвост новее — старые статусы дешевле потерять, чем уронить edit 400-кой
+        return text[-1999:] if len(text) > 1999 else text
+
     async def _send(self, message: disnake.Message, ping: bool, content: str | None = None, **kwargs):
         """Ответить на сообщение (с пингом) либо отправить в канал без пинга."""
         if ping:
@@ -120,40 +129,56 @@ class AIMessageHandler(commands.Cog):
     async def _streamAnswer(self, message: disnake.Message, conversation: list, *, ping: bool):
         async with message.channel.typing():
             thinking_message = None
+            # История вызовов тулов (issue #2): прошлые статусы остаются в сообщении
+            # мелкими -#-строками, текущий — обычным текстом. buildConverstaion
+            # срезает этот лог при чтении истории, чтобы модель не ела его как свой ответ.
+            status_log: list[str] = []
             async for event in self.ai_engine.generateAnswer(conversation, message.author):
                 if isinstance(event, FinalAnswer):
-                    if len(event.content) > 1999:
+                    log = "\n".join(f"-# {s}" for s in status_log)
+                    combined = f"{log}\n\n{event.content}" if log else event.content
+                    if len(combined) > 1999:
                         chunks = await self._buildLongMessage(event.content)
                         if thinking_message:
-                            await thinking_message.delete()
+                            if log:
+                                # лог остаётся отдельным сообщением над нарезкой
+                                await thinking_message.edit(log)
+                            else:
+                                await thinking_message.delete()
                             thinking_message = None
                         for mes in chunks:
-                            await self._send(message, ping, content="-# cut", components=disnake.ui.Container(
-                                disnake.ui.TextDisplay(mes)
+                            # V2-контейнер несовместим с content= (ValueError в disnake) —
+                            # маркер "-# cut" живёт первым TextDisplay внутри контейнера
+                            await self._send(message, ping, components=disnake.ui.Container(
+                                disnake.ui.TextDisplay("-# cut"),
+                                disnake.ui.TextDisplay(mes),
                             ))
                         if event.attachments:
                             await self._send(message, ping, files=event.attachments)
                     else:
                         if thinking_message:
                             if event.attachments:
-                                await thinking_message.edit(event.content, files=event.attachments)
+                                await thinking_message.edit(combined, files=event.attachments)
                             else:
-                                await thinking_message.edit(event.content)
+                                await thinking_message.edit(combined)
                         else:
                             if event.attachments:
-                                await self._send(message, ping, content=event.content, files=event.attachments)
+                                await self._send(message, ping, content=combined, files=event.attachments)
                             else:
-                                await self._send(message, ping, content=event.content)
+                                await self._send(message, ping, content=combined)
                 elif isinstance(event, Status):
+                    text = self._withLog(status_log, event.content)
+                    status_log.append(event.content)
                     if thinking_message:
-                        await thinking_message.edit(event.content)
+                        await thinking_message.edit(text)
                     else:
-                        thinking_message = await self._send(message, ping, content=event.content)
+                        thinking_message = await self._send(message, ping, content=text)
                 elif isinstance(event, AIError):
+                    text = self._withLog(status_log, event.content)
                     if thinking_message:
-                        await thinking_message.edit(event.content)
+                        await thinking_message.edit(text)
                     else:
-                        thinking_message = await self._send(message, ping, content=event.content)
+                        await self._send(message, ping, content=text)
                     return
 
     @commands.Cog.listener("on_message")
@@ -251,10 +276,14 @@ class AIMessageHandler(commands.Cog):
 
         await self._streamAnswer(message, conversation, ping=False)
 
-        # Фоновое сжатие обрезанной части, если её накопилось много
-        trimmed_text = "\n".join(
-            f"({m.author.display_name}): {m.clean_content}" for m in trimmed if m.clean_content
-        )
+        # Фоновое сжатие обрезанной части, если её накопилось много.
+        # -#-лог действий срезаем и здесь, чтобы он не утекал в выжимку.
+        parts = []
+        for m in trimmed:
+            text = strip_action_log(m.clean_content)
+            if text:
+                parts.append(f"({m.author.display_name}): {text}")
+        trimmed_text = "\n".join(parts)
         if len(trimmed_text) > _THREAD_SUMMARY_TRIGGER:
             old_summary = summary_flag.value if summary_flag else ""
             task = asyncio.create_task(self._compressSummary(thread, old_summary, trimmed_text))
