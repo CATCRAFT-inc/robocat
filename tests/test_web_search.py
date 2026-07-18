@@ -171,3 +171,25 @@ async def test_engine_web_search_empty_results_tells_model_honestly(monkeypatch)
     finals = [e for e in events if isinstance(e, FinalAnswer)]
     assert len(finals) == 1
     assert "Web search returned nothing" in tool_msgs_per_call[1][0]["content"]
+
+
+# --- контракт реального пакета ddgs (без сети) ---
+# Остальные тесты мокают адаптер: несовместимый релиз ddgs менял бы API,
+# CI оставался зелёным, а прод молча жил без поиска. Пиним то, что можно
+# проверить офлайн: пути импорта, исключения, сигнатуру DDGS.text.
+# (Форму результата — ключи title/href/body — офлайн проверить нельзя;
+# при смене мажора ddgs глянуть _search_ddgs руками.)
+
+
+def test_ddgs_package_contract():
+    import inspect
+
+    from ddgs import DDGS
+    from ddgs.exceptions import DDGSException, RatelimitException  # noqa: F401 — сам импорт и есть контракт
+
+    # bind() проверяет реальную вызываемость с нашими аргументами (ловит и
+    # пропажу параметра, и его превращение в keyword-only/positional-only)
+    inspect.signature(DDGS.text).bind(
+        None, "запрос", region="ru-ru", safesearch="moderate", max_results=5,
+    )
+    inspect.signature(DDGS.__init__).bind(None, timeout=5)

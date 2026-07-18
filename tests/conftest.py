@@ -35,8 +35,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # Фейковые env-переменные ДО любых импортов bot.* — токены/ключи не настоящие,
-# тесты не должны стучаться в сеть. Используем setdefault, чтобы не затирать
-# реальный .env, если он вдруг подхвачен окружением запуска.
+# тесты не должны стучаться в сеть. Перезаписываем БЕЗУСЛОВНО: setdefault
+# оставлял настоящие секреты из окружения разработчика (экспортированный
+# DISCORD_TOKEN и т.п.) видимыми тестам — тестам настоящий токен не нужен никогда.
 _FAKE_ENV = {
     "DISCORD_TOKEN": "x",
     "DEV_DISCORD_TOKEN": "x",
@@ -49,7 +50,7 @@ _FAKE_ENV = {
     "RCON_PASSWORD": "",
 }
 for _key, _value in _FAKE_ENV.items():
-    os.environ.setdefault(_key, _value)
+    os.environ[_key] = _value
 
 # КРИТИЧНО: именно этот импорт первым — см. докстринг выше.
 import bot.bot  # noqa: E402,F401
