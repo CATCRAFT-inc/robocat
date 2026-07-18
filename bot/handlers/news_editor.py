@@ -267,7 +267,16 @@ class NewsEditor(commands.Cog):
             del self.drafts[draft_id]
             await inter.response.edit_message(components=[disnake.ui.TextDisplay("❌ Черновик удалён.")])
         elif action == "NEWS_PUB":
-            await self._publish(inter, draft_id, draft)
+            # Извлекаем черновик СИНХРОННО до первого await: два быстрых клика
+            # иначе оба нашли бы его и опубликовали новость дважды (двойной пинг
+            # ~500 участникам). Второй клик увидит None и получит «черновик потерян».
+            claimed = self.drafts.pop(draft_id, None)
+            if claimed is None:
+                await inter.response.edit_message(
+                    components=[disnake.ui.TextDisplay("Уже публикуется или опубликовано.")]
+                )
+                return
+            await self._publish(inter, draft_id, claimed)
 
     async def _publish(self, inter: disnake.MessageInteraction, draft_id: int, draft: _Draft):
         channel = self.bot.get_channel(draft.channel_id)

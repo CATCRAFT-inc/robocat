@@ -199,6 +199,26 @@ async def test_publish_sends_container_reactions_and_thread(monkeypatch):
     assert 1 not in cog.drafts
 
 
+async def test_second_publish_click_does_not_double_post(monkeypatch):
+    # два клика «Опубликовать» по одному черновику → публикация ровно одна
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    cog = _cog()
+    cog.drafts[1] = _draft(channel_id=Channels.informator)
+    sent_msg = MagicMock()
+    sent_msg.jump_url = "url"
+    sent_msg.add_reaction = AsyncMock()
+    sent_msg.create_thread = AsyncMock()
+    channel = MagicMock()
+    channel.send = AsyncMock(return_value=sent_msg)
+    cog.bot.get_channel.return_value = channel
+
+    await cog.newsButtons(_button_inter("NEWS_PUB:1"))
+    await cog.newsButtons(_button_inter("NEWS_PUB:1"))  # повторный клик
+
+    channel.send.assert_awaited_once()  # не два раза
+    assert 1 not in cog.drafts
+
+
 async def test_publish_to_non_reaction_channel_skips_reactions(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
     cog = _cog()
