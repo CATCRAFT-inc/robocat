@@ -68,10 +68,13 @@ async def extract_frames(data: bytes, *, max_frames: int = MAX_VIDEO_FRAMES) -> 
     """Равномерно распределённые кадры видео (jpg) и его длительность.
 
     Кадров не больше max_frames независимо от длины ролика."""
+    # Тяжёлый дисковый I/O (запись до 40 МБ, чтение кадров, rmtree) — в поток.
+    # mkdtemp остаётся синхронным: он дёшев, а отменённый to_thread мог бы
+    # создать каталог уже после отмены — без ссылки и без cleanup (утечка /tmp)
     workdir = Path(tempfile.mkdtemp(prefix="robocat_media_"))
     try:
         src = workdir / "in.bin"
-        src.write_bytes(data)
+        await asyncio.to_thread(src.write_bytes, data)
         duration = await probe_duration(src)
         # длительность неизвестна → консервативно считаем ролик минутным
         fps = max_frames / duration if duration and duration > max_frames else 1
@@ -84,7 +87,9 @@ async def extract_frames(data: bytes, *, max_frames: int = MAX_VIDEO_FRAMES) -> 
         ])
         if out is None:
             return [], duration
-        frames = [p.read_bytes() for p in sorted(workdir.glob("frame_*.jpg"))]
+        frames = await asyncio.to_thread(
+            lambda: [p.read_bytes() for p in sorted(workdir.glob("frame_*.jpg"))]
+        )
         return frames[:max_frames], duration
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, workdir, ignore_errors=True)
