@@ -10,6 +10,7 @@ import asyncio
 import itertools
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 import disnake
@@ -154,7 +155,9 @@ class NewsEditor(commands.Cog):
         self.bot = bot
         self.logger = logging.getLogger("robocat.news")
         self.drafts: dict[int, _Draft] = {}
-        self._seq = itertools.count(1)
+        # Сид временем: после рестарта счётчик с 1 позволил бы старой ephemeral-кнопке
+        # NEWS_PUB:1 захватить чужой новый черновик с тем же id
+        self._seq = itertools.count(int(time.time()))
 
     def _preview(self, draft: _Draft, draft_id: int) -> list:
         verb = "обновится" if draft.edit_message_id else "будет опубликована"
@@ -261,6 +264,10 @@ class NewsEditor(commands.Cog):
                 components=[disnake.ui.TextDisplay("Черновик потерян (бот перезапускался?) — начни заново: /news")]
             )
             return
+        if draft.author_id != inter.author.id:
+            # чужая кнопка (коллизия id после рестарта) не должна трогать черновик
+            await inter.response.send_message("Этот черновик не твой — начни свой: /news", ephemeral=True)
+            return
         if action == "NEWS_EDIT":
             await inter.response.send_modal(NewsModal(self, draft_id))
         elif action == "NEWS_CANCEL":
@@ -282,8 +289,11 @@ class NewsEditor(commands.Cog):
         channel = self.bot.get_channel(draft.channel_id)
         if channel is None:
             self.logger.error("Канал новостей %s не найден в кэше", draft.channel_id)
+            # черновик возвращаем: набранный текст дороже, чем чистота словаря
+            self.drafts[draft_id] = draft
             await inter.response.edit_message(
-                components=[disnake.ui.TextDisplay("Канал не найден — публикация отменена.")]
+                components=[disnake.ui.TextDisplay("😞 Канал не найден — попробуй ещё раз или сообщи админам."),
+                            *self._preview(draft, draft_id)]
             )
             return
         # публикация с реакциями занимает >3с — сначала отвечаем на интеракцию
@@ -296,25 +306,34 @@ class NewsEditor(commands.Cog):
         try:
             if draft.edit_message_id:
                 msg = await channel.fetch_message(draft.edit_message_id)
-                await msg.edit(components=[container])
+                # allowed_mentions и на edit: без него Discord перепарсит упоминания
+                # с дефолтными разрешениями (риск повторного пинга роли)
+                await msg.edit(components=[container], allowed_mentions=mentions)
                 note = f"✏️ Новость обновлена: {msg.jump_url}"
             else:
                 msg = await channel.send(components=[container], allowed_mentions=mentions)
                 note = f"✅ Опубликовано: {msg.jump_url}"
                 # автореакции + тред — как у новостей от людей (on_message посты ботов игнорирует).
-                # Новость уже опубликована: сбой «декора» не должен читаться как сбой публикации
+                # Новость уже опубликована: сбой «декора» не должен читаться как сбой публикации,
+                # а сбой реакций (нет ADD_REACTIONS) — блокировать создание треда
                 if draft.channel_id in Channels.news_reaction_channels:
                     try:
                         for emoji in ("❤️", "👍", "👎"):
                             await msg.add_reaction(emoji)
                             await asyncio.sleep(1)
+                    except disnake.HTTPException:
+                        self.logger.warning("Не удалось повесить реакции под новостью %s", msg.id)
+                    try:
                         await msg.create_thread(name="Обсуждение", reason="Тред на новую новость")
                     except disnake.HTTPException:
-                        self.logger.warning("Не удалось повесить реакции/тред под новостью %s", msg.id)
+                        self.logger.warning("Не удалось создать тред под новостью %s", msg.id)
         except disnake.HTTPException:
             self.logger.exception("Не удалось опубликовать новость в канал %s", draft.channel_id)
+            # публикация НЕ случилась — вернуть черновик и кнопки, текст не теряем
+            self.drafts[draft_id] = draft
             await inter.edit_original_response(
-                components=[disnake.ui.TextDisplay("😞 Не получилось опубликовать — детали в логах.")]
+                components=[disnake.ui.TextDisplay("😞 Не получилось опубликовать — попробуй ещё раз (детали в логах)."),
+                            *self._preview(draft, draft_id)]
             )
             return
         self.drafts.pop(draft_id, None)

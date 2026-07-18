@@ -132,12 +132,13 @@ async def test_modal_callback_updates_draft_and_sends_preview():
 
 # --- кнопки и публикация ---
 
-def _button_inter(custom_id: str, *, admin: bool = True):
+def _button_inter(custom_id: str, *, admin: bool = True, author_id: int = 1):
     inter = MagicMock()
     inter.component.custom_id = custom_id
     role = MagicMock()
     role.id = Roles.admin if admin else 12345
     inter.author.roles = [role]
+    inter.author.id = author_id  # черновики в тестах создаются с author_id=1
     inter.response.edit_message = AsyncMock()
     inter.response.send_message = AsyncMock()
     inter.response.send_modal = AsyncMock()
@@ -255,3 +256,68 @@ async def test_edit_flow_edits_message_without_reactions(monkeypatch):
 
     existing.edit.assert_awaited_once()
     channel.send.assert_not_awaited()
+
+
+# --- восстановление черновика и чужие кнопки ---
+
+
+async def test_foreign_draft_button_denied():
+    # коллизия draft_id после рестарта: чужая кнопка не трогает черновик
+    cog = _cog()
+    cog.drafts[1] = _draft(author_id=999)
+    inter = _button_inter("NEWS_PUB:1", author_id=1)
+
+    await cog.newsButtons(inter)
+
+    assert 1 in cog.drafts  # черновик цел
+    inter.response.send_message.assert_awaited_once()
+    assert "не твой" in inter.response.send_message.await_args.args[0]
+
+
+async def test_publish_failure_restores_draft(monkeypatch):
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    cog = _cog()
+    src = _draft()
+    cog.drafts[1] = src
+    channel = MagicMock()
+    channel.send = AsyncMock(side_effect=disnake.HTTPException(MagicMock(status=500), "boom"))
+    cog.bot.get_channel.return_value = channel
+    inter = _button_inter("NEWS_PUB:1")
+
+    await cog.newsButtons(inter)
+
+    # текст не потерян: черновик вернулся, превью с кнопками перерисовано
+    assert cog.drafts.get(1) is src
+    inter.edit_original_response.assert_awaited_once()
+    components = inter.edit_original_response.await_args.kwargs["components"]
+    assert any(isinstance(c, disnake.ui.ActionRow) for c in components)
+
+
+async def test_publish_channel_missing_restores_draft():
+    cog = _cog()
+    src = _draft()
+    cog.drafts[1] = src
+    cog.bot.get_channel.return_value = None
+    inter = _button_inter("NEWS_PUB:1")
+
+    await cog.newsButtons(inter)
+
+    assert cog.drafts.get(1) is src
+    components = inter.response.edit_message.await_args.kwargs["components"]
+    assert any(isinstance(c, disnake.ui.ActionRow) for c in components)
+
+
+async def test_edit_passes_allowed_mentions(monkeypatch):
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    cog = _cog()
+    cog.drafts[1] = _draft(edit_message_id=555, ping_role_id=Roles.events)
+    existing = MagicMock()
+    existing.jump_url = "url"
+    existing.edit = AsyncMock()
+    channel = MagicMock()
+    channel.fetch_message = AsyncMock(return_value=existing)
+    cog.bot.get_channel.return_value = channel
+
+    await cog.newsButtons(_button_inter("NEWS_PUB:1"))
+
+    assert "allowed_mentions" in existing.edit.await_args.kwargs
