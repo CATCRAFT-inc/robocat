@@ -28,8 +28,21 @@ from .llm import llm, AIUnavailable, strip_thoughts
 from dataclasses import dataclass, field
 
 from bot.storage import Channels, Roles
+from bot.utils import component_text
 
 load_dotenv()
+
+
+def strip_action_log(text: str) -> str:
+    """Срезать ведущие '-# '-строки (лог действий тулов, issue #2) из ответа бота:
+    модель не должна перечитывать свой служебный лог как собственный текст."""
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines) and lines[i].startswith("-# "):
+        i += 1
+    if not i:
+        return text
+    return "\n".join(lines[i:]).lstrip("\n")
 
 # Бэкенд генерации картинок: переключает движок генерации;
 # "gemini" возвращает старый путь через Gemini
@@ -356,23 +369,16 @@ class AIEngine(commands.Cog):
                     attach_type = mes.attachments[0].content_type
                     content += f"[[ This message contained {attach_type} content, now it's not available ]]"
                 if mes.components:
-                    try:
-                        content = mes.components[0].content
-                    except Exception:
-                        content = "[[ Message could not be loaded. ]]"
-                if content.count("-# cut") > 0:
-                    content = "[[ This message was cutted out due to Discord message length limit, but the answer was full. ]]"
-                    content = content.replace("-# cut", "")
-                # Срезаем -#-лог действий (историю вызовов тулов, issue #2) с начала
-                # своего же ответа: модель не должна перечитывать его как свой текст
-                log_lines = 0
-                lines = content.split("\n")
-                while log_lines < len(lines) and lines[log_lines].startswith("-# "):
-                    log_lines += 1
-                if log_lines:
-                    content = "\n".join(lines[log_lines:]).lstrip("\n")
-                    if not content.strip():
-                        continue  # сообщение целиком было логом (длинные ответы)
+                    # Текст V2-сообщений живёт в компонентах: раньше брали
+                    # components[0].content, которого у Container нет, и вся
+                    # нарезка длинных ответов читалась как "could not be loaded"
+                    content = component_text(mes.components) or "[[ Message could not be loaded. ]]"
+                # Срезаем -#-лог действий (историю вызовов тулов, issue #2) и маркер
+                # "-# cut" нарезки с начала своего же ответа: модель не должна
+                # перечитывать их как свой текст
+                content = strip_action_log(content)
+                if not content.strip():
+                    continue  # сообщение целиком было логом (длинные ответы)
                 conversation.append({
                     "role": "assistant",
                     "content": content

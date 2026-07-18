@@ -10,8 +10,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import disnake
+
 from bot.ai.engine import AIEngine, AIError, FinalAnswer, Status
 from bot.ai.handler import AIMessageHandler
+from bot.utils import component_text
 
 
 class _FakeTyping:
@@ -113,10 +116,35 @@ async def test_stream_answer_long_answer_keeps_log_as_separate_message(handler):
     # Лог остаётся отдельным сообщением, не удаляется
     assert thinking.edits[-1] == "-# 🌐 Ищу в интернете..."
     assert not thinking.deleted
-    # Ответ уехал нарезкой контейнеров с маркером -# cut
-    chunk_contents = [c for c, _, _ in handler.sent[1:]]
-    assert all(c == "-# cut" for c in chunk_contents)
-    assert len(chunk_contents) >= 1
+    # Ответ уехал нарезкой контейнеров; content при этом не передаётся —
+    # V2-компоненты несовместимы с content= (ValueError в disnake)
+    chunks = handler.sent[1:]
+    assert len(chunks) >= 1
+    for content, kwargs, _m in chunks:
+        assert content is None
+        text = component_text([kwargs["components"]])
+        assert text.startswith("-# cut\n")
+        assert "а" in text
+
+
+async def test_stream_answer_never_mixes_content_with_components(handler):
+    """Контракт disnake: content вместе с V2-компонентами = ValueError."""
+    handler.ai_engine = _engine_with([
+        Status("🌐 Ищу в интернете..."),
+        FinalAnswer("б" * 5000),
+    ])
+
+    await handler._streamAnswer(_user_message(), [], ping=False)
+
+    for content, kwargs, _m in handler.sent:
+        assert not (content is not None and kwargs.get("components") is not None)
+
+
+def test_with_log_truncates_overlong_status_text():
+    log = [f"🌐 Статус номер {i} с длинным текстом" for i in range(120)]
+    text = AIMessageHandler._withLog(log, "текущий статус")
+    assert len(text) <= 1999
+    assert text.endswith("текущий статус")
 
 
 async def test_stream_answer_error_keeps_log(handler):
@@ -181,3 +209,27 @@ async def test_build_conversation_keeps_plain_bot_message_intact(engine):
     conversation = await engine.buildConverstaion([msg])
 
     assert conversation[-1]["content"] == "Обычный ответ без лога"
+
+
+async def test_build_conversation_reads_chunked_container_message(engine):
+    """Нарезанный длинный ответ (контейнер с маркером -# cut) читается как текст."""
+    msg = _bot_msg(engine, "")
+    msg.components = [disnake.ui.Container(
+        disnake.ui.TextDisplay("-# cut"),
+        disnake.ui.TextDisplay("часть длинного ответа"),
+    )]
+
+    conversation = await engine.buildConverstaion([msg])
+
+    assert conversation[-1]["role"] == "assistant"
+    assert conversation[-1]["content"] == "часть длинного ответа"
+
+
+def test_component_text_walks_nested_components():
+    container = disnake.ui.Container(
+        disnake.ui.TextDisplay("первый"),
+        disnake.ui.Separator(),
+        disnake.ui.TextDisplay("второй"),
+    )
+    assert component_text([container]) == "первый\nвторой"
+    assert component_text([]) == ""

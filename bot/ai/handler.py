@@ -9,7 +9,7 @@ from disnake.ext import commands, tasks
 from bot.storage import Channels, Roles
 from bot.flag_system.flag_system import flags
 
-from .engine import AIEngine, Status, FinalAnswer, AIError
+from .engine import AIEngine, Status, FinalAnswer, AIError, strip_action_log
 from .llm import llm
 
 
@@ -106,6 +106,15 @@ class AIMessageHandler(commands.Cog):
 
         return lang if in_block else None
 
+    @staticmethod
+    def _withLog(status_log: list[str], current: str) -> str:
+        """Текущий статус/ошибка под -#-логом прошлых статусов, с защитой от
+        переполнения лимита сообщения (десятки параллельных тул-вызовов)."""
+        log = "\n".join(f"-# {s}" for s in status_log)
+        text = f"{log}\n{current}" if log else current
+        # хвост новее — старые статусы дешевле потерять, чем уронить edit 400-кой
+        return text[-1999:] if len(text) > 1999 else text
+
     async def _send(self, message: disnake.Message, ping: bool, content: str | None = None, **kwargs):
         """Ответить на сообщение (с пингом) либо отправить в канал без пинга."""
         if ping:
@@ -138,8 +147,11 @@ class AIMessageHandler(commands.Cog):
                                 await thinking_message.delete()
                             thinking_message = None
                         for mes in chunks:
-                            await self._send(message, ping, content="-# cut", components=disnake.ui.Container(
-                                disnake.ui.TextDisplay(mes)
+                            # V2-контейнер несовместим с content= (ValueError в disnake) —
+                            # маркер "-# cut" живёт первым TextDisplay внутри контейнера
+                            await self._send(message, ping, components=disnake.ui.Container(
+                                disnake.ui.TextDisplay("-# cut"),
+                                disnake.ui.TextDisplay(mes),
                             ))
                         if event.attachments:
                             await self._send(message, ping, files=event.attachments)
@@ -155,16 +167,14 @@ class AIMessageHandler(commands.Cog):
                             else:
                                 await self._send(message, ping, content=combined)
                 elif isinstance(event, Status):
-                    log = "\n".join(f"-# {s}" for s in status_log)
-                    text = f"{log}\n{event.content}" if log else event.content
+                    text = self._withLog(status_log, event.content)
                     status_log.append(event.content)
                     if thinking_message:
                         await thinking_message.edit(text)
                     else:
                         thinking_message = await self._send(message, ping, content=text)
                 elif isinstance(event, AIError):
-                    log = "\n".join(f"-# {s}" for s in status_log)
-                    text = f"{log}\n{event.content}" if log else event.content
+                    text = self._withLog(status_log, event.content)
                     if thinking_message:
                         await thinking_message.edit(text)
                     else:
@@ -266,10 +276,14 @@ class AIMessageHandler(commands.Cog):
 
         await self._streamAnswer(message, conversation, ping=False)
 
-        # Фоновое сжатие обрезанной части, если её накопилось много
-        trimmed_text = "\n".join(
-            f"({m.author.display_name}): {m.clean_content}" for m in trimmed if m.clean_content
-        )
+        # Фоновое сжатие обрезанной части, если её накопилось много.
+        # -#-лог действий срезаем и здесь, чтобы он не утекал в выжимку.
+        parts = []
+        for m in trimmed:
+            text = strip_action_log(m.clean_content)
+            if text:
+                parts.append(f"({m.author.display_name}): {text}")
+        trimmed_text = "\n".join(parts)
         if len(trimmed_text) > _THREAD_SUMMARY_TRIGGER:
             old_summary = summary_flag.value if summary_flag else ""
             task = asyncio.create_task(self._compressSummary(thread, old_summary, trimmed_text))
