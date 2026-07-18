@@ -101,24 +101,29 @@ _TIME_FORMS = {
     'г': ('год', 'года', 'лет'),
 }
 
+# Строго «число + единица» целиком: раньше фильтр по символам отбрасывал
+# пунктуацию и знак, и '1.5ч' парсился как 15ч, а '-1д' как +1д
+_DURATION_RE = re.compile(r'^\s*(\d+)\s*([а-яёa-z]+)\s*$', re.IGNORECASE)
+
+
 def parse_duration(duration_str):
     """
     Парсит строку вида "15мин" в количество секунд.
     Единицы: сек, мин ('м' тоже минуты), ч, д, н, мес, г.
-    Любой кривой ввод (пустые цифры/неизвестная единица) → None (не кидает).
+    Любой кривой ввод (дробь, знак, мусор вокруг, неизвестная единица) → None (не кидает).
     """
     if not isinstance(duration_str, str):
         return None
 
-    digits = ''.join(filter(str.isdigit, duration_str))
-    unit = ''.join(filter(str.isalpha, duration_str)).lower()
-
-    if not digits or unit not in _TIME_MULTIPLIERS:
+    m = _DURATION_RE.match(duration_str)
+    if not m:
         return None
-
+    unit = m.group(2).lower()
+    if unit not in _TIME_MULTIPLIERS:
+        return None
     try:
-        # str.isdigit пропускает суперскрипты/circled digits ('⁵'), а int() на них падает
-        return int(digits) * _TIME_MULTIPLIERS[unit]
+        # \d матчит и unicode-десятичные ('٥'), int() их тоже понимает; ValueError — страховка
+        return int(m.group(1)) * _TIME_MULTIPLIERS[unit]
     except ValueError:
         return None
 

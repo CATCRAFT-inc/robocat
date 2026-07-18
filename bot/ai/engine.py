@@ -567,7 +567,7 @@ class AIEngine(commands.Cog):
                         # fail-open: хуже несчитанный лимит, чем потерянная минута codex.
                         try:
                             if image_gen_flag:
-                                await self.flags.setFlag(ctx.user, "image_gen", value="+1")
+                                await self.flags.incrementFlag(ctx.user, "image_gen", 1)
                             else:
                                 await self.flags.setFlag(ctx.user, "image_gen", value="1", expires_at="1д")
                         except Exception:

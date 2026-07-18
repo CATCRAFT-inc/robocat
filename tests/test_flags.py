@@ -104,7 +104,7 @@ async def test_increment_preserves_expires_at(flags_db):
     assert row1.value == "1"
     assert row1.expires_at is not None
 
-    ok = await flags_db.setFlag(member, "counter", "+1")
+    ok = await flags_db.incrementFlag(member, "counter", 1)
     assert ok is True
 
     row2 = await flags_db.getFlag(member, "counter")
@@ -116,7 +116,7 @@ async def test_increment_preserves_expires_at(flags_db):
 async def test_20_parallel_increments_give_20(flags_db):
     member = make_member(555)
     await asyncio.gather(*[
-        flags_db.setFlag(member, "par_counter", "+1") for _ in range(20)
+        flags_db.incrementFlag(member, "par_counter", 1) for _ in range(20)
     ])
     row = await flags_db.getFlag(member, "par_counter")
     assert row.value == "20"
@@ -134,7 +134,7 @@ async def test_increment_on_expired_flag_starts_fresh(flags_db):
             (past, member.id),
         )
         await db.commit()
-    await flags_db.setFlag(member, "cnt", "+1", expires_at="8ч")
+    await flags_db.incrementFlag(member, "cnt", 1, expires_at="8ч")
     row = await flags_db.getFlag(member, "cnt")
     assert row.value == "1"  # не "6": стартовали заново
 
@@ -166,7 +166,7 @@ async def test_non_numeric_increment_fails_and_keeps_value(flags_db):
     member = make_member(666)
     await flags_db.setFlag(member, "text_flag", "hello")
 
-    ok = await flags_db.setFlag(member, "text_flag", "+1")
+    ok = await flags_db.incrementFlag(member, "text_flag", 1)
     assert ok is False
 
     row = await flags_db.getFlag(member, "text_flag")
@@ -210,7 +210,7 @@ async def test_increment_over_expired_row_resets_expiry(flags_db):
         )
         await db.commit()
 
-    ok = await flags_db.setFlag(member, "image_gen", "+1")
+    ok = await flags_db.incrementFlag(member, "image_gen", 1)
     assert ok is True
 
     row = await flags_db.getFlag(member, "image_gen")
@@ -225,8 +225,18 @@ async def test_increment_alive_row_keeps_expiry(flags_db):
     future = int(time.time()) + 3600
     await flags_db.setFlag(member, "cnt", "1", expires_at=future)
 
-    await flags_db.setFlag(member, "cnt", "+1")
+    await flags_db.incrementFlag(member, "cnt", 1)
 
     row = await flags_db.getFlag(member, "cnt")
     assert row.value == "2"
     assert row.expires_at == future  # живой срок сохранён без явного нового
+
+
+@pytest.mark.asyncio
+async def test_set_flag_stores_plus_digits_literally(flags_db):
+    """setFlag больше не угадывает инкремент по виду значения: телефон через
+    /flag_user сохраняется как есть (для счётчиков есть incrementFlag)."""
+    member = make_member(779)
+    await flags_db.setFlag(member, "phone", "+79261234567")
+    row = await flags_db.getFlag(member, "phone")
+    assert row.value == "+79261234567"

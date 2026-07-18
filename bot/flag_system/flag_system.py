@@ -62,76 +62,26 @@ class Flags:
         entity_id = -1 if entity_type == "abstract" else entity.id
         return entity_type, entity_id
 
-    async def setFlag(self, entity, flag: str, value=None, expires_at: int | str | None = None) -> bool:
-        entity_type, entity_id = self._resolveEntity(entity)
-        if entity_type is None:
-            return False
-
+    def _resolveExpires(self, expires_at, flag: str) -> tuple[bool, int | None]:
+        """'15мин' → unix-время; int/None — как есть. (False, None) при кривой строке."""
         if isinstance(expires_at, str):
             seconds = parse_duration(expires_at)
             if seconds is None:
                 self.logger.warning("Invalid expires_at %r for flag %s", expires_at, flag)
-                return False
-            expires_at = int(time.time()) + seconds
+                return False, None
+            return True, int(time.time()) + seconds
+        return True, expires_at
 
-        is_increment = (isinstance(value, str) and len(value) > 1
-                        and value[0] in ('+', '-') and value[1:].isdigit())
-
-        # +N / -N: атомарный read-modify-write в одной транзакции, expires_at
-        # сохраняется (COALESCE), если новый явно не передан.
-        if is_increment:
-            async with aiosqlite.connect(self.dbpath, isolation_level=None) as db:
-                await db.execute("BEGIN IMMEDIATE")
-                try:
-                    cursor = await db.execute(
-                        "SELECT value, expires_at FROM flags WHERE entity_type=? AND entity_id=? AND flag=?",
-                        (entity_type, entity_id, flag),
-                    )
-                    row = await cursor.fetchone()
-                    # Протухшую строку трактуем как отсутствующую: иначе +N сложил бы
-                    # новое значение поверх мёртвого счётчика (стартуем с value).
-                    row_live = (row is not None and row[0] is not None
-                                and (row[1] is None or row[1] >= int(time.time())))
-                    if row_live:
-                        try:
-                            base = int(row[0])
-                        except (ValueError, TypeError):
-                            self.logger.warning("Flag %s is not numeric, cannot apply %s", flag, value)
-                            await db.execute("ROLLBACK")
-                            return False
-                        new_value = base + int(value)
-                        # живая строка: без явного нового expires_at сохраняем старый
-                        final_expires = expires_at if expires_at is not None else row[1]
-                    else:
-                        new_value = int(value)
-                        # мёртвая/отсутствующая строка = как INSERT: протухший
-                        # expires_at не должен переживать перезапуск счётчика
-                        final_expires = expires_at
-                    await db.execute(
-                        """
-                        INSERT INTO flags (entity_type, entity_id, flag, value, expires_at)
-                        VALUES (:entity_type, :entity_id, :flag, :value, :expires_at)
-                        ON CONFLICT(entity_type, entity_id, flag) DO UPDATE SET
-                            value = :value,
-                            expires_at = :expires_at
-                        """,
-                        {
-                            "entity_type": entity_type,
-                            "entity_id": entity_id,
-                            "flag": flag,
-                            "value": str(new_value),
-                            "expires_at": final_expires,
-                        },
-                    )
-                    await db.execute("COMMIT")
-                except BaseException:
-                    self.logger.exception("Ошибка транзакции инкремента флага %s на (%s, %s), откатываю",
-                                          flag, entity_type, entity_id)
-                    await db.execute("ROLLBACK")
-                    raise
-            self.logger.info("[FLAG SET] %s on (%s, %s) = %s", flag, entity_type, entity_id, new_value)
-            return True
-
+    async def setFlag(self, entity, flag: str, value=None, expires_at: int | str | None = None) -> bool:
+        """Записать значение флага ЛИТЕРАЛЬНО. Для счётчиков — incrementFlag:
+        раньше setFlag сам угадывал инкремент по виду значения («+цифры»), и
+        легитимный «+79261234567» через /flag_user превращался в сложение."""
+        entity_type, entity_id = self._resolveEntity(entity)
+        if entity_type is None:
+            return False
+        ok, expires_at = self._resolveExpires(expires_at, flag)
+        if not ok:
+            return False
         try:
             async with aiosqlite.connect(self.dbpath) as db:
                 await db.execute(
@@ -154,7 +104,72 @@ class Flags:
         except Exception:
             self.logger.exception("Не удалось записать флаг %s на (%s, %s)", flag, entity_type, entity_id)
             raise
-        self.logger.info("[FLAG SET] %s on (%s, %s) = %s", flag, entity_type, entity_id, value)
+        # %.60s: значения флагов бывают приватными (факты памяти) — в лог целиком не пишем
+        self.logger.info("[FLAG SET] %s on (%s, %s) = %.60s", flag, entity_type, entity_id, value)
+        return True
+
+    async def incrementFlag(self, entity, flag: str, delta: int, expires_at: int | str | None = None) -> bool:
+        """Атомарно прибавить delta к числовому счётчику (BEGIN IMMEDIATE).
+
+        Протухшая строка считается отсутствующей: счётчик стартует с delta и НЕ
+        наследует мёртвый expires_at (иначе следующий getFlag снёс бы свежий
+        счётчик как протухший). Живая строка сохраняет свой expires_at, если
+        новый явно не передан."""
+        entity_type, entity_id = self._resolveEntity(entity)
+        if entity_type is None:
+            return False
+        ok, expires_at = self._resolveExpires(expires_at, flag)
+        if not ok:
+            return False
+        delta = int(delta)
+        async with aiosqlite.connect(self.dbpath, isolation_level=None) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await db.execute(
+                    "SELECT value, expires_at FROM flags WHERE entity_type=? AND entity_id=? AND flag=?",
+                    (entity_type, entity_id, flag),
+                )
+                row = await cursor.fetchone()
+                row_live = (row is not None and row[0] is not None
+                            and (row[1] is None or row[1] >= int(time.time())))
+                if row_live:
+                    try:
+                        base = int(row[0])
+                    except (ValueError, TypeError):
+                        self.logger.warning("Flag %s is not numeric, cannot increment by %s", flag, delta)
+                        await db.execute("ROLLBACK")
+                        return False
+                    new_value = base + delta
+                    # живая строка: без явного нового expires_at сохраняем старый
+                    final_expires = expires_at if expires_at is not None else row[1]
+                else:
+                    new_value = delta
+                    # мёртвая/отсутствующая строка = как INSERT: протухший
+                    # expires_at не должен переживать перезапуск счётчика
+                    final_expires = expires_at
+                await db.execute(
+                    """
+                    INSERT INTO flags (entity_type, entity_id, flag, value, expires_at)
+                    VALUES (:entity_type, :entity_id, :flag, :value, :expires_at)
+                    ON CONFLICT(entity_type, entity_id, flag) DO UPDATE SET
+                        value = :value,
+                        expires_at = :expires_at
+                    """,
+                    {
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "flag": flag,
+                        "value": str(new_value),
+                        "expires_at": final_expires,
+                    },
+                )
+                await db.execute("COMMIT")
+            except BaseException:
+                self.logger.exception("Ошибка транзакции инкремента флага %s на (%s, %s), откатываю",
+                                      flag, entity_type, entity_id)
+                await db.execute("ROLLBACK")
+                raise
+        self.logger.info("[FLAG SET] %s on (%s, %s) = %s", flag, entity_type, entity_id, new_value)
         return True
 
     async def getFlag(self, entity, flag: str) -> "FlagRow | None":

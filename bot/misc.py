@@ -20,7 +20,8 @@ class Tests(commands.Cog):
         if message.author.bot:
             return
         if message.author.id == self.artem123zzz_id:
-            if 'https' in message.content or message.attachments:
+            # lower() + 'http': фильтр обходился HTTPS://, http:// и прочим регистром
+            if 'http' in message.content.lower() or message.attachments:
                 try:
                     await message.delete()
                 except (disnake.Forbidden, disnake.NotFound) as e:
@@ -34,9 +35,10 @@ class Tests(commands.Cog):
     async def sendMessages(self, inter: commands.Context):
         party_search = inter.guild.get_channel(Channels.requests)
         if party_search is None:
-            logger.error("Канал запросов %s не найден — создание треда «Запросы» сейчас упадёт", Channels.requests)
+            logger.error("Канал запросов %s не найден — тред «Запросы» не создан", Channels.requests)
+            return
         tag = party_search.get_tag(1218152835716354058)
-        await party_search.create_thread(name="Запросы!", applied_tags=[tag], components=disnake.ui.Container(
+        await party_search.create_thread(name="Запросы!", applied_tags=[tag] if tag else [], components=disnake.ui.Container(
             disnake.ui.TextDisplay("# Запросы!"),
             disnake.ui.Separator(),
             disnake.ui.TextDisplay("""Тут ты можешь запросить получение ролей, достижений и прочего!

@@ -34,14 +34,8 @@ class FlagCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    async def cog_slash_command_error(self, inter: disnake.ApplicationCommandInteraction,
-                                      error: Exception) -> None:
-        if isinstance(error, commands.CheckFailure):
-            # не-админ ткнул админскую команду — штатный отказ, трейсбек не нужен
-            logger.info("Отказ в доступе к команде флагов %s: юзер %s",
-                        inter.application_command.name, inter.author.id)
-            return
-        logger.error("Ошибка в команде флагов %s", inter.application_command.name, exc_info=error)
+    # Обработка CheckFailure/ошибок — глобальный on_slash_command_error в bot.py:
+    # он отвечает не-админу ephemeral-отказом вместо «Приложение не отвечает»
 
     @commands.slash_command(name='list_user_flags', description="Показать все флаги пользователя")
     @commands.has_any_role(Roles.admin, Roles.st_admin)
@@ -65,7 +59,8 @@ class FlagCommands(commands.Cog):
         flag_info = await flags.getFlag(user, flag)
         if flag_info:
             expires_str = f"\nИстекает: <t:{flag_info.expires_at}:R>" if flag_info.expires_at else ""
-            value_str = f"Значение: `{flag_info.value}`{expires_str}"
+            # обрезка: значение >4000 символов (напр. ai_summary) роняло TextDisplay HTTP 400
+            value_str = f"Значение: `{str(flag_info.value)[:3500]}`{expires_str}"
             await inter.send(components=disnake.ui.Container(
                 disnake.ui.TextDisplay(f"Флаг `{flag}` пользователя {user.mention}"),
                 disnake.ui.Separator(),
@@ -103,8 +98,7 @@ class FlagCommands(commands.Cog):
             return
         ok = await flags.setFlag(member, flag, value, expires_at)
         if not ok:
-            await inter.send("Не удалось установить флаг (неподдерживаемый тип канала или "
-                             "нечисловое значение для +N).", ephemeral=True)
+            await inter.send("Не удалось установить флаг (неподдерживаемый тип сущности).", ephemeral=True)
             return
         await inter.send(f"Флаг `{flag}` установлен для {member.mention}.", ephemeral=True,
                          allowed_mentions=disnake.AllowedMentions(users=False))
@@ -122,8 +116,7 @@ class FlagCommands(commands.Cog):
             return
         ok = await flags.setFlag(channel, flag, value, expires_at)
         if not ok:
-            await inter.send("Не удалось установить флаг (неподдерживаемый тип канала или "
-                             "нечисловое значение для +N).", ephemeral=True)
+            await inter.send("Не удалось установить флаг (неподдерживаемый тип сущности).", ephemeral=True)
             return
         await inter.send(f"Флаг `{flag}` установлен для {channel.mention}.", ephemeral=True,
                          allowed_mentions=disnake.AllowedMentions(users=False))
