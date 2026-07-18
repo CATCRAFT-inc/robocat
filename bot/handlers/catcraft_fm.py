@@ -373,13 +373,16 @@ class CatcraftFM(commands.Cog):
             self.skip_votes += 1
             self.last_skip = datetime.now().timestamp()
             if self.skip_votes >= required_votes:
-                await ctx.channel.send(
-                    f"{self.skip_votes} котика проголосовали за скип трека, пропускаем..."
-                )
-                self.vc.stop()
+                # сброс состояния и stop() ДО await: второй голос, пришедший во
+                # время send, иначе тоже проходил кворум и стопил уже новый трек
+                votes = self.skip_votes
                 self.votes_list = []
                 self.last_skip = 0
                 self.skip_votes = 0
+                self.vc.stop()
+                await ctx.channel.send(
+                    f"{votes} котика проголосовали за скип трека, пропускаем..."
+                )
             else:
                 await ctx.channel.send(
                     f"{ctx.author.mention} проголосовал за пропуск песни! "

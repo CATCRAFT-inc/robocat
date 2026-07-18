@@ -45,14 +45,13 @@ class Digest(commands.Cog):
 
         # Собираем сообщения
         cutoff = datetime.now(timezone.utc) - timedelta(days=дней)
-        collected: list[str] = []
+        collected: list[tuple] = []  # (created_at, строка) — для глобальной хронологии
         total = 0
         for channel_id in Channels.digest_channels:
             channel = self.bot.get_channel(channel_id)
             if channel is None:
                 logger.warning("Канал дайджеста %s не найден — пропускаю", channel_id)
                 continue
-            channel_lines: list[str] = []
             try:
                 # oldest_first=False: с after= дефолт отдаёт СТАРЕЙШИЕ 200 окна,
                 # и свежие новости систематически терялись; берём свежие 200
@@ -67,16 +66,16 @@ class Digest(commands.Cog):
                     if not text:
                         continue
                     line = f"[#{channel.name}] {msg.author.display_name}: {text}"
-                    channel_lines.append(line)
+                    collected.append((msg.created_at, line))
                     total += len(line)
             except disnake.HTTPException:
                 logger.exception("Не удалось прочитать историю канала %s", channel_id)
-            channel_lines.reverse()  # обратно в хронологический порядок
-            collected.extend(channel_lines)
 
-        # Бюджет символов — отбрасываем самое старое
+        # Глобальная хронология по всем каналам: бюджет режет действительно
+        # самое старое, а не свежие сообщения первого канала списка
+        collected.sort(key=lambda pair: pair[0])
         while total > _CHAR_BUDGET and collected:
-            total -= len(collected.pop(0))
+            total -= len(collected.pop(0)[1])
 
         if not collected:
             await inter.edit_original_response(content="За этот период новостей не было =(")
@@ -85,7 +84,7 @@ class Digest(commands.Cog):
         prompt = (
             "Сделай короткую выжимку новостей сервера по темам, с маркерами (списком). "
             "Пиши только по фактам из сообщений ниже, без выдумок.\n\n"
-            + "\n".join(collected)
+            + "\n".join(line for _, line in collected)
         )
         try:
             answer = await llm.ask(prompt, system=_SYSTEM, max_tokens=1024)
