@@ -74,6 +74,7 @@ def _codex_safe_env() -> dict:
 @dataclass
 class Status:
     content: str
+    ephemeral: bool = False
 
 @dataclass
 class _ToolDone:
@@ -611,6 +612,7 @@ class AIEngine(commands.Cog):
                 duration = args.get("duration")
                 reason = args.get("reason")
                 if ctx.user:
+                    yield Status("🔇 Выдаю тебе мут...")
                     try:
                         await ctx.user.timeout(duration=duration, reason=reason)
                     except disnake.Forbidden as e:
@@ -694,7 +696,7 @@ class AIEngine(commands.Cog):
                         "name": tc.function.name,
                         "content": str(result.content)
                     })
-                yield Status("🤤 Ещё чуть-чуть думаю...")
+                yield Status("🤤 Ещё чуть-чуть думаю...", ephemeral=True)
                 tool_rounds += 1
                 if tool_rounds >= 2:
                     force_final = True

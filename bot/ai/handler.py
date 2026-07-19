@@ -178,7 +178,8 @@ class AIMessageHandler(commands.Cog):
                                 await self._send(message, ping, content=combined)
                 elif isinstance(event, Status):
                     text = self._withLog(status_log, event.content)
-                    status_log.append(event.content)
+                    if not event.ephemeral:
+                        status_log.append(event.content)
                     if thinking_message:
                         await thinking_message.edit(text)
                     else:

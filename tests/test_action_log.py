@@ -12,7 +12,7 @@ import pytest
 
 import disnake
 
-from bot.ai.engine import AIEngine, AIError, FinalAnswer, Status
+from bot.ai.engine import AIEngine, AIError, Context, FinalAnswer, Status
 from bot.ai.handler import AIMessageHandler
 from bot.utils import component_text
 
@@ -76,7 +76,7 @@ def _engine_with(events):
 async def test_stream_answer_accumulates_status_history(handler):
     handler.ai_engine = _engine_with([
         Status("🌐 Ищу в интернете..."),
-        Status("🤤 Ещё чуть-чуть думаю..."),
+        Status("🤤 Ещё чуть-чуть думаю...", ephemeral=True),
         FinalAnswer("Готовый ответ"),
     ])
 
@@ -87,10 +87,8 @@ async def test_stream_answer_accumulates_status_history(handler):
     assert first_content == "🌐 Ищу в интернете..."
     # Второй статус: прошлый уходит в -#, текущий — обычным текстом
     assert thinking.edits[0] == "-# 🌐 Ищу в интернете...\n🤤 Ещё чуть-чуть думаю..."
-    # Финал: весь лог -#-строками над ответом, в том же сообщении
-    assert thinking.edits[1] == (
-        "-# 🌐 Ищу в интернете...\n-# 🤤 Ещё чуть-чуть думаю...\n\nГотовый ответ"
-    )
+    # Финал: ephemeral-статус остался только текущим, в лог не попал
+    assert thinking.edits[1] == "-# 🌐 Ищу в интернете...\n\nГотовый ответ"
     assert not thinking.deleted
 
 
@@ -159,6 +157,27 @@ async def test_stream_answer_error_keeps_log(handler):
     assert thinking.edits[-1] == "-# 🌐 Ищу в интернете...\n😞 Ошибка"
 
 
+async def test_mute_status_stays_in_action_log(handler, engine):
+    user = MagicMock()
+    user.timeout = AsyncMock()
+    tool_call = MagicMock()
+    tool_call.function.name = "mute_user"
+    tool_call.function.arguments = '{"duration": "10m", "reason": "По просьбе пользователя"}'
+
+    events = [event async for event in engine._executeTool(tool_call, Context(user))]
+
+    assert isinstance(events[0], Status)
+    assert events[0].content == "🔇 Выдаю тебе мут..."
+    assert not events[0].ephemeral
+    user.timeout.assert_awaited_once_with(duration="10m", reason="По просьбе пользователя")
+
+    handler.ai_engine = _engine_with([events[0], FinalAnswer("Мут выдан")])
+    await handler._streamAnswer(_user_message(), [], ping=False)
+
+    _, _, thinking = handler.sent[0]
+    assert thinking.edits[-1] == "-# 🔇 Выдаю тебе мут...\n\nМут выдан"
+
+
 # --- buildConverstaion: чтение истории ---
 
 
@@ -184,7 +203,7 @@ def engine(monkeypatch):
 
 
 async def test_build_conversation_strips_action_log_from_bot_message(engine):
-    msg = _bot_msg(engine, "-# 🌐 Ищу в интернете...\n-# 🤤 Ещё чуть-чуть думаю...\n\nГотовый ответ")
+    msg = _bot_msg(engine, "-# 🌐 Ищу в интернете...\n-# 🔇 Выдаю тебе мут...\n\nГотовый ответ")
 
     conversation = await engine.buildConverstaion([msg])
 
