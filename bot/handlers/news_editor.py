@@ -23,7 +23,7 @@ _NEWS_CHANNELS = {
     "Газета": Channels.newspaper,
     "Медиа": Channels.media_news,
     "Информатор": Channels.informator,
-    "Секретный": Channels.secrets
+    "Секретный": Channels.secret
 }
 
 _PING_ROLES = {
