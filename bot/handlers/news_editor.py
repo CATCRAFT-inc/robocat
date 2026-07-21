@@ -23,6 +23,7 @@ _NEWS_CHANNELS = {
     "Газета": Channels.newspaper,
     "Медиа": Channels.media_news,
     "Информатор": Channels.informator,
+    "Секретный": Channels.secrets
 }
 
 _PING_ROLES = {
@@ -35,7 +36,7 @@ _PING_ROLES = {
 }
 _NO_PING = "Без пинга"
 
-_ADMIN_ROLES = {Roles.admin, Roles.st_admin}
+_ADMIN_ROLES = {Roles.admin, Roles.st_admin, Roles.media}
 _PING_LINE = re.compile(r"^<@&(\d+)>$")
 
 # message.components отдаёт read-side классы, в тестах контейнер собран из ui-классов —
