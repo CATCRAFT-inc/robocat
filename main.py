@@ -56,7 +56,7 @@ def load_extension():
         "handlers.news_editor",   # /news — редактор новостей
 
         ### AI
-       # "ai.handler",
+        "ai.handler",
 
         ### Other
         "utils",
