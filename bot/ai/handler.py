@@ -57,14 +57,9 @@ class AIMessageHandler(commands.Cog):
         атомарный инкремент в SQL (Admins/K+/Boosters — без лимита)."""
         if Roles.premium_ai & {r.id for r in user.roles}:
             return True
-        # пре-чек: уже залоченный юзер не крутит счётчик (и не продлевает его)
-        if await flags.getFlag(user, "ai_locked"):
-            return False
         count = await flags.incrementFlag(user, "airequests", 1, create_expires_at="8ч")
         if count is None:
             return True  # ponytail: сбой учёта не блокирует ответ (fail-open)
-        if count == self.user_request_limit:
-            await flags.setFlag(user, "ai_locked", None, "8ч")
         return count <= self.user_request_limit
 
     async def _buildLongMessage(self, text: str) -> list[str]:
@@ -212,9 +207,9 @@ class AIMessageHandler(commands.Cog):
             await message.reply("*Робокотик остужает свой процессор... Поговори с ним попозже.*")
             return
         if not await self._consumeRequest(message.author):
-            ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
-            # Флаг мог истечь между проверкой и этим чтением (ленивый expiry) → None
-            expires_raw = ai_locked_flag.expires_at if ai_locked_flag else None
+            request_flag = await flags.getFlag(message.author, "airequests")
+            # Счётчик мог истечь между проверкой и этим чтением (ленивый expiry).
+            expires_raw = request_flag.expires_at if request_flag else None
             expires_at = f"<t:{expires_raw}:R>" if expires_raw else "попозже"
             await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
             return
@@ -246,8 +241,8 @@ class AIMessageHandler(commands.Cog):
         # Лимит 35 RPD действует и в тредах: раньше участник AI-треда слал
         # запросы без ограничений (премиум/бустер — без лимита, как и в упоминаниях)
         if not await self._consumeRequest(message.author):
-            ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
-            expires_raw = ai_locked_flag.expires_at if ai_locked_flag else None
+            request_flag = await flags.getFlag(message.author, "airequests")
+            expires_raw = request_flag.expires_at if request_flag else None
             expires_at = f"<t:{expires_raw}:R>" if expires_raw else "попозже"
             await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
             return
