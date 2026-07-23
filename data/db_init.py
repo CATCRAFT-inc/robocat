@@ -5,8 +5,8 @@ from pathlib import Path
 DB_PATH = Path(__file__).parent / "db.sqlite"
 
 
-async def dbInit():
-    async with aiosqlite.connect(DB_PATH) as db:
+async def dbInit(db_path: Path = DB_PATH):
+    async with aiosqlite.connect(db_path) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS flags (
                 entity_type TEXT NOT NULL,
@@ -26,8 +26,9 @@ async def dbInit():
                 ideas_added     INTEGER DEFAULT 0
             )
         """)
+        await db.execute("DELETE FROM flags WHERE flag LIKE 'fact:%' OR flag = 'ai_locked'")
         await db.commit()
-    print(f"DB initialised at {DB_PATH}")
+    print(f"DB initialised at {db_path}")
 
 
 if __name__ == '__main__':

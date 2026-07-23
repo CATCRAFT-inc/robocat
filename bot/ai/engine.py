@@ -23,7 +23,6 @@ from PIL import Image
 from .wiki_search import wiki
 from .web_search import web
 from . import media
-from . import memory
 from .llm import llm, AIUnavailable, strip_thoughts
 
 from dataclasses import dataclass, field
@@ -169,45 +168,6 @@ class AIEngine(commands.Cog):
                 "function": {
                     "name": "user_info",
                 "description": "Get current's user discord info (right now - only their roles)"
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "remember_fact",
-                "description": "Save a lasting fact about the current user to your long-term memory (their name, preferences, builds/projects, important life details they share about themselves). Don't save one-off context or trivia.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "fact": {
-                            "type": "string",
-                            "description": "Short fact in russian, third person, no user name (e.g. 'зовут Игорь', 'строит мегабазу на спавне')."
-                        },
-                        "lifetime": {
-                            "type": "string",
-                            "enum": ["permanent", "temporary"],
-                            "description": "permanent — never changes (name, birthday). temporary — current state that will get stale (projects, plans, mood)."
-                        },
-                    },
-                    "required": ["fact", "lifetime"],
-                },
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "forget_fact",
-                "description": "Delete facts about the current user from your long-term memory. Use when they ask to forget something about them.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Substring to match against saved facts, in russian (e.g. 'мегабаз')."
-                        },
-                    },
-                    "required": ["query"],
-                },
                 }
             },
             {
@@ -586,26 +546,6 @@ class AIEngine(commands.Cog):
                     # пробивать маркер тул-результата
                     content = [neutralize_markers(i.name) for i in ctx.user.roles]
                     yield _ToolDone(content=f"[[ User's roles: {content} ]]")
-                else:
-                    yield _ToolDone("[[ User was not provided lol ]]")
-            case "remember_fact":
-                yield Status("🧠 Запоминаю...")
-                if ctx.user:
-                    saved = await memory.remember(ctx.user, args.get("fact"), args.get("lifetime", "temporary"))
-                    if saved:
-                        yield _ToolDone("[[ Fact saved to long-term memory. ]]")
-                    else:
-                        yield _ToolDone("[[ Could not save the fact. Don't retry. ]]")
-                else:
-                    yield _ToolDone("[[ User was not provided lol ]]")
-            case "forget_fact":
-                yield Status("🧠 Забываю...")
-                if ctx.user:
-                    removed = await memory.forget(ctx.user, args.get("query"))
-                    if removed:
-                        yield _ToolDone(f"[[ Removed {removed} fact(s) from long-term memory. ]]")
-                    else:
-                        yield _ToolDone("[[ No matching facts found in memory. Tell user you don't remember that anyway. ]]")
                 else:
                     yield _ToolDone("[[ User was not provided lol ]]")
             case "mute_user":
