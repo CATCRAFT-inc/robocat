@@ -173,3 +173,4 @@ data/ai_vendors.json
 /playground
 /data/catcraftfm
 _docs/
+.worktrees/
