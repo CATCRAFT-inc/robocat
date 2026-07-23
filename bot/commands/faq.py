@@ -81,7 +81,7 @@ class FAQ(commands.Cog):
     @commands.command(name='донатик', description='Донат нашего проекта!^~^', aliases=['донат', 'donate', "котик+"])
     async def donate(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
-            disnake.ui.TextDisplay("### Донатик сервера - <https://donate.catcraftmc.ru>")
+            disnake.ui.TextDisplay("### Донатик сервера - <https://donate.catcraft.ru>")
         ))
 
     @commands.command(name='законы', description='Законы сервера', aliases=['закон', 'laws', 'pfrjys'])

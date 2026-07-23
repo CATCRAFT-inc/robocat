@@ -23,7 +23,34 @@ logger = logging.getLogger("robocat.bot")
 
 intents = disnake.Intents.all()
 
-bot = commands.Bot(
+
+def _event_guild_id(args) -> int | None:
+    for arg in args:
+        guild_id = getattr(arg, "guild_id", None)
+        if guild_id is not None:
+            return guild_id
+        guild = getattr(arg, "guild", None)
+        if guild is not None:
+            return getattr(guild, "id", None)
+    return None
+
+
+class MainGuildBot(commands.Bot):
+    """Do not dispatch guild events received outside the configured server."""
+
+    def __init__(self, *args, main_guild_id: int, **kwargs):
+        self.main_guild_id = main_guild_id
+        super().__init__(*args, **kwargs)
+
+    def dispatch(self, event_name, *args, **kwargs):
+        guild_id = _event_guild_id(args)
+        if guild_id is not None and guild_id != self.main_guild_id:
+            return None
+        return super().dispatch(event_name, *args, **kwargs)
+
+
+bot = MainGuildBot(
+    main_guild_id=Guilds.main,
     intents=intents,
     activity=disnake.Game(name='Кошкокрафт'),
     command_prefix='!',

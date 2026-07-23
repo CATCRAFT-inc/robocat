@@ -4,7 +4,14 @@ import disnake
 from disnake.ext import commands
 
 from bot.flag_system.flag_system import flags
-from bot.discord_config import Channels, Roles, has_config_roles
+from bot.discord_config import (
+    Channels,
+    ConfigError,
+    Roles,
+    Users,
+    has_config_roles,
+    reload_config,
+)
 from bot.storage import Buttons, ColorStorage, Embeds
 from bot.utils import create_embed
 
@@ -20,6 +27,22 @@ class AdminCommands(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    @commands.slash_command(
+        name="config-reload",
+        description="Перечитать data/discord.local.yml без рестарта бота",
+    )
+    @has_config_roles("admin", "st_admin")
+    async def configReload(self, inter: disnake.ApplicationCommandInteraction):
+        await inter.response.defer(ephemeral=True)
+        try:
+            reload_config()
+        except ConfigError as exc:
+            logger.warning("config-reload отклонён: %s", exc)
+            await inter.edit_original_response(f"Конфиг не применён: {exc}")
+            return
+        self.bot.owner_id = Users.szarkan
+        await inter.edit_original_response("Discord-конфиг перезагружен.")
 
 
 
