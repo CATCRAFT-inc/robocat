@@ -169,6 +169,7 @@ STATUS.md
 notify_failure.py
 /data/seasons
 data/ai_vendors.json
+data/discord.local.yml
 #data/ai_settings.yaml
 /playground
 /data/catcraftfm
