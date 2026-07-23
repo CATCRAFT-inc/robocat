@@ -118,3 +118,33 @@ async def test_user_lock_slash_and_reply_commands_target_selected_user(monkeypat
 
     assert await test_flags.hasFlag(slash_target, "ai_chat_user_lock")
     assert await test_flags.hasFlag(reply_target, "ai_chat_user_lock")
+
+
+@pytest.mark.asyncio
+async def test_mention_uses_current_plus_seven_reply_ancestors():
+    handler = object.__new__(AIMessageHandler)
+    handler._chat_blocked = AsyncMock(return_value=False)
+    handler._consumeRequest = AsyncMock(return_value=True)
+    handler._streamAnswer = AsyncMock()
+    handler.ai_engine = SimpleNamespace(buildConverstaion=AsyncMock(return_value=[]))
+
+    chain = []
+    for message_id in range(10):
+        reference = (
+            SimpleNamespace(resolved=chain[-1], message_id=chain[-1].id)
+            if chain
+            else None
+        )
+        chain.append(
+            SimpleNamespace(
+                id=message_id,
+                author=make_member(),
+                reference=reference,
+                channel=SimpleNamespace(),
+            )
+        )
+
+    await handler._handleMention(chain[-1])
+
+    messages = handler.ai_engine.buildConverstaion.await_args.args[0]
+    assert [message.id for message in messages] == list(range(2, 10))

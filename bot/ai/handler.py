@@ -229,7 +229,7 @@ class AIMessageHandler(commands.Cog):
         messages = [message]
         current_msg = message
 
-        while len(messages) < 5 and current_msg.reference:
+        while len(messages) < 8 and current_msg.reference:
             prev_msg = current_msg.reference.resolved
             # Исходное сообщение было удалено — выше подниматься нельзя (нет .author)
             if isinstance(prev_msg, disnake.DeletedReferencedMessage):
