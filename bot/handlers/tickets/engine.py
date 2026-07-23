@@ -6,7 +6,8 @@ import disnake
 from disnake.ext import commands, tasks
 
 from bot.flag_system.flag_system import flags
-from bot.storage import Channels, ColorStorage, Roles
+from bot.discord_config import Channels, Roles, has_config_roles
+from bot.storage import ColorStorage
 from .admin_ticket import AdminTicket
 from bot.handlers.tickets.bugs import BugHandler, remove_bug_from_index, bug_rate_limit_ok, _extract_component_text
 from bot.utils import create_container, create_embed, neutralize_markers
@@ -258,7 +259,7 @@ class TicketEngine(commands.Cog):
                 await inter.send("Бот не нашёл такой тип тикета — сообщи в **баг-репорт**!", ephemeral=True)
 
     @commands.slash_command(name='done', description='Фикс бага/добавление идеи/выполнение запроса')
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def doneCommand(self, inter: disnake.ApplicationCommandInteraction, comment: str = None):
         thread = inter.channel
         if not isinstance(thread, disnake.Thread):
@@ -329,7 +330,7 @@ class TicketEngine(commands.Cog):
                 await inter.send("Команду можно прописывать только в тредах багов, идей, тикетов или запросов!", ephemeral=True)
 
     @commands.slash_command(name='decline', description='Отклонить баг, идею, тикет')
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def declineCommand(self, inter: disnake.ApplicationCommandInteraction, reason: str = None):
         thread = inter.channel
         if not isinstance(thread, disnake.Thread):

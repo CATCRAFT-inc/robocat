@@ -8,7 +8,8 @@ import aiosqlite
 import disnake
 from disnake import TextInputStyle, TextInput, StringSelectMenu, SelectOption
 from disnake.ext import commands
-from bot.storage import Buttons, Channels, ColorStorage, FAQStorage, Roles, Users
+from bot.discord_config import Channels, Roles, Users, has_config_roles
+from bot.storage import Buttons, ColorStorage, FAQStorage
 from bot.utils import create_container, create_embed
 from bot.flag_system.flag_system import flags
 
@@ -258,7 +259,7 @@ class BugHandler(commands.Cog):
 
     @commands.slash_command(name='clearbugs', description='Удаляет все треды с багами')
     async def doneCommand(self, inter: disnake.ApplicationCommandInteraction):
-        if inter.channel_id != Channels.temp_bugs or inter.author.id != 531208170098655233:
+        if inter.channel_id != Channels.temp_bugs or inter.author.id != Users.szarkan:
             await inter.send("Эта команда не для тебя (или не для этого канала).", ephemeral=True)
             return
         # defer: удаление десятков тредов не укладывается в 3с-дедлайн интеракции
@@ -276,7 +277,7 @@ class BugHandler(commands.Cog):
         await inter.edit_original_response(f"Удалено {deleted} из {len(threads)} тредов!")
 
     @commands.slash_command(name='rebuild_bug_index', description='Перестроить индекс дедупликации багов')
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def rebuildBugIndex(self, inter: disnake.ApplicationCommandInteraction):
         await inter.response.defer(ephemeral=True)
         if embed is None:

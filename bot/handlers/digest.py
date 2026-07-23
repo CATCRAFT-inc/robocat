@@ -6,7 +6,8 @@ from disnake.ext import commands
 
 from bot.ai.llm import llm, AIUnavailable
 from bot.flag_system.flag_system import flags
-from bot.storage import Channels, ColorStorage, Roles
+from bot.discord_config import Channels, Roles
+from bot.storage import ColorStorage
 from bot.utils import component_text, create_container, neutralize_markers
 
 logger = logging.getLogger("robocat.digest")

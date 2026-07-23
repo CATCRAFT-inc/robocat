@@ -10,13 +10,11 @@ import disnake
 from disnake.ext import commands
 from tinytag import TinyTag
 
+from bot.discord_config import Channels, Guilds
 from bot.storage import ColorStorage
 
 
 class CatcraftFM(commands.Cog):
-    GUILD_ID = 1138425078493753366
-    CHANNEL_ID = 1502616927695015986
-
     RECONNECT_DELAY = 10           # стартовая пауза между попытками реконнекта
     MAX_RECONNECT_DELAY = 120      # потолок exponential backoff
     HEARTBEAT_INTERVAL = 5.0       # как часто будим play_loop проверить коннект
@@ -153,14 +151,14 @@ class CatcraftFM(commands.Cog):
         return True
 
     async def _start_radio(self):
-        guild = self.bot.get_guild(self.GUILD_ID)
+        guild = self.bot.get_guild(Guilds.main)
         if guild is None:
-            self.logger.error("guild %s не найден", self.GUILD_ID)
+            self.logger.error("guild %s не найден", Guilds.main)
             return
 
-        self.channel = guild.get_channel(self.CHANNEL_ID)
+        self.channel = guild.get_channel(Channels.catcraft_fm)
         if self.channel is None:
-            self.logger.error("channel %s не найден", self.CHANNEL_ID)
+            self.logger.error("channel %s не найден", Channels.catcraft_fm)
             return
 
         if guild.voice_client is not None:
@@ -186,7 +184,7 @@ class CatcraftFM(commands.Cog):
             await self._force_disconnect(guild.voice_client)
             return
 
-        self.logger.info("подключился к войс-каналу %s", self.CHANNEL_ID)
+        self.logger.info("подключился к войс-каналу %s", Channels.catcraft_fm)
 
         try:
             await self._play_loop(self.vc)
@@ -351,7 +349,7 @@ class CatcraftFM(commands.Cog):
 
     @commands.command(name="следующий", aliases=["некст", "next", "skip", "скип", "ytrcn"])
     async def nextTrack(self, ctx: commands.Context):
-        if ctx.channel.id != self.CHANNEL_ID:
+        if ctx.channel.id != Channels.catcraft_fm:
             return
         if ctx.author not in ctx.channel.members:
             return

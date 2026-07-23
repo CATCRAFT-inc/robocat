@@ -4,7 +4,7 @@ from datetime import timedelta
 import disnake
 from disnake.ext import commands
 
-from bot.storage import Channels, Roles
+from bot.discord_config import Channels, Roles
 
 logger = logging.getLogger("robocat.honeypot")
 

@@ -6,7 +6,7 @@ import re
 import disnake
 from disnake.ext import commands, tasks
 
-from bot.storage import Channels, Roles
+from bot.discord_config import Channels, Roles, has_config_roles
 from bot.flag_system.flag_system import flags
 
 from bot.utils import neutralize_markers
@@ -361,7 +361,7 @@ class AIMessageHandler(commands.Cog):
             self.logger.exception("Не удалось сжать историю AI-треда %s", thread.id)
 
     @commands.slash_command(name='aichat', description="Создать приватный чат с нейросетью")
-    @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.booster, Roles.kotikplus)
+    @has_config_roles("admin", "st_admin", "booster", "kotikplus")
     async def aiChat(self, inter: disnake.MessageCommandInteraction):
         # defer сразу: создание треда + 2 флага + send не укладываются в 3с-дедлайн
         # интеракции, иначе токен протухал и оставался бы осиротевший тред
@@ -488,7 +488,7 @@ class AIMessageHandler(commands.Cog):
         await self.bot.wait_until_ready()
 
     @commands.slash_command(name='aiinfo', description="посмотреть инфу о ии")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def aiInfo(self, inter: disnake.MessageCommandInteraction):
         current = llm.current_vendor
         current_txt = f"{current.env}/{current.model}" if current else "нет доступных вендоров"
@@ -501,7 +501,7 @@ class AIMessageHandler(commands.Cog):
         )
 
     @commands.slash_command(name='ailock', description="посмотреть инфу о ии")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def aiLock(self, inter: disnake.MessageCommandInteraction):
         if self.ai_engine.ai_locked:
             self.ai_engine.ai_locked = False
@@ -511,7 +511,7 @@ class AIMessageHandler(commands.Cog):
             await inter.send("ИИ заблокирован", ephemeral=True)
 
     @commands.slash_command(name="reloadai", description="перезапуск клиента и системного промпта")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def aiReload(self, inter: disnake.MessageCommandInteraction):
         await self.ai_engine._loadAIData()
         await llm.reload()

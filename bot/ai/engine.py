@@ -28,7 +28,7 @@ from .llm import llm, AIUnavailable, strip_thoughts
 
 from dataclasses import dataclass, field
 
-from bot.storage import Channels, Roles
+from bot.discord_config import Channels, Roles, Users
 from bot.utils import component_text, neutralize_markers
 
 load_dotenv()
@@ -235,7 +235,7 @@ class AIEngine(commands.Cog):
         
         # killswitch (когда все модели 429 или просто так)
         self.ai_locked: bool = False
-        self.ai_locked_bypass_user_ids = [531208170098655233] # Чтоэто? Я не помню
+        self.ai_locked_bypass_user_ids = [Users.szarkan] # Чтоэто? Я не помню
 
         # AI Info
         # 1024 резал длинные ответы на полуслове (issue #1): gemma «думает» в
