@@ -27,7 +27,7 @@ from .llm import llm, AIUnavailable, strip_thoughts
 
 from dataclasses import dataclass, field
 
-from bot.discord_config import Channels, Roles, Users
+from bot.discord_config import Channels, Roles
 from bot.utils import component_text, neutralize_markers
 
 load_dotenv()
@@ -193,10 +193,6 @@ class AIEngine(commands.Cog):
             },
         ]
         
-        # killswitch (когда все модели 429 или просто так)
-        self.ai_locked: bool = False
-        self.ai_locked_bypass_user_ids = [Users.szarkan] # Чтоэто? Я не помню
-
         # AI Info
         # 1024 резал длинные ответы на полуслове (issue #1): gemma «думает» в
         # <thought>-тегах, которые сами съедают часть бюджета вывода, поэтому на
@@ -568,9 +564,6 @@ class AIEngine(commands.Cog):
     async def generateAnswer(self,
             conversation: list,
             user: disnake.Member):
-        if self.ai_locked:
-            yield AIError("*Робокотик на сегодня всё... Поговори с ним попозже.")
-            return
         tool_rounds = 0
         attachment = None
         # Лимит тул-раундов исчерпан → последний вызов идёт БЕЗ тулов: модель обязана

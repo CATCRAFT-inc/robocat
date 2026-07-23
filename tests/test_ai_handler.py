@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import disnake
 import pytest
@@ -46,3 +46,75 @@ async def test_quota_accepts_35_and_rejects_36_without_second_timer(monkeypatch)
     assert results == [True] * 35 + [False]
     assert "ai_locked" not in test_flags.values
     assert test_flags.count == 36
+
+
+class _LockFlags:
+    def __init__(self):
+        self.values = {}
+
+    @staticmethod
+    def _key(entity, name):
+        entity_id = -1 if entity == "abstract" else entity.id
+        return entity_id, name
+
+    async def hasFlag(self, entity, name):
+        return self._key(entity, name) in self.values
+
+    async def setFlag(self, entity, name, value=None, expires_at=None):
+        self.values[self._key(entity, name)] = value
+        return True
+
+    async def removeFlag(self, entity, name, reason=None):
+        self.values.pop(self._key(entity, name), None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name", ["_handleMention", "_handleThreadMessage"])
+async def test_chat_locks_silently_stop_both_conversation_paths(method_name):
+    handler = object.__new__(AIMessageHandler)
+    handler._chat_blocked = AsyncMock(return_value=True)
+    handler._consumeRequest = AsyncMock()
+    message = SimpleNamespace(author=make_member(), reply=AsyncMock())
+
+    await getattr(handler, method_name)(message)
+
+    message.reply.assert_not_awaited()
+    handler._consumeRequest.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_global_chat_lock_is_persistent_toggle(monkeypatch):
+    test_flags = _LockFlags()
+    monkeypatch.setattr("bot.ai.handler.flags", test_flags)
+    first = object.__new__(AIMessageHandler)
+    second = object.__new__(AIMessageHandler)
+    inter = SimpleNamespace(send=AsyncMock())
+
+    await AIMessageHandler.aiLock.callback(first, inter)
+    assert await test_flags.hasFlag("abstract", "ai_chat_global_lock")
+
+    await AIMessageHandler.aiLock.callback(second, inter)
+    assert not await test_flags.hasFlag("abstract", "ai_chat_global_lock")
+
+
+@pytest.mark.asyncio
+async def test_user_lock_slash_and_reply_commands_target_selected_user(monkeypatch):
+    test_flags = _LockFlags()
+    monkeypatch.setattr("bot.ai.handler.flags", test_flags)
+    handler = object.__new__(AIMessageHandler)
+    slash_target = make_member()
+    reply_target = make_member()
+    reply_target.id = 200
+    inter = SimpleNamespace(send=AsyncMock())
+    ctx = SimpleNamespace(
+        send=AsyncMock(),
+        message=SimpleNamespace(
+            reference=SimpleNamespace(resolved=SimpleNamespace(author=reply_target))
+        ),
+    )
+
+    await AIMessageHandler.aiUserLock.callback(handler, inter, slash_target)
+    await AIMessageHandler.aiUserLockReply.callback(handler, ctx)
+
+    assert await test_flags.hasFlag(slash_target, "ai_chat_user_lock")
+    assert await test_flags.hasFlag(reply_target, "ai_chat_user_lock")

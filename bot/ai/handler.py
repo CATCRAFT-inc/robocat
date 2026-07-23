@@ -62,6 +62,19 @@ class AIMessageHandler(commands.Cog):
             return True  # ponytail: сбой учёта не блокирует ответ (fail-open)
         return count <= self.user_request_limit
 
+    async def _chat_blocked(self, user: disnake.Member) -> bool:
+        return (
+            await flags.hasFlag("abstract", "ai_chat_global_lock")
+            or await flags.hasFlag(user, "ai_chat_user_lock")
+        )
+
+    async def _toggle_user_lock(self, user: disnake.Member) -> bool:
+        if await flags.hasFlag(user, "ai_chat_user_lock"):
+            await flags.removeFlag(user, "ai_chat_user_lock", "admin toggle")
+            return False
+        await flags.setFlag(user, "ai_chat_user_lock", 1)
+        return True
+
     async def _buildLongMessage(self, text: str) -> list[str]:
         chunks = []
 
@@ -203,8 +216,7 @@ class AIMessageHandler(commands.Cog):
             await self._handleMention(message)
 
     async def _handleMention(self, message: disnake.Message):
-        if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
-            await message.reply("*Робокотик остужает свой процессор... Поговори с ним попозже.*")
+        if await self._chat_blocked(message.author):
             return
         if not await self._consumeRequest(message.author):
             request_flag = await flags.getFlag(message.author, "airequests")
@@ -234,10 +246,9 @@ class AIMessageHandler(commands.Cog):
         await self._streamAnswer(message, conversation, ping=True)
 
     async def _handleThreadMessage(self, message: disnake.Message):
-        thread = message.channel
-        if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
-            await thread.send("*Робокотик остужает свой процессор... Поговори с ним попозже.*")
+        if await self._chat_blocked(message.author):
             return
+        thread = message.channel
         # Лимит 35 RPD действует и в тредах: раньше участник AI-треда слал
         # запросы без ограничений (премиум/бустер — без лимита, как и в упоминаниях)
         if not await self._consumeRequest(message.author):
@@ -488,12 +499,44 @@ class AIMessageHandler(commands.Cog):
     @commands.slash_command(name='ailock', description="посмотреть инфу о ии")
     @has_config_roles("admin", "st_admin")
     async def aiLock(self, inter: disnake.MessageCommandInteraction):
-        if self.ai_engine.ai_locked:
-            self.ai_engine.ai_locked = False
-            await inter.send("ИИ разблокирован", ephemeral=True)
+        if await flags.hasFlag("abstract", "ai_chat_global_lock"):
+            await flags.removeFlag("abstract", "ai_chat_global_lock", "admin toggle")
+            await inter.send("AI-ответы разблокированы", ephemeral=True)
         else:
-            self.ai_engine.ai_locked = True
-            await inter.send("ИИ заблокирован", ephemeral=True)
+            await flags.setFlag("abstract", "ai_chat_global_lock", 1)
+            await inter.send("AI-ответы заблокированы", ephemeral=True)
+
+    @commands.slash_command(
+        name="aiuserlock",
+        description="Переключить AI-ответы для пользователя",
+    )
+    @has_config_roles("admin", "st_admin")
+    async def aiUserLock(
+        self,
+        inter: disnake.MessageCommandInteraction,
+        user: disnake.Member,
+    ):
+        blocked = await self._toggle_user_lock(user)
+        state = "заблокированы" if blocked else "разблокированы"
+        await inter.send(f"AI-ответы для {user.mention} {state}", ephemeral=True)
+
+    @commands.command(name="aiuserlock")
+    @has_config_roles("admin", "st_admin")
+    async def aiUserLockReply(self, ctx: commands.Context):
+        reference = ctx.message.reference
+        target_message = reference.resolved if reference else None
+        if target_message is None and reference is not None:
+            try:
+                target_message = await ctx.channel.fetch_message(reference.message_id)
+            except (disnake.NotFound, disnake.Forbidden, disnake.HTTPException):
+                target_message = None
+        target = getattr(target_message, "author", None)
+        if target is None:
+            await ctx.send("Ответь этой командой на сообщение пользователя.")
+            return
+        blocked = await self._toggle_user_lock(target)
+        state = "заблокированы" if blocked else "разблокированы"
+        await ctx.send(f"AI-ответы для {target.mention} {state}")
 
     @commands.slash_command(name="reloadai", description="перезапуск клиента и системного промпта")
     @has_config_roles("admin", "st_admin")
