@@ -8,7 +8,8 @@ from disnake.ext import commands
 from bot.discord_config import Guilds, Users
 
 
-def test_dispatch_suppresses_foreign_guild_events(monkeypatch):
+@pytest.mark.asyncio
+async def test_dispatch_suppresses_foreign_guild_events(monkeypatch):
     from bot.bot import MainGuildBot
 
     dispatched = []
@@ -35,7 +36,8 @@ def test_dispatch_suppresses_foreign_guild_events(monkeypatch):
     assert dispatched == []
 
 
-def test_dispatch_keeps_main_guild_and_dm_events(monkeypatch):
+@pytest.mark.asyncio
+async def test_dispatch_keeps_main_guild_and_dm_events(monkeypatch):
     from bot.bot import MainGuildBot
 
     dispatched = []
