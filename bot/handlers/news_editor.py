@@ -183,7 +183,7 @@ class NewsEditor(commands.Cog):
         ]
 
     @commands.slash_command(name="news", description="Составить новость: модалка → превью → публикация")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.developer)
     async def news(
         self,
         inter: disnake.AppCmdInter,
@@ -196,7 +196,7 @@ class NewsEditor(commands.Cog):
         await inter.response.send_modal(NewsModal(self, draft_id))
 
     @commands.slash_command(name="news_edit", description="Править опубликованную ботом новость")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.developer)
     async def newsEdit(
         self,
         inter: disnake.AppCmdInter,
