@@ -11,6 +11,7 @@ from disnake.ext import commands
 from tinytag import TinyTag
 
 from bot.discord_config import Channels, Guilds
+from bot.flag_system.flag_system import flags
 from bot.storage import ColorStorage
 
 
@@ -44,6 +45,11 @@ class _MusicNavigator:
 
 
 class CatcraftFM(commands.Cog):
+    PANEL_FLAG = "fm_now_playing_message"
+    PREVIOUS_BUTTON = "FM_PREVIOUS"
+    NEXT_BUTTON = "FM_NEXT"
+    INFO_BUTTON = "FM_INFO"
+
     RECONNECT_DELAY = 10           # стартовая пауза между попытками реконнекта
     MAX_RECONNECT_DELAY = 120      # потолок exponential backoff
     HEARTBEAT_INTERVAL = 5.0       # как часто будим play_loop проверить коннект
@@ -69,6 +75,7 @@ class CatcraftFM(commands.Cog):
         self.navigator = _MusicNavigator()
         self.current_track: str = "—"
         self.current_track_path: str | None = None
+        self.now_playing_message_id: int | None = None
 
         self.vc: disnake.VoiceClient | None = None
         self.channel: disnake.VoiceChannel | None = None
@@ -307,20 +314,7 @@ class CatcraftFM(commands.Cog):
                     self.current_track = await asyncio.to_thread(self._getTrackInfo, path)
                     self.current_track_path = str(path)
 
-                    upcoming = self.navigator.peek(1)
-                    if upcoming:
-                        next_info = await asyncio.to_thread(
-                            self._getTrackInfo, self.music_path / upcoming[0]
-                        )
-                    else:
-                        next_info = "—"
-                    embed = disnake.ui.Container(
-                        disnake.ui.TextDisplay(f"🎵 Сейчас играет: **{self.current_track}**"),
-                        disnake.ui.Separator(),
-                        disnake.ui.TextDisplay(f"-# Следующий трек: {next_info}"),
-                        accent_colour=disnake.Color.from_hex(ColorStorage.main),
-                    )
-                    await self.channel.send(components=embed)
+                    await self._update_now_playing()
                 except Exception:
                     self.logger.exception("ошибка отправки now-playing эмбеда")
 
@@ -365,6 +359,83 @@ class CatcraftFM(commands.Cog):
                     return
             else:
                 playback_errors = 0
+
+    async def _saved_panel_id(self) -> int | None:
+        if self.now_playing_message_id is not None:
+            return self.now_playing_message_id
+        if self.channel is None:
+            return None
+        saved = await flags.getFlag(self.channel, self.PANEL_FLAG)
+        if saved is None:
+            return None
+        try:
+            self.now_playing_message_id = int(saved.value)
+        except (TypeError, ValueError):
+            self.logger.warning("Некорректный ID панели CatCraft FM: %r", saved.value)
+            return None
+        return self.now_playing_message_id
+
+    async def _panel_components(self) -> list[disnake.ui.UIComponent]:
+        upcoming = self.navigator.peek(1)
+        next_info = (
+            await asyncio.to_thread(self._getTrackInfo, self.music_path / upcoming[0])
+            if upcoming
+            else "—"
+        )
+        panel = disnake.ui.Container(
+            disnake.ui.TextDisplay(f"🎵 Сейчас играет: **{self.current_track}**"),
+            disnake.ui.Separator(),
+            disnake.ui.TextDisplay(f"-# Следующий трек: {next_info}"),
+            accent_colour=disnake.Color.from_hex(ColorStorage.main),
+        )
+        controls = disnake.ui.ActionRow(
+            disnake.ui.Button(
+                style=disnake.ButtonStyle.secondary,
+                label="Предыдущий",
+                custom_id=self.PREVIOUS_BUTTON,
+                disabled=not self.navigator.history,
+            ),
+            disnake.ui.Button(
+                style=disnake.ButtonStyle.primary,
+                label="Следующий",
+                custom_id=self.NEXT_BUTTON,
+            ),
+            disnake.ui.Button(
+                style=disnake.ButtonStyle.secondary,
+                label="?",
+                custom_id=self.INFO_BUTTON,
+            ),
+        )
+        return [panel, controls]
+
+    async def _update_now_playing(self) -> disnake.Message | None:
+        if self.channel is None:
+            return None
+        components = await self._panel_components()
+        message_id = await self._saved_panel_id()
+        if message_id is not None:
+            try:
+                message = await self.channel.fetch_message(message_id)
+                await message.edit(components=components)
+                return message
+            except (disnake.NotFound, disnake.Forbidden, disnake.HTTPException):
+                self.logger.warning(
+                    "Панель CatCraft FM %s недоступна — создаю новую",
+                    message_id,
+                )
+
+        message = await self.channel.send(components=components)
+        self.now_playing_message_id = message.id
+        await flags.setFlag(self.channel, self.PANEL_FLAG, message.id)
+        return message
+
+    async def _is_current_panel(self, interaction: disnake.MessageInteraction) -> bool:
+        message_id = await self._saved_panel_id()
+        return (
+            message_id is not None
+            and interaction.message is not None
+            and interaction.message.id == message_id
+        )
 
     @commands.command(name="очередь", aliases=["queue", "q"])
     async def musicQueue(self, command: disnake.MessageCommand):
