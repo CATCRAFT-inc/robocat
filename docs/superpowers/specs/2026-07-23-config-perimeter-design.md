@@ -48,4 +48,3 @@ named configuration entries. `!донатик` points to
   dispatched.
 - Reloaded channel and role IDs are observed without a restart.
 - Donation command output contains the canonical URL.
-

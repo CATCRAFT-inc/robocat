@@ -151,4 +151,3 @@ async def on_raw_member_remove(payload: disnake.RawGuildMemberRemoveEvent):
         return
     if payload.user:
         await flags.setFlag(payload.user, "left", int(time.time()))
-

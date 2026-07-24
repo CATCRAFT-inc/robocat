@@ -165,4 +165,3 @@ Expected: all tests pass.
 git add bot/handlers/catcraft_fm.py tests/test_catcraft_fm.py
 git commit -m "feat: добавить кнопки голосования CatCraft FM"
 ```
-

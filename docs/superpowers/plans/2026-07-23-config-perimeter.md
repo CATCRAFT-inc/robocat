@@ -193,4 +193,3 @@ Expected: no new failures beyond the documented baseline.
 git add bot tests
 git commit -m "feat: ограничить бота основным сервером"
 ```
-

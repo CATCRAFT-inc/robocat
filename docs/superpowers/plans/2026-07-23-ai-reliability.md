@@ -203,4 +203,3 @@ Expected: no new failures beyond the documented baseline.
 git add bot/ai/handler.py data/ai_settings.yaml tests
 git commit -m "fix: закрепить идентичность RBCT 1.8"
 ```
-
