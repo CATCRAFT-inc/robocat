@@ -104,7 +104,7 @@ class Flags:
         except Exception:
             self.logger.exception("Не удалось записать флаг %s на (%s, %s)", flag, entity_type, entity_id)
             raise
-        # %.60s: значения флагов бывают приватными (факты памяти) — в лог целиком не пишем
+        # %.60s: значения флагов могут быть приватными — в лог целиком не пишем
         self.logger.info("[FLAG SET] %s on (%s, %s) = %.60s", flag, entity_type, entity_id, value)
         return True
 
@@ -276,7 +276,7 @@ class Flags:
     async def _removeExpiredRaw(self, entity_type: str, entity_id: int, flag: str):
         """Ленивое удаление протухшего флага. Условие `expires_at < now` в самом
         DELETE закрывает TOCTOU: между чтением протухшей строки и удалением другой
-        таск мог поставить свежий флаг (напр. новый ai_locked) — его не сносим."""
+        таск мог поставить свежий флаг — его не сносим."""
         try:
             async with aiosqlite.connect(self.dbpath) as db:
                 await db.execute(

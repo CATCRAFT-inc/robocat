@@ -6,7 +6,7 @@ import struct
 import disnake
 from disnake.ext import commands
 
-from bot.storage import Roles
+from bot.discord_config import Roles, has_config_roles
 
 logger = logging.getLogger("robocat.rcon")
 
@@ -77,7 +77,7 @@ class RCONHandler(commands.Cog):
         self.password = os.getenv("RCON_PASSWORD", "")
 
     @commands.slash_command(name="rcon", description="Выполнить RCON команду на сервере Minecraft")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def rconCommand(
         self,
         inter: disnake.ApplicationCommandInteraction,
