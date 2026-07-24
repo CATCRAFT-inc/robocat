@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from bot.handlers.catcraft_fm import CatcraftFM
+from bot.handlers.catcraft_fm import CatcraftFM, _MusicNavigator
 
 
 @pytest.fixture
@@ -35,6 +35,34 @@ def _make_vc(connected: bool = True, runner_done: bool = False):
     runner.done.return_value = runner_done
     vc._runner = runner
     return vc
+
+
+# -------- очередь и кворум --------
+
+
+def test_back_requeues_current_track():
+    navigator = _MusicNavigator(["A", "B", "C"])
+
+    assert navigator.advance() == "A"
+    assert navigator.advance() == "B"
+    assert navigator.back() == "A"
+    assert navigator.advance() == "B"
+
+
+@pytest.mark.parametrize(
+    ("listeners", "votes"),
+    [(0, 1), (1, 1), (2, 2), (3, 2), (4, 2), (5, 3)],
+)
+def test_required_votes(listeners, votes):
+    assert CatcraftFM._requiredVotes(listeners) == votes
+
+
+def test_human_listeners_excludes_bots(cog):
+    human = MagicMock(bot=False)
+    bot = MagicMock(bot=True)
+    cog.channel = MagicMock(members=[human, bot])
+
+    assert cog._human_listeners() == [human]
 
 
 # -------- _vc_alive --------

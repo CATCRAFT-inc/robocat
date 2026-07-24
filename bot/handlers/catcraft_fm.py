@@ -14,6 +14,35 @@ from bot.discord_config import Channels, Guilds
 from bot.storage import ColorStorage
 
 
+class _MusicNavigator:
+    def __init__(self, tracks=()):
+        self.history: list[str] = []
+        self.current: str | None = None
+        self.upcoming: list[str] = list(tracks)
+
+    def extend(self, tracks):
+        self.upcoming.extend(tracks)
+
+    def advance(self) -> str | None:
+        if not self.upcoming:
+            return None
+        if self.current is not None:
+            self.history.append(self.current)
+        self.current = self.upcoming.pop(0)
+        return self.current
+
+    def back(self) -> str | None:
+        if not self.history:
+            return None
+        if self.current is not None:
+            self.upcoming.insert(0, self.current)
+        self.current = self.history.pop()
+        return self.current
+
+    def peek(self, limit: int = 4) -> list[str]:
+        return self.upcoming[:limit]
+
+
 class CatcraftFM(commands.Cog):
     RECONNECT_DELAY = 10           # стартовая пауза между попытками реконнекта
     MAX_RECONNECT_DELAY = 120      # потолок exponential backoff
@@ -37,7 +66,7 @@ class CatcraftFM(commands.Cog):
         self._task: asyncio.Task | None = None
         self._warned_no_runner = False
 
-        self.music_files: list[str] = []
+        self.navigator = _MusicNavigator()
         self.current_track: str = "—"
         self.current_track_path: str | None = None
 
@@ -209,14 +238,16 @@ class CatcraftFM(commands.Cog):
 
             # выбор следующего трека
             if music_count < self.random:
-                if not self.music_files:
+                if not self.navigator.upcoming:
                     # to_thread: диск VDS бывает медленным, event loop не блокируем
-                    self.music_files = await asyncio.to_thread(os.listdir, self.music_path)
-                    shuffle(self.music_files)
-                if not self.music_files:
+                    music_files = await asyncio.to_thread(os.listdir, self.music_path)
+                    shuffle(music_files)
+                    self.navigator.extend(music_files)
+                if not self.navigator.upcoming:
                     self.logger.error("папка music пуста")
                     return
-                track = self.music_files.pop(0)
+                track = self.navigator.advance()
+                assert track is not None
                 path = self.music_path / track
                 music_count += 1
                 is_dictor = False
@@ -241,7 +272,14 @@ class CatcraftFM(commands.Cog):
                 if error is not None:
                     self.logger.error("ошибка плейбека в %s: %s", track, error)
                 play_result["error"] = error
-                loop.call_soon_threadsafe(done.set)
+                try:
+                    callback_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    callback_loop = None
+                if callback_loop is loop:
+                    done.set()
+                else:
+                    loop.call_soon_threadsafe(done.set)
 
             try:
                 vc.play(disnake.FFmpegPCMAudio(str(path)), after=_after)
@@ -269,9 +307,10 @@ class CatcraftFM(commands.Cog):
                     self.current_track = await asyncio.to_thread(self._getTrackInfo, path)
                     self.current_track_path = str(path)
 
-                    if self.music_files:
+                    upcoming = self.navigator.peek(1)
+                    if upcoming:
                         next_info = await asyncio.to_thread(
-                            self._getTrackInfo, self.music_path / self.music_files[0]
+                            self._getTrackInfo, self.music_path / upcoming[0]
                         )
                     else:
                         next_info = "—"
@@ -329,7 +368,7 @@ class CatcraftFM(commands.Cog):
 
     @commands.command(name="очередь", aliases=["queue", "q"])
     async def musicQueue(self, command: disnake.MessageCommand):
-        tracks = list(self.music_files[:4])
+        tracks = self.navigator.peek()
         infos = await asyncio.to_thread(
             lambda: [self._getTrackInfo(self.music_path / i) for i in tracks]
         )
@@ -400,12 +439,18 @@ class CatcraftFM(commands.Cog):
         self._task = asyncio.create_task(self._radio_supervisor())
         self._task.add_done_callback(self._log_supervisor_done)
 
-    def _requiredVotes(self, listeners: int) -> int:
+    @staticmethod
+    def _requiredVotes(listeners: int) -> int:
         if listeners <= 1:
             return 1
         if listeners == 2:
             return 2
         return math.ceil(listeners / 2)
+
+    def _human_listeners(self) -> list[disnake.Member]:
+        if self.channel is None:
+            return []
+        return [member for member in self.channel.members if not member.bot]
 
     def _getTrackInfo(self, music_path) -> str:
         p = Path(music_path)
