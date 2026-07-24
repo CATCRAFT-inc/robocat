@@ -6,7 +6,8 @@ from disnake import TextInputStyle, GroupOption, RadioGroup
 from disnake.ui import TextDisplay, TextInput, Label, Container, Separator
 
 from bot.flag_system.flag_system import flags
-from bot.storage import ColorStorage, Roles, Users
+from bot.discord_config import Roles, Users
+from bot.storage import ColorStorage
 from bot.utils import create_container
 
 logger = logging.getLogger("robocat.admin_ticket")

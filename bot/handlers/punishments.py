@@ -4,7 +4,7 @@ import disnake
 from disnake.ext import commands
 
 from bot.flag_system.flag_system import Flags
-from bot.storage import Roles
+from bot.discord_config import Roles, has_config_roles
 from bot.utils import duration_to_text, parse_duration
 
 logger = logging.getLogger("robocat.punishments")
@@ -16,7 +16,7 @@ class PunishmentsHanlder(commands.Cog):
         self.bot = bot
 
     @commands.slash_command(name="mute", description='Очевидно, мут')
-    @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.moderator)
+    @has_config_roles("admin", "st_admin", "moderator")
     async def slashMute(self, inter: 
                         disnake.ApplicationCommandInteraction,
                         mute_member: disnake.Member,
@@ -76,7 +76,7 @@ class PunishmentsHanlder(commands.Cog):
                 logger.warning("Не удалось доставить модератору %s ответ !мут", ctx.author.id)
 
     @commands.command(name='мут')
-    @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.moderator)
+    @has_config_roles("admin", "st_admin", "moderator")
     async def prefixMute(self,
                         ctx: commands.Context,
                         duration: str = '3д',

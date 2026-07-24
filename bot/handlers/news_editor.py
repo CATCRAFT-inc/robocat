@@ -16,33 +16,43 @@ from dataclasses import dataclass
 import disnake
 from disnake.ext import commands
 
-from bot.storage import Channels, ColorStorage, Roles
+from bot.discord_config import Channels, Roles, has_config_roles
+from bot.storage import ColorStorage
 
-_NEWS_CHANNELS = {
-    "Объявления": Channels.announcements,
-    "Газета": Channels.newspaper,
-    "Медиа": Channels.media_news,
-    "Информатор": Channels.informator,
-    "Секретный": Channels.secret
-}
-
-_PING_ROLES = {
-    "Обновления сервера": Roles.server_updates,
-    "Ивенты": Roles.events,
-    "РП": Roles.rp,
-    "Тех. работы": Roles.maintanence,
-    "Медиа": Roles.media,
-    "Обновления сайта": Roles.site_updates,
-}
+_NEWS_CHANNEL_NAMES = ("Объявления", "Газета", "Медиа", "Информатор", "Секретный")
 _NO_PING = "Без пинга"
 
-_ADMIN_ROLES = {Roles.admin, Roles.st_admin, Roles.media}
 _PING_LINE = re.compile(r"^<@&(\d+)>$")
 
 # message.components отдаёт read-side классы, в тестах контейнер собран из ui-классов —
 # атрибуты (children/content/items) совпадают, парсер принимает оба
 _TEXT_TYPES = (disnake.ui.TextDisplay, disnake.TextDisplay)
 _GALLERY_TYPES = (disnake.ui.MediaGallery, disnake.MediaGallery)
+
+
+def _news_channels() -> dict[str, int]:
+    return {
+        "Объявления": Channels.announcements,
+        "Газета": Channels.newspaper,
+        "Медиа": Channels.media_news,
+        "Информатор": Channels.informator,
+        "Секретный": Channels.secret,
+    }
+
+
+def _ping_roles() -> dict[str, int]:
+    return {
+        "Обновления сервера": Roles.server_updates,
+        "Ивенты": Roles.events,
+        "РП": Roles.rp,
+        "Тех. работы": Roles.maintanence,
+        "Медиа": Roles.media,
+        "Обновления сайта": Roles.site_updates,
+    }
+
+
+def _admin_roles() -> set[int]:
+    return {Roles.admin, Roles.st_admin, Roles.media}
 
 
 @dataclass
@@ -101,7 +111,7 @@ class NewsModal(disnake.ui.Modal):
             disnake.SelectOption(label=_NO_PING, value=_NO_PING, default=draft.ping_role_id is None)
         ] + [
             disnake.SelectOption(label=label, value=str(role_id), default=draft.ping_role_id == role_id)
-            for label, role_id in _PING_ROLES.items()
+            for label, role_id in _ping_roles().items()
         ]
         components = [
             disnake.ui.TextInput(
@@ -183,35 +193,37 @@ class NewsEditor(commands.Cog):
         ]
 
     @commands.slash_command(name="news", description="Составить новость: модалка → превью → публикация")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def news(
         self,
         inter: disnake.AppCmdInter,
         channel: str = commands.Param(
-            default="Объявления", choices=list(_NEWS_CHANNELS), description="Куда публиковать"
+            default="Объявления", choices=list(_NEWS_CHANNEL_NAMES), description="Куда публиковать"
         ),
     ):
         draft_id = next(self._seq)
-        self.drafts[draft_id] = _Draft(author_id=inter.author.id, channel_id=_NEWS_CHANNELS[channel])
+        self.drafts[draft_id] = _Draft(
+            author_id=inter.author.id, channel_id=_news_channels()[channel]
+        )
         await inter.response.send_modal(NewsModal(self, draft_id))
 
     @commands.slash_command(name="news_edit", description="Править опубликованную ботом новость")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def newsEdit(
         self,
         inter: disnake.AppCmdInter,
         message: str = commands.Param(description="Ссылка на сообщение новости или его ID"),
         channel: str = commands.Param(
-            default="Объявления", choices=list(_NEWS_CHANNELS), description="Канал (если дал ID, а не ссылку)"
+            default="Объявления", choices=list(_NEWS_CHANNEL_NAMES), description="Канал (если дал ID, а не ссылку)"
         ),
     ):
-        message_id, channel_id = self._parse_message_ref(message, _NEWS_CHANNELS[channel])
+        message_id, channel_id = self._parse_message_ref(message, _news_channels()[channel])
         if message_id is None:
             await inter.response.send_message("Не понял ссылку/ID сообщения.", ephemeral=True)
             return
         # только новостные каналы: иначе кривой ссылкой можно перезаписать
         # любой контейнер бота с «# »-заголовком (роль-селект, интро AI-треда)
-        if channel_id not in _NEWS_CHANNELS.values():
+        if channel_id not in _news_channels().values():
             await inter.response.send_message("Это сообщение не в новостном канале — править можно только новости.", ephemeral=True)
             return
         target_channel = self.bot.get_channel(channel_id)
@@ -254,7 +266,7 @@ class NewsEditor(commands.Cog):
         if not cid.startswith("NEWS_"):
             return
         # превью ephemeral и так видит только автор, но кнопки — граница доверия
-        if not any(r.id in _ADMIN_ROLES for r in getattr(inter.author, "roles", [])):
+        if not any(r.id in _admin_roles() for r in getattr(inter.author, "roles", [])):
             await inter.response.send_message("Только для админов.", ephemeral=True)
             return
         action, _, raw_id = cid.partition(":")

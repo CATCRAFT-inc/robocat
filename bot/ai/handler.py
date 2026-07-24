@@ -6,14 +6,13 @@ import re
 import disnake
 from disnake.ext import commands, tasks
 
-from bot.storage import Channels, Roles
+from bot.discord_config import Channels, Roles, has_config_roles
 from bot.flag_system.flag_system import flags
 
 from bot.utils import neutralize_markers
 
 from .engine import AIEngine, Status, FinalAnswer, AIError, strip_action_log
 from .llm import llm
-from . import memory
 
 
 # Бюджет контекста AI-треда (символы) и порог фонового сжатия обрезанной части
@@ -50,7 +49,7 @@ class AIMessageHandler(commands.Cog):
         self.aiChatCleaner.cancel()
 
     async def _consumeRequest(self, user: disnake.Member) -> bool:
-        """Атомарно списать один запрос лимита 35 RPD. False — лимит исчерпан.
+        """Атомарно списать запрос из пакета 35 на 8 часов. False — пакет исчерпан.
 
         Раньше проверка и списание были разделены всем LLM-вызовом: пачка
         одновременных сообщений на 34-м запросе проходила проверку вся разом,
@@ -58,15 +57,23 @@ class AIMessageHandler(commands.Cog):
         атомарный инкремент в SQL (Admins/K+/Boosters — без лимита)."""
         if Roles.premium_ai & {r.id for r in user.roles}:
             return True
-        # пре-чек: уже залоченный юзер не крутит счётчик (и не продлевает его)
-        if await flags.getFlag(user, "ai_locked"):
-            return False
         count = await flags.incrementFlag(user, "airequests", 1, create_expires_at="8ч")
         if count is None:
             return True  # ponytail: сбой учёта не блокирует ответ (fail-open)
-        if count == self.user_request_limit:
-            await flags.setFlag(user, "ai_locked", None, "8ч")
         return count <= self.user_request_limit
+
+    async def _chat_blocked(self, user: disnake.Member) -> bool:
+        return (
+            await flags.hasFlag("abstract", "ai_chat_global_lock")
+            or await flags.hasFlag(user, "ai_chat_user_lock")
+        )
+
+    async def _toggle_user_lock(self, user: disnake.Member) -> bool:
+        if await flags.hasFlag(user, "ai_chat_user_lock"):
+            await flags.removeFlag(user, "ai_chat_user_lock", "admin toggle")
+            return False
+        await flags.setFlag(user, "ai_chat_user_lock", 1)
+        return True
 
     async def _buildLongMessage(self, text: str) -> list[str]:
         chunks = []
@@ -128,15 +135,6 @@ class AIMessageHandler(commands.Cog):
         return await message.channel.send(allowed_mentions=mentions, **kwargs)
 
     async def _streamAnswer(self, message: disnake.Message, conversation: list, *, ping: bool):
-        # Мини-память (issue #6): факты о собеседнике — системной вставкой сразу
-        # после system prompt'а. Память лежит в flags, падение БД ответ не блокирует.
-        try:
-            facts = await memory.facts_block(message.author, message.author.display_name)
-        except Exception:
-            self.logger.exception("Не удалось прочитать память о юзере %s", message.author.id)
-            facts = None
-        if facts:
-            conversation.insert(1, {"role": "system", "content": facts})
         async with message.channel.typing():
             thinking_message = None
             # История вызовов тулов (issue #2): прошлые статусы остаются в сообщении
@@ -218,21 +216,20 @@ class AIMessageHandler(commands.Cog):
             await self._handleMention(message)
 
     async def _handleMention(self, message: disnake.Message):
-        if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
-            await message.reply("*Робокотик остужает свой процессор... Поговори с ним попозже.*")
+        if await self._chat_blocked(message.author):
             return
         if not await self._consumeRequest(message.author):
-            ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
-            # Флаг мог истечь между проверкой и этим чтением (ленивый expiry) → None
-            expires_raw = ai_locked_flag.expires_at if ai_locked_flag else None
+            request_flag = await flags.getFlag(message.author, "airequests")
+            # Счётчик мог истечь между проверкой и этим чтением (ленивый expiry).
+            expires_raw = request_flag.expires_at if request_flag else None
             expires_at = f"<t:{expires_raw}:R>" if expires_raw else "попозже"
-            await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
+            await message.reply(f"К сожалению у тебя закончились 35 запросов! Новый пакет будет доступен {expires_at}.\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
             return
 
         messages = [message]
         current_msg = message
 
-        while len(messages) < 5 and current_msg.reference:
+        while len(messages) < 8 and current_msg.reference:
             prev_msg = current_msg.reference.resolved
             # Исходное сообщение было удалено — выше подниматься нельзя (нет .author)
             if isinstance(prev_msg, disnake.DeletedReferencedMessage):
@@ -249,17 +246,16 @@ class AIMessageHandler(commands.Cog):
         await self._streamAnswer(message, conversation, ping=True)
 
     async def _handleThreadMessage(self, message: disnake.Message):
-        thread = message.channel
-        if self.ai_engine.ai_locked and message.author.id not in self.ai_engine.ai_locked_bypass_user_ids:
-            await thread.send("*Робокотик остужает свой процессор... Поговори с ним попозже.*")
+        if await self._chat_blocked(message.author):
             return
-        # Лимит 35 RPD действует и в тредах: раньше участник AI-треда слал
+        thread = message.channel
+        # Пакет 35 запросов на 8 часов действует и в тредах: раньше участник AI-треда слал
         # запросы без ограничений (премиум/бустер — без лимита, как и в упоминаниях)
         if not await self._consumeRequest(message.author):
-            ai_locked_flag = await flags.getFlag(message.author, "ai_locked")
-            expires_raw = ai_locked_flag.expires_at if ai_locked_flag else None
+            request_flag = await flags.getFlag(message.author, "airequests")
+            expires_raw = request_flag.expires_at if request_flag else None
             expires_at = f"<t:{expires_raw}:R>" if expires_raw else "попозже"
-            await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
+            await message.reply(f"К сожалению у тебя закончились 35 запросов! Новый пакет будет доступен {expires_at}.\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
             return
 
         # История треда: старые → новые, до _THREAD_HISTORY_LIMIT сообщений
@@ -361,7 +357,7 @@ class AIMessageHandler(commands.Cog):
             self.logger.exception("Не удалось сжать историю AI-треда %s", thread.id)
 
     @commands.slash_command(name='aichat', description="Создать приватный чат с нейросетью")
-    @commands.has_any_role(Roles.admin, Roles.st_admin, Roles.booster, Roles.kotikplus)
+    @has_config_roles("admin", "st_admin", "booster", "kotikplus")
     async def aiChat(self, inter: disnake.MessageCommandInteraction):
         # defer сразу: создание треда + 2 флага + send не укладываются в 3с-дедлайн
         # интеракции, иначе токен протухал и оставался бы осиротевший тред
@@ -488,7 +484,7 @@ class AIMessageHandler(commands.Cog):
         await self.bot.wait_until_ready()
 
     @commands.slash_command(name='aiinfo', description="посмотреть инфу о ии")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def aiInfo(self, inter: disnake.MessageCommandInteraction):
         current = llm.current_vendor
         current_txt = f"{current.env}/{current.model}" if current else "нет доступных вендоров"
@@ -500,18 +496,50 @@ class AIMessageHandler(commands.Cog):
             ephemeral=True,
         )
 
-    @commands.slash_command(name='ailock', description="посмотреть инфу о ии")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @commands.slash_command(name='ailock', description="Переключить AI-ответы для всех пользователей")
+    @has_config_roles("admin", "st_admin")
     async def aiLock(self, inter: disnake.MessageCommandInteraction):
-        if self.ai_engine.ai_locked:
-            self.ai_engine.ai_locked = False
-            await inter.send("ИИ разблокирован", ephemeral=True)
+        if await flags.hasFlag("abstract", "ai_chat_global_lock"):
+            await flags.removeFlag("abstract", "ai_chat_global_lock", "admin toggle")
+            await inter.send("AI-ответы разблокированы", ephemeral=True)
         else:
-            self.ai_engine.ai_locked = True
-            await inter.send("ИИ заблокирован", ephemeral=True)
+            await flags.setFlag("abstract", "ai_chat_global_lock", 1)
+            await inter.send("AI-ответы заблокированы", ephemeral=True)
+
+    @commands.slash_command(
+        name="aiuserlock",
+        description="Переключить AI-ответы для пользователя",
+    )
+    @has_config_roles("admin", "st_admin")
+    async def aiUserLock(
+        self,
+        inter: disnake.MessageCommandInteraction,
+        user: disnake.Member,
+    ):
+        blocked = await self._toggle_user_lock(user)
+        state = "заблокированы" if blocked else "разблокированы"
+        await inter.send(f"AI-ответы для {user.mention} {state}", ephemeral=True)
+
+    @commands.command(name="aiuserlock")
+    @has_config_roles("admin", "st_admin")
+    async def aiUserLockReply(self, ctx: commands.Context):
+        reference = ctx.message.reference
+        target_message = reference.resolved if reference else None
+        if target_message is None and reference is not None:
+            try:
+                target_message = await ctx.channel.fetch_message(reference.message_id)
+            except (disnake.NotFound, disnake.Forbidden, disnake.HTTPException):
+                target_message = None
+        target = getattr(target_message, "author", None)
+        if target is None:
+            await ctx.send("Ответь этой командой на сообщение пользователя.")
+            return
+        blocked = await self._toggle_user_lock(target)
+        state = "заблокированы" if blocked else "разблокированы"
+        await ctx.send(f"AI-ответы для {target.mention} {state}")
 
     @commands.slash_command(name="reloadai", description="перезапуск клиента и системного промпта")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def aiReload(self, inter: disnake.MessageCommandInteraction):
         await self.ai_engine._loadAIData()
         await llm.reload()

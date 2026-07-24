@@ -3,7 +3,8 @@ import logging
 import disnake
 from disnake.ext import commands
 
-from bot.storage import Channels, FAQStorage, Roles
+from bot.discord_config import Channels, Roles
+from bot.storage import FAQStorage
 
 logger = logging.getLogger("robocat.faq")
 
@@ -80,7 +81,7 @@ class FAQ(commands.Cog):
     @commands.command(name='донатик', description='Донат нашего проекта!^~^', aliases=['донат', 'donate', "котик+"])
     async def donate(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
-            disnake.ui.TextDisplay("### Донатик сервера - <https://donate.catcraftmc.ru>")
+            disnake.ui.TextDisplay("### Донатик сервера - <https://donate.catcraft.ru>")
         ))
 
     @commands.command(name='законы', description='Законы сервера', aliases=['закон', 'laws', 'pfrjys'])
@@ -186,20 +187,6 @@ class FAQ(commands.Cog):
             disnake.ui.Separator(),
             disnake.ui.TextDisplay(f'Заходи в канал <#{Channels.support}> и отправляй жалобу на нарушителя!')
         ))
-
-    # @commands.command(name='заявка', aliases=['попастьнасервер', 'написатьзаявку'], description="Информация о попадании на сервер")
-    # async def app_faq(self, ctx: commands.Context):
-    #     embed = create_embed(
-    #         title='Как попасть на сервер?',
-    #         description = "1. Переходишь в <#1138425079231938682>\n"
-    #                       "2. Читаешь информацию о том, как написать **хорошую** заявку\n"
-    #                       "3. Нажимаешь **Заполнить заявку**\n"
-    #                       "4. Заполняешь все поля\n"
-    #                       "5. Ждёшь принятия своей заявки\n"
-    #                       "6. ???\n"
-    #                       "7. Вот ты и на Кошкокрафте!\n"
-    #     )
-    #     await self.send_faq(ctx,embed)
 
     @commands.command(name='читайвики', aliases=['readwiki'], description="Прочитай Вики!")
     async def readwiki_faq(self, ctx: commands.Context):

@@ -23,12 +23,11 @@ from PIL import Image
 from .wiki_search import wiki
 from .web_search import web
 from . import media
-from . import memory
 from .llm import llm, AIUnavailable, strip_thoughts
 
 from dataclasses import dataclass, field
 
-from bot.storage import Channels, Roles
+from bot.discord_config import Channels, Roles
 from bot.utils import component_text, neutralize_markers
 
 load_dotenv()
@@ -174,45 +173,6 @@ class AIEngine(commands.Cog):
             {
                 "type": "function",
                 "function": {
-                    "name": "remember_fact",
-                "description": "Save a lasting fact about the current user to your long-term memory (their name, preferences, builds/projects, important life details they share about themselves). Don't save one-off context or trivia.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "fact": {
-                            "type": "string",
-                            "description": "Short fact in russian, third person, no user name (e.g. 'зовут Игорь', 'строит мегабазу на спавне')."
-                        },
-                        "lifetime": {
-                            "type": "string",
-                            "enum": ["permanent", "temporary"],
-                            "description": "permanent — never changes (name, birthday). temporary — current state that will get stale (projects, plans, mood)."
-                        },
-                    },
-                    "required": ["fact", "lifetime"],
-                },
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "forget_fact",
-                "description": "Delete facts about the current user from your long-term memory. Use when they ask to forget something about them.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Substring to match against saved facts, in russian (e.g. 'мегабаз')."
-                        },
-                    },
-                    "required": ["query"],
-                },
-                }
-            },
-            {
-                "type": "function",
-                "function": {
                     "name": "mute_user",
                 "description": "Mute user if they misbehave, annoying or you just feel like it",
                 "parameters": {
@@ -233,10 +193,6 @@ class AIEngine(commands.Cog):
             },
         ]
         
-        # killswitch (когда все модели 429 или просто так)
-        self.ai_locked: bool = False
-        self.ai_locked_bypass_user_ids = [531208170098655233] # Чтоэто? Я не помню
-
         # AI Info
         # 1024 резал длинные ответы на полуслове (issue #1): gemma «думает» в
         # <thought>-тегах, которые сами съедают часть бюджета вывода, поэтому на
@@ -588,26 +544,6 @@ class AIEngine(commands.Cog):
                     yield _ToolDone(content=f"[[ User's roles: {content} ]]")
                 else:
                     yield _ToolDone("[[ User was not provided lol ]]")
-            case "remember_fact":
-                yield Status("🧠 Запоминаю...")
-                if ctx.user:
-                    saved = await memory.remember(ctx.user, args.get("fact"), args.get("lifetime", "temporary"))
-                    if saved:
-                        yield _ToolDone("[[ Fact saved to long-term memory. ]]")
-                    else:
-                        yield _ToolDone("[[ Could not save the fact. Don't retry. ]]")
-                else:
-                    yield _ToolDone("[[ User was not provided lol ]]")
-            case "forget_fact":
-                yield Status("🧠 Забываю...")
-                if ctx.user:
-                    removed = await memory.forget(ctx.user, args.get("query"))
-                    if removed:
-                        yield _ToolDone(f"[[ Removed {removed} fact(s) from long-term memory. ]]")
-                    else:
-                        yield _ToolDone("[[ No matching facts found in memory. Tell user you don't remember that anyway. ]]")
-                else:
-                    yield _ToolDone("[[ User was not provided lol ]]")
             case "mute_user":
                 duration = args.get("duration")
                 reason = args.get("reason")
@@ -628,9 +564,6 @@ class AIEngine(commands.Cog):
     async def generateAnswer(self,
             conversation: list,
             user: disnake.Member):
-        if self.ai_locked:
-            yield AIError("*Робокотик на сегодня всё... Поговори с ним попозже.")
-            return
         tool_rounds = 0
         attachment = None
         # Лимит тул-раундов исчерпан → последний вызов идёт БЕЗ тулов: модель обязана
@@ -671,7 +604,7 @@ class AIEngine(commands.Cog):
             if answer.tool_calls and not force_final:
                 for tc in answer.tool_calls:
                     result = None
-                    # Падение тула (битые args модели, ошибка БД памяти, не-Member)
+                    # Падение тула (битые args модели, ошибка API, не-Member)
                     # не должно молча убивать весь ответ — превращаем в tool-result,
                     # чтобы модель дответила по собранному.
                     try:

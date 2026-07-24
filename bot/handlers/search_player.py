@@ -10,7 +10,8 @@ import aiosqlite
 import disnake
 from disnake.ext import commands
 
-from bot.storage import ColorStorage, Roles
+from bot.discord_config import Roles, has_config_roles
+from bot.storage import ColorStorage
 from bot.utils import create_container
 
 logger = logging.getLogger("robocat.search_player")
@@ -81,7 +82,7 @@ class PlayerInfoFinder(commands.Cog):
         return str(uuid.UUID(bytes=bytes(b)))
 
     @commands.slash_command(name='get_player_data', description='Найти всю возможную информацию по нику/пользователю ДС')
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def getAllPlayersData(self, inter: disnake.ApplicationCommandInteraction, nickname: str):
         await inter.response.defer()
 
