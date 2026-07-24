@@ -35,6 +35,7 @@ class AdminCommands(commands.Cog):
     @has_config_roles("admin", "st_admin")
     async def configReload(self, inter: disnake.ApplicationCommandInteraction):
         await inter.response.defer(ephemeral=True)
+        previous_fm_channel = Channels.catcraft_fm
         try:
             reload_config()
         except ConfigError as exc:
@@ -42,6 +43,17 @@ class AdminCommands(commands.Cog):
             await inter.edit_original_response(f"Конфиг не применён: {exc}")
             return
         self.bot.owner_id = Users.szarkan
+        if Channels.catcraft_fm != previous_fm_channel:
+            fm = self.bot.get_cog("CatcraftFM")
+            if fm is not None:
+                try:
+                    await fm.restart_for_config_reload()
+                except Exception:
+                    logger.exception("Discord-конфиг применён, но FM не перезапустился")
+                    await inter.edit_original_response(
+                        "Discord-конфиг применён, но CatCraft FM не перезапустился."
+                    )
+                    return
         await inter.edit_original_response("Discord-конфиг перезагружен.")
 
 

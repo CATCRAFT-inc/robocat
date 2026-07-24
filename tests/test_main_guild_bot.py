@@ -101,3 +101,30 @@ async def test_config_reload_updates_bot_owner(monkeypatch):
 
     assert fake_bot.owner_id == Users.szarkan
     assert "перезагружен" in inter.edit_original_response.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_config_reload_restarts_fm_when_channel_changes(monkeypatch):
+    from bot.slash_commands import admin
+
+    channels = SimpleNamespace(catcraft_fm=1)
+    fm = SimpleNamespace(restart_for_config_reload=AsyncMock())
+    fake_bot = SimpleNamespace(
+        owner_id=0,
+        get_cog=lambda name: fm if name == "CatcraftFM" else None,
+    )
+    cog = admin.AdminCommands(fake_bot)
+    inter = SimpleNamespace(
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+    )
+
+    def _reload():
+        channels.catcraft_fm = 2
+
+    monkeypatch.setattr(admin, "Channels", channels)
+    monkeypatch.setattr(admin, "reload_config", _reload)
+
+    await admin.AdminCommands.configReload.callback(cog, inter)
+
+    fm.restart_for_config_reload.assert_awaited_once()

@@ -56,6 +56,23 @@ def test_reload_rejects_main_guild_change(tmp_path):
         discord_config.reload_config(path)
 
 
+def test_validation_rejects_noncanonical_main_guild_at_startup(tmp_path, monkeypatch):
+    from bot import discord_config
+
+    changed = 99999999999999999
+    path = _config_copy(tmp_path, guilds__main=changed)
+    # Старый код сверял reload только со значением, прочитанным при старте.
+    monkeypatch.setattr(
+        discord_config,
+        "_startup_main_guild_id",
+        changed,
+        raising=False,
+    )
+
+    with pytest.raises(discord_config.ConfigError, match="guilds.main"):
+        discord_config._validate(path)
+
+
 @pytest.mark.parametrize(
     "contents",
     [

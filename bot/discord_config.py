@@ -63,6 +63,7 @@ def _schema() -> dict[str, frozenset[str]]:
 
 
 _SCHEMA = _schema()
+_CANONICAL_MAIN_GUILD_ID = _read_yaml(EXAMPLE_PATH)["guilds"]["main"]
 
 
 def _validate(path: Path) -> DiscordSnapshot:
@@ -94,6 +95,10 @@ def _validate(path: Path) -> DiscordSnapshot:
                 raise ConfigError(f"{path}: {section}.{name} не похож на Discord ID")
             validated[name] = value
         frozen[section] = MappingProxyType(validated)
+    if frozen["guilds"]["main"] != _CANONICAL_MAIN_GUILD_ID:
+        raise ConfigError(
+            f"{path}: guilds.main должен быть {_CANONICAL_MAIN_GUILD_ID}"
+        )
     return DiscordSnapshot(MappingProxyType(frozen), path)
 
 
@@ -107,7 +112,6 @@ def _initial_path() -> Path:
 
 
 _current = _validate(_initial_path())
-_startup_main_guild_id = _current.sections["guilds"]["main"]
 
 
 def snapshot() -> DiscordSnapshot:
@@ -119,8 +123,6 @@ def reload_config(path: Path | None = None) -> DiscordSnapshot:
 
     global _current
     candidate = _validate(Path(path) if path is not None else LOCAL_PATH)
-    if candidate.sections["guilds"]["main"] != _startup_main_guild_id:
-        raise ConfigError("guilds.main нельзя менять без перезапуска бота")
     _current = candidate
     return candidate
 

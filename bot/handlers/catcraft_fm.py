@@ -136,7 +136,7 @@ class CatcraftFM(commands.Cog):
                 await self._start_radio()
             except asyncio.CancelledError:
                 self.logger.warning("супервизор отменён")
-                return
+                raise
             except Exception:
                 self.logger.exception("_start_radio упал")
             if loop.time() - started > self.BACKOFF_RESET_SECONDS:
@@ -167,6 +167,26 @@ class CatcraftFM(commands.Cog):
                 vc.cleanup()
             except Exception:
                 self.logger.exception("cleanup тоже упал")
+
+    async def restart_for_config_reload(self):
+        """Immediately reconnect to a newly configured FM voice channel."""
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+        self.vc = None
+        self.channel = None
+        self._current_done = None
+        self.now_playing_message_id = None
+        self._pending_direction = None
+        self._on_music_track_changed()
+
+        self._started = True
+        self._task = asyncio.create_task(self._radio_supervisor())
+        self._task.add_done_callback(self._log_supervisor_done)
 
     def _vc_alive(self, vc: disnake.VoiceClient) -> bool:
         """is_connected() врёт, если внутренний poll-таск disnake умер с необработанной
