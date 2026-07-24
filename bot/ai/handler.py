@@ -49,7 +49,7 @@ class AIMessageHandler(commands.Cog):
         self.aiChatCleaner.cancel()
 
     async def _consumeRequest(self, user: disnake.Member) -> bool:
-        """Атомарно списать один запрос лимита 35 RPD. False — лимит исчерпан.
+        """Атомарно списать запрос из пакета 35 на 8 часов. False — пакет исчерпан.
 
         Раньше проверка и списание были разделены всем LLM-вызовом: пачка
         одновременных сообщений на 34-м запросе проходила проверку вся разом,
@@ -223,7 +223,7 @@ class AIMessageHandler(commands.Cog):
             # Счётчик мог истечь между проверкой и этим чтением (ленивый expiry).
             expires_raw = request_flag.expires_at if request_flag else None
             expires_at = f"<t:{expires_raw}:R>" if expires_raw else "попозже"
-            await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
+            await message.reply(f"К сожалению у тебя закончились 35 запросов! Новый пакет будет доступен {expires_at}.\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
             return
 
         messages = [message]
@@ -249,13 +249,13 @@ class AIMessageHandler(commands.Cog):
         if await self._chat_blocked(message.author):
             return
         thread = message.channel
-        # Лимит 35 RPD действует и в тредах: раньше участник AI-треда слал
+        # Пакет 35 запросов на 8 часов действует и в тредах: раньше участник AI-треда слал
         # запросы без ограничений (премиум/бустер — без лимита, как и в упоминаниях)
         if not await self._consumeRequest(message.author):
             request_flag = await flags.getFlag(message.author, "airequests")
             expires_raw = request_flag.expires_at if request_flag else None
             expires_at = f"<t:{expires_raw}:R>" if expires_raw else "попозже"
-            await message.reply(f"К сожалению у тебя закончился лимит ежедневных запросов! Попробуй {expires_at}!\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
+            await message.reply(f"К сожалению у тебя закончились 35 запросов! Новый пакет будет доступен {expires_at}.\n-# Забусти сервер или стань **Котик+**, чтобы иметь неограниченные запросы!")
             return
 
         # История треда: старые → новые, до _THREAD_HISTORY_LIMIT сообщений
@@ -496,7 +496,7 @@ class AIMessageHandler(commands.Cog):
             ephemeral=True,
         )
 
-    @commands.slash_command(name='ailock', description="посмотреть инфу о ии")
+    @commands.slash_command(name='ailock', description="Переключить AI-ответы для всех пользователей")
     @has_config_roles("admin", "st_admin")
     async def aiLock(self, inter: disnake.MessageCommandInteraction):
         if await flags.hasFlag("abstract", "ai_chat_global_lock"):
