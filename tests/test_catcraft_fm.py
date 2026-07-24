@@ -8,6 +8,7 @@ Discord/voice мокается целиком — сети нет. Провер�
 """
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -123,6 +124,91 @@ async def test_stale_panel_id_is_rejected(cog, monkeypatch):
     interaction = MagicMock(message=MagicMock(id=41))
 
     assert await cog._is_current_panel(interaction) is False
+
+
+# -------- кнопки и голосование --------
+
+
+def _interaction(author, custom_id="FM_NEXT", message_id=42):
+    interaction = MagicMock(
+        author=author,
+        component=MagicMock(custom_id=custom_id),
+        message=MagicMock(id=message_id),
+    )
+    interaction.response.send_message = AsyncMock()
+    return interaction
+
+
+async def test_duplicate_vote_is_not_counted(cog):
+    author = MagicMock(id=1, bot=False)
+    cog.channel = MagicMock(
+        members=[author, MagicMock(id=2, bot=False), MagicMock(id=3, bot=False)]
+    )
+    cog.vc = _make_vc()
+    interaction = _interaction(author)
+
+    await cog._vote(interaction, "next")
+    await cog._vote(interaction, "next")
+
+    assert cog.votes["next"] == {1}
+    cog.vc.stop.assert_not_called()
+
+
+async def test_quorum_schedules_direction_and_stops(cog):
+    first = MagicMock(id=1, bot=False)
+    second = MagicMock(id=2, bot=False)
+    cog.channel = MagicMock(members=[first, second])
+    cog.vc = _make_vc()
+
+    await cog._vote(_interaction(first), "next")
+    await cog._vote(_interaction(second), "next")
+
+    assert cog._pending_direction == "next"
+    cog.vc.stop.assert_called_once()
+
+
+def test_track_change_clears_both_vote_sets(cog):
+    cog.votes = {"next": {1}, "previous": {2}}
+
+    cog._on_music_track_changed()
+
+    assert cog.votes == {"next": set(), "previous": set()}
+
+
+async def test_stale_button_is_silently_ignored(cog):
+    interaction = _interaction(MagicMock(id=1), message_id=41)
+    cog._is_current_panel = AsyncMock(return_value=False)
+
+    await cog.fmButtons(interaction)
+
+    interaction.response.send_message.assert_not_awaited()
+
+
+async def test_info_panel_contains_only_next_four_tracks(cog):
+    cog.navigator = _MusicNavigator(["1.mp3", "2.mp3", "3.mp3", "4.mp3", "5.mp3"])
+    cog._getTrackInfo = MagicMock(side_effect=lambda path: Path(path).stem)
+
+    components = await cog._queue_components(include_description=True)
+    text = "\n".join(
+        child.content
+        for child in components[0].children
+        if isinstance(child, disnake.ui.TextDisplay)
+    )
+
+    assert all(str(i) in text for i in range(1, 5))
+    assert "5" not in text
+
+
+async def test_now_playing_panel_has_all_three_controls(cog):
+    components = await cog._panel_components()
+    buttons = components[1].children
+
+    assert [button.custom_id for button in buttons] == [
+        "FM_PREVIOUS",
+        "FM_NEXT",
+        "FM_INFO",
+    ]
+    assert buttons[0].disabled is True
 
 
 # -------- _vc_alive --------

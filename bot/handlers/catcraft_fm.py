@@ -2,7 +2,6 @@ import asyncio
 import logging
 import math
 import os
-from datetime import datetime
 from pathlib import Path
 from random import randint, shuffle
 
@@ -84,9 +83,11 @@ class CatcraftFM(commands.Cog):
         # мог разбудить play_loop при внезапном дисконнекте
         self._current_done: asyncio.Event | None = None
 
-        self.skip_votes = 0
-        self.votes_list: list[int] = []
-        self.last_skip = 0
+        self.votes: dict[str, set[int]] = {
+            "next": set(),
+            "previous": set(),
+        }
+        self._pending_direction: str | None = None
 
         self.random = 7
 
@@ -243,8 +244,12 @@ class CatcraftFM(commands.Cog):
                 self.logger.warning("vc не живой — выхожу из play_loop")
                 return
 
+            # Голосование за направление важнее плановой вставки диктора.
+            direction = self._pending_direction
+            self._pending_direction = None
+
             # выбор следующего трека
-            if music_count < self.random:
+            if direction is not None or music_count < self.random:
                 if not self.navigator.upcoming:
                     # to_thread: диск VDS бывает медленным, event loop не блокируем
                     music_files = await asyncio.to_thread(os.listdir, self.music_path)
@@ -253,11 +258,18 @@ class CatcraftFM(commands.Cog):
                 if not self.navigator.upcoming:
                     self.logger.error("папка music пуста")
                     return
-                track = self.navigator.advance()
+                if direction == "previous":
+                    track = self.navigator.back()
+                    music_count = 0
+                    if track is None:
+                        track = self.navigator.advance()
+                else:
+                    track = self.navigator.advance()
                 assert track is not None
                 path = self.music_path / track
                 music_count += 1
                 is_dictor = False
+                self._on_music_track_changed()
             else:
                 if not dictor_files:
                     dictor_files = await asyncio.to_thread(os.listdir, self.dictor_path)
@@ -437,67 +449,135 @@ class CatcraftFM(commands.Cog):
             and interaction.message.id == message_id
         )
 
-    @commands.command(name="очередь", aliases=["queue", "q"])
-    async def musicQueue(self, command: disnake.MessageCommand):
+    async def _queue_components(
+        self,
+        *,
+        include_description: bool = False,
+    ) -> list[disnake.ui.UIComponent]:
         tracks = self.navigator.peek()
         infos = await asyncio.to_thread(
-            lambda: [self._getTrackInfo(self.music_path / i) for i in tracks]
+            lambda: [self._getTrackInfo(self.music_path / track) for track in tracks]
         )
-        queue = "".join(f"{info}\n" for info in infos)
-        embed = disnake.ui.Container(
-            disnake.ui.TextDisplay(f"## 🎵 Текущий трек: {self.current_track}"),
-            disnake.ui.TextDisplay(queue or "—"),
+        queue = "\n".join(
+            f"{index}. {info}"
+            for index, info in enumerate(infos, start=1)
+        ) or "—"
+        children: list[disnake.ui.ContainerChildUIComponent] = []
+        if include_description:
+            children.extend(
+                [
+                    disnake.ui.TextDisplay("## 📻 CatCraft FM"),
+                    disnake.ui.TextDisplay(
+                        "Музыка сервера играет круглосуточно. "
+                        "Кнопки «Предыдущий» и «Следующий» работают голосованием."
+                    ),
+                    disnake.ui.Separator(),
+                ]
+            )
+        children.extend(
+            [
+                disnake.ui.TextDisplay(f"## 🎵 Текущий трек: {self.current_track}"),
+                disnake.ui.TextDisplay(f"**Дальше:**\n{queue}"),
+            ]
         )
-        await command.reply(components=embed)
+        return [
+            disnake.ui.Container(
+                *children,
+                accent_colour=disnake.Color.from_hex(ColorStorage.main),
+            )
+        ]
 
-    def _is_expired(self):
-        now = datetime.now().timestamp()
-        if now - self.last_skip > 5 * 60:
-            self.skip_votes = 0
-            self.votes_list = []
-            self.last_skip = 0
+    def _on_music_track_changed(self):
+        self.votes = {"next": set(), "previous": set()}
 
-    @commands.command(name="следующий", aliases=["некст", "next", "skip", "скип", "ytrcn"])
-    async def nextTrack(self, ctx: commands.Context):
-        if ctx.channel.id != Channels.catcraft_fm:
+    async def _vote(
+        self,
+        interaction: disnake.MessageInteraction,
+        direction: str,
+    ):
+        if self._pending_direction is not None:
+            await interaction.response.send_message(
+                "Трек уже переключается.",
+                ephemeral=True,
+            )
             return
-        if ctx.author not in ctx.channel.members:
+
+        listeners = self._human_listeners()
+        if interaction.author.id not in {member.id for member in listeners}:
+            await interaction.response.send_message(
+                "Голосовать можно только из голосового канала CatCraft FM.",
+                ephemeral=True,
+            )
             return
         if self.vc is None or not self._vc_alive(self.vc):
-            await ctx.reply("я сейчас не в голосовом канале", delete_after=5)
+            await interaction.response.send_message(
+                "Я сейчас не подключён к CatCraft FM.",
+                ephemeral=True,
+            )
+            return
+        if direction == "previous" and not self.navigator.history:
+            await interaction.response.send_message(
+                "Предыдущего трека пока нет.",
+                ephemeral=True,
+            )
             return
 
-        if len(ctx.channel.members) > 2:
-            self._is_expired()
-            listeners = len(ctx.channel.members)
-            required_votes = self._requiredVotes(listeners)
-            if ctx.author.id in self.votes_list:
-                await ctx.reply("ты уже проголосовал(а) за пропуск песни!", delete_after=5)
-                return
+        voters = self.votes[direction]
+        if interaction.author.id in voters:
+            await interaction.response.send_message(
+                "Ты уже проголосовал(а) в эту сторону.",
+                ephemeral=True,
+            )
+            return
 
-            # голос фиксируем ДО await: быстрый повтор команды иначе успевал
-            # пройти проверку выше и посчитаться несколько раз
-            self.votes_list.append(ctx.author.id)
-            self.skip_votes += 1
-            self.last_skip = datetime.now().timestamp()
-            if self.skip_votes >= required_votes:
-                # сброс состояния и stop() ДО await: второй голос, пришедший во
-                # время send, иначе тоже проходил кворум и стопил уже новый трек
-                votes = self.skip_votes
-                self.votes_list = []
-                self.last_skip = 0
-                self.skip_votes = 0
-                self.vc.stop()
-                await ctx.channel.send(
-                    f"{votes} котика проголосовали за скип трека, пропускаем..."
-                )
-            else:
-                await ctx.channel.send(
-                    f"{ctx.author.mention} проголосовал за пропуск песни! "
-                    f"({self.skip_votes}/{required_votes})"
-                )
-        else:
+        voters.add(interaction.author.id)
+        required = self._requiredVotes(len(listeners))
+        if len(voters) < required:
+            await interaction.response.send_message(
+                f"Голос принят: {len(voters)}/{required}.",
+                ephemeral=True,
+            )
+            return
+
+        self._pending_direction = direction
+        try:
             self.vc.stop()
+        except Exception:
+            self.logger.exception("Не удалось остановить трек по голосованию")
+            self._pending_direction = None
+            voters.clear()
+            await interaction.response.send_message(
+                "Не смог переключить трек — попробуйте ещё раз.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            "Кворум собран, переключаю трек.",
+            ephemeral=True,
+        )
+
+    @commands.Cog.listener("on_button_click")
+    async def fmButtons(self, interaction: disnake.MessageInteraction):
+        custom_id = interaction.component.custom_id or ""
+        directions = {
+            self.PREVIOUS_BUTTON: "previous",
+            self.NEXT_BUTTON: "next",
+        }
+        if custom_id not in {*directions, self.INFO_BUTTON}:
+            return
+        if not await self._is_current_panel(interaction):
+            return
+        if custom_id == self.INFO_BUTTON:
+            await interaction.response.send_message(
+                components=await self._queue_components(include_description=True),
+                ephemeral=True,
+            )
+            return
+        await self._vote(interaction, directions[custom_id])
+
+    @commands.command(name="очередь", aliases=["queue", "q"])
+    async def musicQueue(self, command: disnake.MessageCommand):
+        await command.reply(components=await self._queue_components())
 
     @commands.command(name="radiostart")
     async def _radioForceStart(self, ctx):
