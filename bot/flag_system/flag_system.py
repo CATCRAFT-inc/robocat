@@ -104,7 +104,7 @@ class Flags:
         except Exception:
             self.logger.exception("Не удалось записать флаг %s на (%s, %s)", flag, entity_type, entity_id)
             raise
-        # %.60s: значения флагов бывают приватными (факты памяти) — в лог целиком не пишем
+        # %.60s: значения флагов могут быть приватными — в лог целиком не пишем
         self.logger.info("[FLAG SET] %s on (%s, %s) = %.60s", flag, entity_type, entity_id, value)
         return True
 

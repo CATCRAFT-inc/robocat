@@ -604,7 +604,7 @@ class AIEngine(commands.Cog):
             if answer.tool_calls and not force_final:
                 for tc in answer.tool_calls:
                     result = None
-                    # Падение тула (битые args модели, ошибка БД памяти, не-Member)
+                    # Падение тула (битые args модели, ошибка API, не-Member)
                     # не должно молча убивать весь ответ — превращаем в tool-result,
                     # чтобы модель дответила по собранному.
                     try:
