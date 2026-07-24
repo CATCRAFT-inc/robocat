@@ -8,11 +8,15 @@ Discord/voice мокается целиком — сети нет. Провер�
 """
 
 import asyncio
+from contextlib import suppress
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import disnake
 import pytest
 
-from bot.handlers.catcraft_fm import CatcraftFM
+from bot.handlers.catcraft_fm import CatcraftFM, _MusicNavigator
 
 
 @pytest.fixture
@@ -35,6 +39,201 @@ def _make_vc(connected: bool = True, runner_done: bool = False):
     runner.done.return_value = runner_done
     vc._runner = runner
     return vc
+
+
+# -------- очередь и кворум --------
+
+
+def test_back_requeues_current_track():
+    navigator = _MusicNavigator(["A", "B", "C"])
+
+    assert navigator.advance() == "A"
+    assert navigator.advance() == "B"
+    assert navigator.back() == "A"
+    assert navigator.advance() == "B"
+
+
+@pytest.mark.parametrize(
+    ("listeners", "votes"),
+    [(0, 1), (1, 1), (2, 2), (3, 2), (4, 2), (5, 3)],
+)
+def test_required_votes(listeners, votes):
+    assert CatcraftFM._requiredVotes(listeners) == votes
+
+
+def test_human_listeners_excludes_bots(cog):
+    human = MagicMock(bot=False)
+    bot = MagicMock(bot=True)
+    cog.channel = MagicMock(members=[human, bot])
+
+    assert cog._human_listeners() == [human]
+
+
+# -------- постоянная панель --------
+
+
+def _fake_flags(saved_id: int | None = None):
+    row = SimpleNamespace(value=str(saved_id)) if saved_id is not None else None
+    return SimpleNamespace(
+        getFlag=AsyncMock(return_value=row),
+        setFlag=AsyncMock(return_value=True),
+    )
+
+
+async def test_now_playing_edits_saved_message(cog, monkeypatch):
+    saved_message = MagicMock(id=42)
+    saved_message.edit = AsyncMock()
+    channel = MagicMock()
+    channel.fetch_message = AsyncMock(return_value=saved_message)
+    channel.send = AsyncMock()
+    cog.channel = channel
+    fake_flags = _fake_flags(42)
+    monkeypatch.setattr("bot.handlers.catcraft_fm.flags", fake_flags)
+
+    result = await cog._update_now_playing()
+
+    assert result is saved_message
+    saved_message.edit.assert_awaited_once()
+    channel.send.assert_not_awaited()
+    fake_flags.setFlag.assert_not_awaited()
+
+
+async def test_missing_saved_message_is_recreated(cog, monkeypatch):
+    response = MagicMock(status=404, reason="Not Found")
+    channel = MagicMock()
+    channel.fetch_message = AsyncMock(side_effect=disnake.NotFound(response, "gone"))
+    replacement = MagicMock(id=99)
+    channel.send = AsyncMock(return_value=replacement)
+    cog.channel = channel
+    fake_flags = _fake_flags(42)
+    monkeypatch.setattr("bot.handlers.catcraft_fm.flags", fake_flags)
+
+    result = await cog._update_now_playing()
+
+    assert result is replacement
+    channel.send.assert_awaited_once()
+    fake_flags.setFlag.assert_awaited_once_with(
+        channel,
+        "fm_now_playing_message",
+        99,
+    )
+
+
+async def test_stale_panel_id_is_rejected(cog, monkeypatch):
+    cog.channel = MagicMock()
+    monkeypatch.setattr("bot.handlers.catcraft_fm.flags", _fake_flags(42))
+    interaction = MagicMock(message=MagicMock(id=41))
+
+    assert await cog._is_current_panel(interaction) is False
+
+
+# -------- кнопки и голосование --------
+
+
+def _interaction(author, custom_id="FM_NEXT", message_id=42):
+    interaction = MagicMock(
+        author=author,
+        component=MagicMock(custom_id=custom_id),
+        message=MagicMock(id=message_id),
+    )
+    interaction.response.send_message = AsyncMock()
+    return interaction
+
+
+async def test_duplicate_vote_is_not_counted(cog):
+    author = MagicMock(id=1, bot=False)
+    cog.channel = MagicMock(
+        members=[author, MagicMock(id=2, bot=False), MagicMock(id=3, bot=False)]
+    )
+    cog.vc = _make_vc()
+    interaction = _interaction(author)
+
+    await cog._vote(interaction, "next")
+    await cog._vote(interaction, "next")
+
+    assert cog.votes["next"] == {1}
+    cog.vc.stop.assert_not_called()
+
+
+async def test_quorum_schedules_direction_and_stops(cog):
+    first = MagicMock(id=1, bot=False)
+    second = MagicMock(id=2, bot=False)
+    cog.channel = MagicMock(members=[first, second])
+    cog.vc = _make_vc()
+
+    await cog._vote(_interaction(first), "next")
+    await cog._vote(_interaction(second), "next")
+
+    assert cog._pending_direction == "next"
+    cog.vc.stop.assert_called_once()
+
+
+def test_track_change_clears_both_vote_sets(cog):
+    cog.votes = {"next": {1}, "previous": {2}}
+
+    cog._on_music_track_changed()
+
+    assert cog.votes == {"next": set(), "previous": set()}
+
+
+async def test_stale_button_is_silently_ignored(cog):
+    interaction = _interaction(MagicMock(id=1), message_id=41)
+    cog._is_current_panel = AsyncMock(return_value=False)
+
+    await cog.fmButtons(interaction)
+
+    interaction.response.send_message.assert_not_awaited()
+
+
+async def test_info_panel_contains_only_next_four_tracks(cog):
+    cog.navigator = _MusicNavigator(["1.mp3", "2.mp3", "3.mp3", "4.mp3", "5.mp3"])
+    cog._getTrackInfo = MagicMock(side_effect=lambda path: Path(path).stem)
+
+    components = await cog._queue_components(include_description=True)
+    text = "\n".join(
+        child.content
+        for child in components[0].children
+        if isinstance(child, disnake.ui.TextDisplay)
+    )
+
+    assert all(str(i) in text for i in range(1, 5))
+    assert "5" not in text
+
+
+async def test_now_playing_panel_has_all_three_controls(cog):
+    components = await cog._panel_components()
+    buttons = components[1].children
+
+    assert [button.custom_id for button in buttons] == [
+        "FM_PREVIOUS",
+        "FM_NEXT",
+        "FM_INFO",
+    ]
+    assert buttons[0].disabled is True
+
+
+async def test_config_reload_restart_replaces_supervisor_and_cached_channel(cog):
+    old_task = asyncio.create_task(asyncio.sleep(60))
+    cog._task = old_task
+    cog.channel = MagicMock()
+    cog.vc = MagicMock()
+    cog.now_playing_message_id = 42
+
+    async def _new_supervisor():
+        await asyncio.sleep(60)
+
+    cog._radio_supervisor = _new_supervisor
+    await cog.restart_for_config_reload()
+
+    assert old_task.cancelled()
+    assert cog.channel is None
+    assert cog.vc is None
+    assert cog.now_playing_message_id is None
+    assert cog._task is not old_task
+
+    cog._task.cancel()
+    with suppress(asyncio.CancelledError):
+        await cog._task
 
 
 # -------- _vc_alive --------

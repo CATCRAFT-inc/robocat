@@ -4,13 +4,22 @@ import disnake
 from disnake.ext import commands
 
 from bot.flag_system.flag_system import flags
-from bot.storage import Buttons, ColorStorage, Embeds, Roles, Channels
+from bot.discord_config import (
+    Channels,
+    ConfigError,
+    Roles,
+    Users,
+    has_config_roles,
+    reload_config,
+)
+from bot.storage import Buttons, ColorStorage, Embeds
 from bot.utils import create_embed
 
 logger = logging.getLogger("robocat.admin")
 
-# Словарь {имя: объект} доступных эмбедов/контейнеров (без служебных _-атрибутов)
-_EMBEDS = {name: getattr(Embeds, name) for name in vars(Embeds) if not name.startswith("_")}
+# Имена стабильны для регистрации choices, а сам объект строится при вызове:
+# контейнеры с Discord ID тогда видят последний /config-reload.
+_EMBED_NAMES = [name for name in vars(Embeds) if not name.startswith("_")]
 
 
 class AdminCommands(commands.Cog):
@@ -19,19 +28,49 @@ class AdminCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    @commands.slash_command(
+        name="config-reload",
+        description="Перечитать data/discord.local.yml без рестарта бота",
+    )
+    @has_config_roles("admin", "st_admin")
+    async def configReload(self, inter: disnake.ApplicationCommandInteraction):
+        await inter.response.defer(ephemeral=True)
+        previous_fm_channel = Channels.catcraft_fm
+        try:
+            reload_config()
+        except ConfigError as exc:
+            logger.warning("config-reload отклонён: %s", exc)
+            await inter.edit_original_response(f"Конфиг не применён: {exc}")
+            return
+        self.bot.owner_id = Users.szarkan
+        if Channels.catcraft_fm != previous_fm_channel:
+            fm = self.bot.get_cog("CatcraftFM")
+            if fm is not None:
+                try:
+                    await fm.restart_for_config_reload()
+                except Exception:
+                    logger.exception("Discord-конфиг применён, но FM не перезапустился")
+                    await inter.edit_original_response(
+                        "Discord-конфиг применён, но CatCraft FM не перезапустился."
+                    )
+                    return
+        await inter.edit_original_response("Discord-конфиг перезагружен.")
+
 
 
     @commands.slash_command(name='send_embed', description='Отправить Embed из списка.')
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def embedCommand(self, inter: disnake.ApplicationCommandInteraction,
-                        embed_name: str = commands.Param(choices=list(_EMBEDS)),
+                        embed_name: str = commands.Param(choices=_EMBED_NAMES),
                         message: str = None,
                         silent: bool = True):
         # TODO: реализовать silent. Хотя мб не нужно.
-        embed = _EMBEDS.get(embed_name)
+        embed = getattr(Embeds, embed_name, None)
         if embed is None:
             await inter.send("Такого эмбеда/контейнера нет!", ephemeral=True)
             return
+        if callable(embed):
+            embed = embed()
         if isinstance(embed, disnake.ui.Container):
             await inter.channel.send(components=[embed])
             await inter.send(f"Container {embed_name} отправлен.", ephemeral=True)
@@ -42,7 +81,7 @@ class AdminCommands(commands.Cog):
             await inter.send("Этот объект нельзя отправить как эмбед/контейнер.", ephemeral=True)
 
     @commands.slash_command(name='delete_until', description='Удалить все сообщения до определенного сообщения')
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def deleteUntil(self, inter: disnake.ApplicationCommandInteraction,
                         message_id: str):
         try:
@@ -62,7 +101,7 @@ class AdminCommands(commands.Cog):
         await inter.edit_original_response(f"Успешно удалено сообщений: {len(deleted)}")
 
     @commands.slash_command(name='test_some_shit', description='Команда тестирования всякого... говна.')
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def testCommandAdminOnlyWarningVeryStrictDontTouch(self, inter: disnake.ApplicationCommandInteraction):
         #await Flags().setFlag(inter.author, "expire_test", "privet PIDORASI", "5сек")
         # has_flag = await Flags().hasFlag(inter.author, "expire_test")

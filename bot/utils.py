@@ -9,14 +9,6 @@ import re
 
 logger = logging.getLogger("robocat.utils")
 
-# def guild_check():
-#     async def predicate(ctx):
-#         if ctx.guild.id != 1138425078493753366:
-#             await ctx.send("Эта команда разрешена только в [Дискорд сервере Кошкокрафта](<https://discord.gg/catcraftmc>)!")
-#             return False
-#         return True
-#     return commands.check(predicate)
-
 def create_embed(title: str = None,
                  description: str = None,
                  image: str = None,

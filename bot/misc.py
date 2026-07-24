@@ -3,7 +3,7 @@ import logging
 import disnake
 from disnake.ext import commands
 
-from bot.storage import Channels
+from bot.discord_config import Channels, ForumTags, Users
 
 logger = logging.getLogger("robocat.misc")
 
@@ -11,7 +11,6 @@ logger = logging.getLogger("robocat.misc")
 class Tests(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.artem123zzz_id = 1348192851573604412
 
     @commands.Cog.listener("on_message")
     async def restrictArtem123zzz(self, message: disnake.Message):
@@ -19,7 +18,7 @@ class Tests(commands.Cog):
             return
         if message.author.bot:
             return
-        if message.author.id == self.artem123zzz_id:
+        if message.author.id == Users.artem123zzz:
             # lower() + 'http': фильтр обходился HTTPS://, http:// и прочим регистром
             if 'http' in message.content.lower() or message.attachments:
                 try:
@@ -37,7 +36,7 @@ class Tests(commands.Cog):
         if party_search is None:
             logger.error("Канал запросов %s не найден — тред «Запросы» не создан", Channels.requests)
             return
-        tag = party_search.get_tag(1218152835716354058)
+        tag = party_search.get_tag(ForumTags.party_search)
         await party_search.create_thread(name="Запросы!", applied_tags=[tag] if tag else [], components=disnake.ui.Container(
             disnake.ui.TextDisplay("# Запросы!"),
             disnake.ui.Separator(),

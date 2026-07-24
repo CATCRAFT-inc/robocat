@@ -2,24 +2,10 @@ from dataclasses import dataclass
 
 import disnake
 
+from bot.discord_config import Channels, Emojis, Roles
 from bot.utils import create_embed
 from bot.utils import create_button
 from .bot import commands
-
-class EmojiStorage:
-    diamond = disnake.PartialEmoji(name='diamond', id=1182123565491953704,animated=True)
-    animated_diamond = disnake.PartialEmoji(name='diamond', id=1182123565491953704,
-                                                                    animated=True)
-    blistering = disnake.PartialEmoji(name='guiding', animated=True,id=1179100424930857022)
-    pickaxe = disnake.PartialEmoji(name='kirka', id=1175696173919653919)
-    ar = disnake.PartialEmoji(name='ar', id=1153483933091110912)
-    rofl = disnake.PartialEmoji(name='mazzelov', id=1179100218717896784)
-    ab = disnake.PartialEmoji(name='ab~1', id=1175696024292040814)
-    book = disnake.PartialEmoji(name='written_book', id=1186823346155962460)
-
-    kplus = disnake.PartialEmoji(name="kp", id=1280167088559882301)
-    kplusplus = disnake.PartialEmoji(name="kpp", id=1280167090111647774)
-    kplusplusplus = disnake.PartialEmoji(name="kppp", id=1280167091756077159)
 
 class LinksStorage:
     mapLink = 'https://map.catcraftmc.ru'
@@ -30,93 +16,6 @@ class LinksStorage:
 class ColorStorage:
     main = "#4f2dbe"
     gray = "#808080"
-
-class Guilds:
-    main = 1138425078493753366
-
-class Channels:
-    command_logs = 1237318531784249394
-    discord_logs = 1260242017242448054
-    secret = 1138425079483609220
-    general = 1138425079231938686
-    for_bots = 1171103961319751730
-    support = 1145465696164266166
-
-    app_category_1 = 1138607394079907900
-    app_category_2 = 1222881180890960044
-    app_category_3 = 1222881206094401556
-
-    reports_category = 1145467946710339754
-    admin_reports_category = 1185587487108775978
-
-    about_server = 1138634937638060144
-    write_app = 1138425079231938682
-
-    ticket_log = 1260242017242448054
-    nsfw = 1174669054938726410
-
-    bugs = 1483429604248129558
-    temp_bugs = 1481600048809640106
-    ideas = 1141682290146148392
-    requests = 1143564055999676416
-
-    welcome = 1138425079231938683
-
-    honeypot = 1520843204591751178  # войс "Для Ботов" — ловушка для спам-ботов
-
-    ## Новостные каналы
-    announcements = 1139036448201392218  # Объявления
-    newspaper = 1139036637519683584      # Газета
-    media_news = 1298348275514216478     # Медиа
-    informator = 1209527512091070505     # Информатор
-    news_reaction_channels = [announcements, newspaper]  # реакции + тред
-    digest_channels = [announcements, newspaper, media_news, informator]
-
-# TODO: Сделать динамично
-
-# class Users:
-#     admins = {
-#     "szarkan": 531208170098655233,
-#     "bkke": 538309573774278666
-#     }
-#     moderators = {
-#     "avokato_AMF": 827888128567672892,
-#     "Mr_Milota": 392314414310883328,
-#     "ZakharEren": 929316548865294376
-#     }
-
-class Roles:
-    ## Admins|Главные
-    owner = 1466840794190057574 # Основатель
-    st_admin = 1138425078917369953
-    admin = 1188168267823595651 # Всекот
-    developer = 1466927118494466266 # Разработчик
-    moderator =  1138425078917369952 # Всекотёнок, модератор
-    call_admin = 1163542634191654962 # Позвать админа
-    app_viewer = 1138639647086497842 # Смотрит заявки
-    ## КСБ
-    ksb = 1138425078493753368 # Офицер КСБ
-    junior_ksb = 1380821070785019904 # Мл. Офицер КСБ
-    st_ksb = 1380821280546226227 # Ст. Офицер КСБ
-    gksb = 1141404357988995133 # ГКСБ
-    ## MISC
-    no_respect = 1221184379397738657 # Потеря благословления
-    no_apps = 1216910429737980065 # Запрет заявок
-    parlament = 1141404858268782705 # Парламентёр
-    player = 1242389208669229137 # Котик
-    kotikplus = 1138425078917369946
-    booster = 1145672632335876166
-    ## Notifications
-    rp = 1139039308678963250
-    events = 1139038901500133446
-    maintanence = 1139039206090485860
-    media = 1139039063127621762
-    server_updates = 1154962203007533168
-    site_updates = 1216088841761329252
-    premium_ai = frozenset({owner,st_admin,admin,developer,moderator,kotikplus,booster}) # Те, кто может юзать ИИ без кд и генерировать картинки
-
-class Users:
-    szarkan = 531208170098655233
 
 class Emotes:
     kiss = [
@@ -140,13 +39,13 @@ class Emotes:
 
 class Messages:
     join = [
-        f"> Привет, %1! Добро пожаловать на **Кошкокрафт**!\n- Информация о сервере - <#{Channels.about_server}>\n",
-        f"> Котик %1 прибыл в Кошкокрафт!\n- Информация о сервере - <#{Channels.about_server}>\n",
-        f"> К нам пришёл %1!\n- Информация о сервере - <#{Channels.about_server}>\n",
-        f"> %1 присоединился к Кошкокрафту!\n- Информация о сервере - <#{Channels.about_server}>\n",
-        f"> Встречайте нового котика %1!\n- Информация о сервере - <#{Channels.about_server}>\n",
-        f"> %1 запрыгнул(а) на сервер!\n- Информация о сервере - <#{Channels.about_server}>\n",
-        f"> Урааа, у нас пополнение — %1!\n- Информация о сервере - <#{Channels.about_server}>\n"
+        "> Привет, %1! Добро пожаловать на **Кошкокрафт**!\n- Информация о сервере - <#%2>\n",
+        "> Котик %1 прибыл в Кошкокрафт!\n- Информация о сервере - <#%2>\n",
+        "> К нам пришёл %1!\n- Информация о сервере - <#%2>\n",
+        "> %1 присоединился к Кошкокрафту!\n- Информация о сервере - <#%2>\n",
+        "> Встречайте нового котика %1!\n- Информация о сервере - <#%2>\n",
+        "> %1 запрыгнул(а) на сервер!\n- Информация о сервере - <#%2>\n",
+        "> Урааа, у нас пополнение — %1!\n- Информация о сервере - <#%2>\n"
     ]
     join_again = [
         f"> С возвращением, %1!",
@@ -182,26 +81,28 @@ class Embeds:
             disnake.ui.Button(style=disnake.ButtonStyle.green, label="Сообщить о баге", custom_id=Buttons.BUG_REPORT.id)
         )
     )
-    role_choose = disnake.ui.Container(
-        disnake.ui.TextDisplay("# 📢 Роли уведомлений"),
-        disnake.ui.Separator(),
-        disnake.ui.TextDisplay("**Эти роли отвечают за пинги от объявлений, которые хотите отслеживать.**\n**Для получения** - нажмите на пункт с ролью в списке ниже.\n**Для снятия роли** - нажмите повторно.**\n"),
-        disnake.ui.TextDisplay("-# Если роль не выдалась, попробуйте нажать ещё раз!"),
-        disnake.ui.ActionRow(
-            disnake.ui.StringSelect(
-                options=[
-                    disnake.SelectOption(label="Обновления сервера", description="Уведомлять о новых геймплейных изменениях", value=Roles.server_updates),
-                    disnake.SelectOption(label="Газета", description="Уведомлять о РП постах от игроков", value=Roles.rp),
-                    disnake.SelectOption(label="Ивенты", description="Уведомлять об ивентах, розыгрышах, результатов и т.д.", value=Roles.events),
-                    disnake.SelectOption(label="Медия", description="Уведомлять о стримах и видео", value=Roles.media),
-                    disnake.SelectOption(label="Тех. работы", description="Уведомлять о предстоящих и оконченных тех. работах", value=Roles.maintanence),
-                    disnake.SelectOption(label="Обновление сайта", description="Уведомлять об изменениях нашего сайта", value=Roles.site_updates),
-                ],
-                custom_id="ROLESELECT"
-            )
-        ),
-        accent_colour=disnake.Color.from_hex(ColorStorage.main)
-    )
+    @staticmethod
+    def role_choose():
+        return disnake.ui.Container(
+            disnake.ui.TextDisplay("# 📢 Роли уведомлений"),
+            disnake.ui.Separator(),
+            disnake.ui.TextDisplay("**Эти роли отвечают за пинги от объявлений, которые хотите отслеживать.**\n**Для получения** - нажмите на пункт с ролью в списке ниже.\n**Для снятия роли** - нажмите повторно.**\n"),
+            disnake.ui.TextDisplay("-# Если роль не выдалась, попробуйте нажать ещё раз!"),
+            disnake.ui.ActionRow(
+                disnake.ui.StringSelect(
+                    options=[
+                        disnake.SelectOption(label="Обновления сервера", description="Уведомлять о новых геймплейных изменениях", value=str(Roles.server_updates)),
+                        disnake.SelectOption(label="Газета", description="Уведомлять о РП постах от игроков", value=str(Roles.rp)),
+                        disnake.SelectOption(label="Ивенты", description="Уведомлять об ивентах, розыгрышах, результатов и т.д.", value=str(Roles.events)),
+                        disnake.SelectOption(label="Медия", description="Уведомлять о стримах и видео", value=str(Roles.media)),
+                        disnake.SelectOption(label="Тех. работы", description="Уведомлять о предстоящих и оконченных тех. работах", value=str(Roles.maintanence)),
+                        disnake.SelectOption(label="Обновление сайта", description="Уведомлять об изменениях нашего сайта", value=str(Roles.site_updates)),
+                    ],
+                    custom_id="ROLESELECT"
+                )
+            ),
+            accent_colour=disnake.Color.from_hex(ColorStorage.main)
+        )
     new_idea_template = disnake.ui.Container(
         disnake.ui.TextDisplay("## Шаблон и правила новой идеи"),
         disnake.ui.Separator(),
@@ -212,25 +113,27 @@ class Embeds:
         disnake.ui.TextDisplay("1. Идея не должна повторять точь в точь идею другого сервера\n  - Но идея может повторять игры, настолки (аля ДнД) и подобное\n2. Если идея уже была в разработке до твоей подачи, то, к сожалению, она будет отклонена\n3. Автором идеи будет считаться игрок, подавший её первой"),
         accent_colour=disnake.Color.from_hex(ColorStorage.main)
     )
-    choose_help_ticket = disnake.ui.Container(
-        disnake.ui.TextDisplay("## :exclamation: Получить помощь"),
-        disnake.ui.Separator(),
-        disnake.ui.TextDisplay("\n### <:admin:1389370820274425917> Связь с админами\nОтправить жалобу админам на игроков или связаться с админами по разным вопросам"),
-        disnake.ui.Separator(),
-        disnake.ui.TextDisplay("\n### <:ksb_chief:1389370827421651096> Жалоба в КСБ\nЖалоба в Кошачью Службу Безопасности, если кто-то нарушил закон и нужна справедливость"),
-        disnake.ui.Separator(),
-        disnake.ui.TextDisplay(f"\n### :broken_heart:  Баг-репорт\nЕсли нашёл баг, но правильное место для этого - <#{Channels.bugs}>"),
-        disnake.ui.ActionRow(
-            disnake.ui.StringSelect(
-                options=[
-                    disnake.SelectOption(label="Связь с админами", description="Жалоба на игроков или в целом", value="TICKET_ADMIN"),
-                    disnake.SelectOption(label="Жалоба в КСБ", description="Жалоба на нарушение законов", value="TICKET_POLICE"),
-                    disnake.SelectOption(label="Баг-репорт", description="Заявить о баге", value="TICKET_BUGREPORT")
-                ],
-                custom_id="CHOOSE_TICKET"
+    @staticmethod
+    def choose_help_ticket():
+        return disnake.ui.Container(
+            disnake.ui.TextDisplay("## :exclamation: Получить помощь"),
+            disnake.ui.Separator(),
+            disnake.ui.TextDisplay(f"\n### <:admin:{Emojis.admin}> Связь с админами\nОтправить жалобу админам на игроков или связаться с админами по разным вопросам"),
+            disnake.ui.Separator(),
+            disnake.ui.TextDisplay(f"\n### <:ksb_chief:{Emojis.ksb_chief}> Жалоба в КСБ\nЖалоба в Кошачью Службу Безопасности, если кто-то нарушил закон и нужна справедливость"),
+            disnake.ui.Separator(),
+            disnake.ui.TextDisplay(f"\n### :broken_heart:  Баг-репорт\nЕсли нашёл баг, но правильное место для этого - <#{Channels.bugs}>"),
+            disnake.ui.ActionRow(
+                disnake.ui.StringSelect(
+                    options=[
+                        disnake.SelectOption(label="Связь с админами", description="Жалоба на игроков или в целом", value="TICKET_ADMIN"),
+                        disnake.SelectOption(label="Жалоба в КСБ", description="Жалоба на нарушение законов", value="TICKET_POLICE"),
+                        disnake.SelectOption(label="Баг-репорт", description="Заявить о баге", value="TICKET_BUGREPORT")
+                    ],
+                    custom_id="CHOOSE_TICKET"
+                )
             )
         )
-    )
 
 
 

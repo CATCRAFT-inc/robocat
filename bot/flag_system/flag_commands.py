@@ -3,7 +3,7 @@ import logging
 import disnake
 from disnake.ext import commands
 
-from bot.storage import Roles
+from bot.discord_config import Roles, has_config_roles
 from bot.utils import parse_duration
 from .flag_system import flags
 
@@ -38,7 +38,7 @@ class FlagCommands(commands.Cog):
     # он отвечает не-админу ephemeral-отказом вместо «Приложение не отвечает»
 
     @commands.slash_command(name='list_user_flags', description="Показать все флаги пользователя")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def allUserFlagsCommand(self, inter: disnake.ApplicationCommandInteraction,
                                   user: disnake.Member):
         flag_list = await flags.getAllFlags(user)
@@ -52,7 +52,7 @@ class FlagCommands(commands.Cog):
             await inter.send("У данного пользователя нет флагов.", ephemeral=True)
 
     @commands.slash_command(name='get_user_flag', description="Показать значение определённого флага пользователя")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def getUserFlagCommand(self, inter: disnake.ApplicationCommandInteraction,
                                  flag: str,
                                  user: disnake.Member):
@@ -70,7 +70,7 @@ class FlagCommands(commands.Cog):
             await inter.send("У данного пользователя нет такого флага.", ephemeral=True)
 
     @commands.slash_command(name='list_channel_flags', description="Показать все флаги канала")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def allChannelFlagsCommand(self, inter: disnake.ApplicationCommandInteraction,
                                      channel: disnake.abc.GuildChannel = None):
         if channel is None:
@@ -86,7 +86,7 @@ class FlagCommands(commands.Cog):
             await inter.send("У данного канала нет флагов.", ephemeral=True)
 
     @commands.slash_command(name='flag_user', description="Добавить флаг на пользователя")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def addUserFlagCommand(self, inter: disnake.ApplicationCommandInteraction,
                                  member: disnake.Member,
                                  flag: str,
@@ -104,7 +104,7 @@ class FlagCommands(commands.Cog):
                          allowed_mentions=disnake.AllowedMentions(users=False))
 
     @commands.slash_command(name='flag_channel', description="Добавить флаг на канал")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def addChannelFlagCommand(self, inter: disnake.ApplicationCommandInteraction,
                                     channel: disnake.abc.GuildChannel,
                                     flag: str,
@@ -122,7 +122,7 @@ class FlagCommands(commands.Cog):
                          allowed_mentions=disnake.AllowedMentions(users=False))
 
     @commands.slash_command(name='remove_flag_user', description="Удалить флаг у пользователя")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def removeUserFlagCommand(self, inter: disnake.ApplicationCommandInteraction,
                                     member: disnake.Member,
                                     flag: str):
@@ -131,7 +131,7 @@ class FlagCommands(commands.Cog):
                          allowed_mentions=disnake.AllowedMentions(users=False))
 
     @commands.slash_command(name='remove_channel_flag', description="Удалить флаг у канала")
-    @commands.has_any_role(Roles.admin, Roles.st_admin)
+    @has_config_roles("admin", "st_admin")
     async def removeChannelFlagCommand(self, inter: disnake.ApplicationCommandInteraction,
                                        channel: disnake.abc.GuildChannel,
                                        flag: str):
