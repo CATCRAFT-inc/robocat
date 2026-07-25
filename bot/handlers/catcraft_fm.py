@@ -446,15 +446,28 @@ class CatcraftFM(commands.Cog):
         components = await self._panel_components()
         message_id = await self._saved_panel_id()
         if message_id is not None:
-            try:
-                message = await self.channel.fetch_message(message_id)
-                await message.edit(components=components)
-                return message
-            except (disnake.NotFound, disnake.Forbidden, disnake.HTTPException):
-                self.logger.warning(
-                    "Панель CatCraft FM %s недоступна — создаю новую",
-                    message_id,
-                )
+            # Пока панель — последнее сообщение канала, правим её на месте.
+            # Как только её задвинули чужими сообщениями, редактировать бесполезно:
+            # кнопки уезжают вверх и их приходится искать скроллом (#28), —
+            # сносим и вешаем новую внизу.
+            if self.channel.last_message_id == message_id:
+                try:
+                    message = await self.channel.fetch_message(message_id)
+                    await message.edit(components=components)
+                    return message
+                except (disnake.NotFound, disnake.Forbidden, disnake.HTTPException):
+                    self.logger.warning(
+                        "Панель CatCraft FM %s недоступна — создаю новую",
+                        message_id,
+                    )
+            else:
+                try:
+                    await self.channel.get_partial_message(message_id).delete()
+                except (disnake.NotFound, disnake.Forbidden, disnake.HTTPException):
+                    self.logger.warning(
+                        "Не смог удалить старую панель CatCraft FM %s — создаю новую",
+                        message_id,
+                    )
 
         message = await self.channel.send(components=components)
         self.now_playing_message_id = message.id
