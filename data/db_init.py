@@ -26,7 +26,9 @@ async def dbInit(db_path: Path = DB_PATH):
                 ideas_added     INTEGER DEFAULT 0
             )
         """)
-        await db.execute("DELETE FROM flags WHERE flag LIKE 'fact:%' OR flag = 'ai_locked'")
+        # Легаси-зачистка таймеров квоты. Факты памяти (fact:%) отсюда убраны:
+        # это данные юзеров, dbInit не должен их стирать (issue #6, возврат 25.07).
+        await db.execute("DELETE FROM flags WHERE flag = 'ai_locked'")
         await db.commit()
     print(f"DB initialised at {db_path}")
 
