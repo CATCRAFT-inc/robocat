@@ -6,6 +6,7 @@
 Клиенты создаются лениво — импорт модуля без сети/ключей ничего не запрашивает.
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -80,6 +81,9 @@ class LLM:
         self._loaded = False
         self.vendors: list[_Vendor] = []
         self.utility: _Vendor | None = None
+        # Учёт токенов пишется отдельным таском; без сильной ссылки GC может
+        # съесть его до коммита (asyncio держит таски только слабо).
+        self._usage_tasks: set = set()
 
     # -------- загрузка настроек --------
 
@@ -133,16 +137,24 @@ class LLM:
 
     # -------- учёт токенов --------
 
-    async def _track_usage(self, response):
+    async def _track_usage(self, response, model: str):
         try:
             # Ленивый импорт: держим импорт модуля свободным от цепочки bot.utils/bot.bot,
             # чтобы `import bot.ai.llm` не требовал сети/ключей и не ловил циклический
             # импорт. Именно ВНУТРИ try: скрипт с неканоничным порядком импорта поймал бы
             # тут ImportError и уронил УСПЕШНЫЙ запрос из-за чистой телеметрии.
             from bot.flag_system.flag_system import flags
+            from . import usage as usage_stats
             usage = getattr(response, "usage", None)
             if usage and usage.total_tokens:
+                # Кумулятивный счётчик с прошлых месяцев — оставляем как есть,
+                # /aiinfo показывает именно его. Разбивка копится отдельно.
                 await flags.incrementFlag("abstract", "token_used", usage.total_tokens)
+                await usage_stats.record(
+                    model,
+                    getattr(usage, "prompt_tokens", 0),
+                    getattr(usage, "completion_tokens", 0),
+                )
         except Exception:
             self.logger.exception("Не удалось записать использованные токены")
 
@@ -186,7 +198,12 @@ class LLM:
                         continue
                     break
                 else:
-                    await self._track_usage(response)
+                    # Телеметрия НЕ на пути ответа: record открывает свою
+                    # SQLite-транзакцию, и под чужим BEGIN IMMEDIATE замер дал
+                    # до 3 с ожидания — ровно столько же ждал бы юзер ответа.
+                    task = asyncio.create_task(self._track_usage(response, vendor.model))
+                    self._usage_tasks.add(task)
+                    task.add_done_callback(self._usage_tasks.discard)
                     return response
         raise AIUnavailable("Все ИИ-вендоры недоступны")
 
