@@ -121,7 +121,7 @@ async def test_user_lock_slash_and_reply_commands_target_selected_user(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_mention_uses_current_plus_seven_reply_ancestors():
+async def test_mention_uses_current_plus_nine_reply_ancestors():
     handler = object.__new__(AIMessageHandler)
     handler._chat_blocked = AsyncMock(return_value=False)
     handler._consumeRequest = AsyncMock(return_value=True)
@@ -129,7 +129,7 @@ async def test_mention_uses_current_plus_seven_reply_ancestors():
     handler.ai_engine = SimpleNamespace(buildConverstaion=AsyncMock(return_value=[]))
 
     chain = []
-    for message_id in range(10):
+    for message_id in range(14):
         reference = (
             SimpleNamespace(resolved=chain[-1], message_id=chain[-1].id)
             if chain
@@ -147,4 +147,4 @@ async def test_mention_uses_current_plus_seven_reply_ancestors():
     await handler._handleMention(chain[-1])
 
     messages = handler.ai_engine.buildConverstaion.await_args.args[0]
-    assert [message.id for message in messages] == list(range(2, 10))
+    assert [message.id for message in messages] == list(range(4, 14))

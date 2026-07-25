@@ -26,6 +26,19 @@ async def dbInit(db_path: Path = DB_PATH):
                 ideas_added     INTEGER DEFAULT 0
             )
         """)
+        # Расход токенов по суткам: источник (mention/aichat/background) × модель.
+        # Аддитивно — существующие данные не трогает, миграции не требует.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS token_usage (
+                day               TEXT NOT NULL,
+                source            TEXT NOT NULL,
+                model             TEXT NOT NULL,
+                requests          INTEGER NOT NULL DEFAULT 0,
+                prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, source, model)
+            )
+        """)
         # Легаси-зачистка таймеров квоты. Факты памяти (fact:%) отсюда убраны:
         # это данные юзеров, dbInit не должен их стирать (issue #6, возврат 25.07).
         await db.execute("DELETE FROM flags WHERE flag = 'ai_locked'")

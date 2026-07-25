@@ -9,19 +9,40 @@ from disnake.ext import commands, tasks
 from bot.discord_config import Channels, Roles, has_config_roles
 from bot.flag_system.flag_system import flags
 
-from bot.utils import neutralize_markers, neutralize_sections
+from bot.utils import create_container, neutralize_markers, neutralize_sections
 
 from .engine import AIEngine, Status, FinalAnswer, AIError, strip_action_log
 from .llm import llm
 from . import memory
+from . import usage
 
 
 # Бюджет контекста AI-треда (символы) и порог фонового сжатия обрезанной части
 _THREAD_CONTEXT_BUDGET = 16000
 _THREAD_SUMMARY_TRIGGER = 6000
 _THREAD_HISTORY_LIMIT = 40
+# Глубина цепочки реплаев вне тредов: текущее сообщение + предки. Ходит только
+# по реплаям — два обращения подряд без реплая бот по-прежнему видит порознь.
+_MENTION_CHAIN_LIMIT = 10
 
 _MSK = datetime.timezone(datetime.timedelta(hours=3))
+
+
+def _tokens(row: tuple | None) -> int:
+    """(requests, prompt, completion) → сумма токенов; None — источник молчал."""
+    return (row[1] + row[2]) if row else 0
+
+
+def _fmt_tokens(n: int) -> str:
+    # ponytail: 999_950..999_999 печатается как «1000.0k», а не «1.0M» — ширину
+    # колонки не рвёт, чинить порог магической константой дороже, чем терпеть
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
 # Все флаги AI-треда — снимаем их скопом при удалении/очистке.
 # ai_chat — ПОСЛЕДНИМ: это маркер обнаружения для клинера; сбой уборки на
 # полпути без него оставил бы остальные флаги невидимыми сиротами
@@ -226,6 +247,9 @@ class AIMessageHandler(commands.Cog):
             await self._handleMention(message)
 
     async def _handleMention(self, message: disnake.Message):
+        # Метка для учёта токенов: всё, что этот таск позовёт у llm, запишется
+        # на счёт разговоров в каналах. Ставим до первого вызова модели.
+        usage.source.set(usage.MENTION)
         if await self._chat_blocked(message.author):
             return
         if not await self._consumeRequest(message.author):
@@ -239,7 +263,7 @@ class AIMessageHandler(commands.Cog):
         messages = [message]
         current_msg = message
 
-        while len(messages) < 8 and current_msg.reference:
+        while len(messages) < _MENTION_CHAIN_LIMIT and current_msg.reference:
             prev_msg = current_msg.reference.resolved
             # Исходное сообщение было удалено — выше подниматься нельзя (нет .author)
             if isinstance(prev_msg, disnake.DeletedReferencedMessage):
@@ -247,7 +271,11 @@ class AIMessageHandler(commands.Cog):
             if prev_msg is None:
                 try:
                     prev_msg = await message.channel.fetch_message(current_msg.reference.message_id)
-                except disnake.NotFound:
+                except disnake.HTTPException:
+                    # NotFound был не единственным исходом: Forbidden и 5xx улетали
+                    # в on_error, и юзер не получал ВООБЩЕ ничего. Обрываем цепочку
+                    # и отвечаем по тому, что успели собрать — тем более что после
+                    # подъёма лимита до 10 таких запросов на пинг стало больше.
                     break
             messages.insert(0, prev_msg)
             current_msg = prev_msg
@@ -256,6 +284,9 @@ class AIMessageHandler(commands.Cog):
         await self._streamAnswer(message, conversation, ping=True)
 
     async def _handleThreadMessage(self, message: disnake.Message):
+        # Фоновое сжатие треда уходит в create_task, а таск наследует контекст —
+        # значит сжатие честно ляжет на счёт того aichat, который его породил.
+        usage.source.set(usage.AICHAT)
         if await self._chat_blocked(message.author):
             return
         thread = message.channel
@@ -506,6 +537,62 @@ class AIMessageHandler(commands.Cog):
             f"**Текущий вендор:** {current_txt}\n\n**Кулдауны:**\n{report}\n\n**Использовано токенов:** {tokens}",
             ephemeral=True,
         )
+
+    @commands.slash_command(name='aistats', description="статистика расхода нейросети")
+    @has_config_roles("admin", "st_admin")
+    async def aiStats(self, inter: disnake.MessageCommandInteraction):
+        await inter.response.defer(ephemeral=True)
+        try:
+            today, week, total = await asyncio.gather(
+                usage.report(days=1), usage.report(days=7), usage.report(),
+            )
+        except Exception:
+            # defer уже ушёл: без ответа админ смотрит на вечное «думаю».
+            # Живой случай — БД, на которой не прогоняли db_init (dev, ручной рестарт).
+            self.logger.exception("Не удалось прочитать статистику расхода токенов")
+            await inter.edit_original_response(
+                "Не смог прочитать статистику. Если база свежая — прогони `data/db_init.py`."
+            )
+            return
+
+        rows = [f"{'':<9}{'сегодня':>9}{'7 дней':>9}{'всего':>9}"]
+        for key, label in ((usage.MENTION, "Каналы"),
+                           (usage.AICHAT, "/aichat"),
+                           (usage.BACKGROUND, "Фон")):
+            cells = "".join(f"{_fmt_tokens(_tokens(period.get(key))):>9}"
+                            for period in (today, week, total))
+            rows.append(f"{label:<9}{cells}")
+        table = "```\n" + "\n".join(rows) + "\n```"
+
+        calls, prompt, completion = today.get(usage.MENTION, (0, 0, 0))
+        per_call = _fmt_tokens(round((prompt + completion) / calls)) if calls else "—"
+        # Именно «вызовов модели», а не «запросов»: одно обращение юзера — это до
+        # трёх вызовов (тул-раунды + финал), а «запросы» на сервере уже значат
+        # пользовательскую квоту в 35 штук. Совпадение подписей врало бы админу.
+        detail = (
+            f"**Разговоры в каналах, сегодня**\n"
+            f"{calls} вызовов модели, в среднем {per_call} токенов на вызов\n"
+            f"промпт {_fmt_tokens(prompt)} · ответы {_fmt_tokens(completion)}"
+        )
+
+        # Кумулятивный счётчик копится с прошлых месяцев, разбивка — только с
+        # деплоя этой фичи. Показываем оба, чтобы «всего» никого не путало.
+        # Он же считает total_tokens вендора (со служебными), а таблица —
+        # сумму промпта и ответа, поэтому цифры и не обязаны сходиться.
+        token_used = await flags.getFlag("abstract", "token_used")
+        try:
+            lifetime = _fmt_tokens(int(token_used.value)) if token_used else "0"
+        except (TypeError, ValueError):
+            lifetime = str(token_used.value)  # флаг руками сделали нечисловым
+
+        container = create_container(
+            "# 📊 Расход нейросети",
+            f"{table}\n{detail}",
+            footer=f"Старый общий счётчик: {lifetime} токенов (считает иначе). "
+                   "Разбивка по источникам копится с 25.07.2026. "
+                   "Эмбеддинги и картинки идут мимо учёта.",
+        )
+        await inter.edit_original_response(components=[container])
 
     @commands.slash_command(name='ailock', description="Переключить AI-ответы для всех пользователей")
     @has_config_roles("admin", "st_admin")
