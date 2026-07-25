@@ -423,18 +423,18 @@ class CatcraftFM(commands.Cog):
         controls = disnake.ui.ActionRow(
             disnake.ui.Button(
                 style=disnake.ButtonStyle.secondary,
-                label="Предыдущий",
+                emoji="⏮️",
                 custom_id=self.PREVIOUS_BUTTON,
                 disabled=not self.navigator.history,
             ),
             disnake.ui.Button(
                 style=disnake.ButtonStyle.primary,
-                label="Следующий",
+                emoji="⏭️",
                 custom_id=self.NEXT_BUTTON,
             ),
             disnake.ui.Button(
                 style=disnake.ButtonStyle.secondary,
-                label="?",
+                emoji="❓",
                 custom_id=self.INFO_BUTTON,
             ),
         )
