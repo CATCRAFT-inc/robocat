@@ -80,12 +80,22 @@ def _fake_flags(saved_id: int | None = None):
     )
 
 
-async def test_now_playing_edits_saved_message(cog, monkeypatch):
+def _panel_channel(last_message_id: int | None = 42):
+    """Канал с панелью #42; last_message_id решает, редактировать или перевесить вниз."""
+    channel = MagicMock()
+    channel.last_message_id = last_message_id
+    channel.send = AsyncMock(return_value=MagicMock(id=99))
+    channel.get_partial_message = MagicMock(
+        return_value=SimpleNamespace(delete=AsyncMock())
+    )
+    return channel
+
+
+async def test_now_playing_edits_saved_message_while_it_is_last(cog, monkeypatch):
     saved_message = MagicMock(id=42)
     saved_message.edit = AsyncMock()
-    channel = MagicMock()
+    channel = _panel_channel(last_message_id=42)
     channel.fetch_message = AsyncMock(return_value=saved_message)
-    channel.send = AsyncMock()
     cog.channel = channel
     fake_flags = _fake_flags(42)
     monkeypatch.setattr("bot.handlers.catcraft_fm.flags", fake_flags)
@@ -95,12 +105,47 @@ async def test_now_playing_edits_saved_message(cog, monkeypatch):
     assert result is saved_message
     saved_message.edit.assert_awaited_once()
     channel.send.assert_not_awaited()
+    channel.get_partial_message.assert_not_called()
     fake_flags.setFlag.assert_not_awaited()
+
+
+async def test_panel_pushed_up_by_chat_is_deleted_and_reposted(cog, monkeypatch):
+    # после панели кто-то написал в чат — редактировать бесполезно, кнопки уехали вверх
+    channel = _panel_channel(last_message_id=77)
+    channel.fetch_message = AsyncMock()
+    cog.channel = channel
+    fake_flags = _fake_flags(42)
+    monkeypatch.setattr("bot.handlers.catcraft_fm.flags", fake_flags)
+
+    result = await cog._update_now_playing()
+
+    channel.get_partial_message.assert_called_once_with(42)
+    channel.get_partial_message.return_value.delete.assert_awaited_once()
+    channel.fetch_message.assert_not_awaited()  # лишний запрос сообщения не нужен
+    assert result.id == 99
+    assert cog.now_playing_message_id == 99
+    fake_flags.setFlag.assert_awaited_once_with(channel, "fm_now_playing_message", 99)
+
+
+async def test_failed_delete_still_reposts_panel(cog, monkeypatch):
+    # нет прав / сообщение уже снесли — новая панель обязана уйти всё равно
+    response = MagicMock(status=403, reason="Forbidden")
+    channel = _panel_channel(last_message_id=77)
+    channel.get_partial_message.return_value.delete = AsyncMock(
+        side_effect=disnake.Forbidden(response, "nope")
+    )
+    cog.channel = channel
+    monkeypatch.setattr("bot.handlers.catcraft_fm.flags", _fake_flags(42))
+
+    result = await cog._update_now_playing()
+
+    assert result.id == 99
+    channel.send.assert_awaited_once()
 
 
 async def test_missing_saved_message_is_recreated(cog, monkeypatch):
     response = MagicMock(status=404, reason="Not Found")
-    channel = MagicMock()
+    channel = _panel_channel(last_message_id=42)
     channel.fetch_message = AsyncMock(side_effect=disnake.NotFound(response, "gone"))
     replacement = MagicMock(id=99)
     channel.send = AsyncMock(return_value=replacement)

@@ -7,9 +7,11 @@ This milestone resolves #26.
 ## Now-playing message
 
 CatCraft FM maintains one Components V2 now-playing message. Its message ID is
-stored in SQLite on the FM voice channel. Each music-track change fetches and
-edits that message. If the flag is absent or the message was deleted or became
-inaccessible, the bot creates a replacement and stores its ID.
+stored in SQLite on the FM voice channel. Each music-track change updates that
+message: while the panel is still the channel's last message it is edited in
+place; once chat has pushed it up, the old panel is deleted and a new one is
+posted at the bottom (#28). If the flag is absent or the message was deleted or
+became inaccessible, the bot creates a replacement and stores its ID.
 
 Button interactions are accepted only from the currently stored message ID.
 Buttons on superseded messages are silently ignored.
