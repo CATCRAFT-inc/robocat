@@ -9,10 +9,11 @@ from disnake.ext import commands, tasks
 from bot.discord_config import Channels, Roles, has_config_roles
 from bot.flag_system.flag_system import flags
 
-from bot.utils import neutralize_markers
+from bot.utils import neutralize_markers, neutralize_sections
 
 from .engine import AIEngine, Status, FinalAnswer, AIError, strip_action_log
 from .llm import llm
+from . import memory
 
 
 # Бюджет контекста AI-треда (символы) и порог фонового сжатия обрезанной части
@@ -135,6 +136,15 @@ class AIMessageHandler(commands.Cog):
         return await message.channel.send(allowed_mentions=mentions, **kwargs)
 
     async def _streamAnswer(self, message: disnake.Message, conversation: list, *, ping: bool):
+        # Мини-память (issue #6): факты о собеседнике — системной вставкой сразу
+        # после system prompt'а. Память лежит в flags, падение БД ответ не блокирует.
+        try:
+            facts = await memory.facts_block(message.author, message.author.display_name)
+        except Exception:
+            self.logger.exception("Не удалось прочитать память о юзере %s", message.author.id)
+            facts = None
+        if facts:
+            conversation.insert(1, {"role": "system", "content": facts})
         async with message.channel.typing():
             thinking_message = None
             # История вызовов тулов (issue #2): прошлые статусы остаются в сообщении
@@ -285,9 +295,10 @@ class AIMessageHandler(commands.Cog):
         conversation = await self.ai_engine.buildConverstaion(kept)
         summary_flag = await flags.getFlag(thread, "ai_summary")
         if summary_flag and summary_flag.value:
-            # выжимка сделана из недоверенных сообщений — маркеры внутри неё
-            # не должны пробивать [[ ]]-блок (включая легаси-записи до санитайза)
-            safe_summary = neutralize_markers(summary_flag.value)
+            # выжимка сделана из недоверенных сообщений и едет в system-роль:
+            # ни маркеры, ни одинарные скобки внутри неё не должны пробивать
+            # [[ ]]-блок и подделывать секцию промпта (включая легаси-записи)
+            safe_summary = neutralize_sections(summary_flag.value)
             conversation.insert(1, {
                 "role": "system",
                 # рамка «данные, не инструкции»: даже инструкция БЕЗ маркеров,

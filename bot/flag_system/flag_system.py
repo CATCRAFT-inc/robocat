@@ -104,8 +104,11 @@ class Flags:
         except Exception:
             self.logger.exception("Не удалось записать флаг %s на (%s, %s)", flag, entity_type, entity_id)
             raise
-        # %.60s: значения флагов могут быть приватными — в лог целиком не пишем
-        self.logger.info("[FLAG SET] %s on (%s, %s) = %.60s", flag, entity_type, entity_id, value)
+        # Факты памяти — личные данные игроков (имена, возраст, контакты), в файловый
+        # лог на VDS им попадать нечего: пишем только имя флага. У остальных значение
+        # тоже может быть приватным, поэтому %.60s — целиком не пишем никогда.
+        logged = "<hidden>" if flag.startswith("fact:") else value
+        self.logger.info("[FLAG SET] %s on (%s, %s) = %.60s", flag, entity_type, entity_id, logged)
         return True
 
     async def incrementFlag(self, entity, flag: str, delta: int,

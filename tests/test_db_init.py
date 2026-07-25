@@ -5,7 +5,7 @@ from data.db_init import dbInit
 
 
 @pytest.mark.asyncio
-async def test_db_init_deletes_memory_and_legacy_quota_locks(tmp_path):
+async def test_db_init_deletes_legacy_quota_locks_but_keeps_memory(tmp_path):
     db_path = tmp_path / "robocat.sqlite"
     await dbInit(db_path)
     async with aiosqlite.connect(db_path) as db:
@@ -28,4 +28,5 @@ async def test_db_init_deletes_memory_and_legacy_quota_locks(tmp_path):
 
     async with aiosqlite.connect(db_path) as db:
         rows = await (await db.execute("SELECT flag FROM flags ORDER BY flag")).fetchall()
-    assert rows == [("left",)]
+    # факты памяти переживают инициализацию, легаси-таймер квоты — нет
+    assert rows == [("fact:123",), ("fact:456",), ("left",)]
