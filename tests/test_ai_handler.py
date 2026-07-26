@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -5,6 +6,9 @@ import disnake
 import pytest
 
 from bot.ai.handler import AIMessageHandler
+from bot.ai.engine import AIError
+from bot.discord_config import Channels, Users
+from bot.utils import component_text
 
 
 def make_member():
@@ -118,6 +122,94 @@ async def test_user_lock_slash_and_reply_commands_target_selected_user(monkeypat
 
     assert await test_flags.hasFlag(slash_target, "ai_chat_user_lock")
     assert await test_flags.hasFlag(reply_target, "ai_chat_user_lock")
+
+
+class _Typing:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_ai_error_reported_to_log_channel_with_detail(monkeypatch):
+    monkeypatch.setattr("bot.ai.handler.memory.facts_block", AsyncMock(return_value=None))
+    handler = object.__new__(AIMessageHandler)
+    handler.logger = logging.getLogger("test")
+    handler._send = AsyncMock()
+    handler._reportFailure = AsyncMock()
+
+    async def gen(*_a, **_k):
+        yield AIError("*гайки*", detail="RuntimeError: boom")
+
+    handler.ai_engine = SimpleNamespace(generateAnswer=gen)
+    message = SimpleNamespace(author=make_member(), channel=SimpleNamespace(typing=_Typing))
+
+    await handler._streamAnswer(message, [], ping=True)
+
+    handler._send.assert_awaited_once()
+    assert handler._send.await_args.kwargs["content"] == "*гайки*"
+    handler._reportFailure.assert_awaited_once_with(message, "RuntimeError: boom")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["mention", "thread"])
+async def test_unhandled_crash_reported_and_swallowed(monkeypatch, path):
+    handler = object.__new__(AIMessageHandler)
+    handler.logger = logging.getLogger("test")
+    handler._reportFailure = AsyncMock()
+    crash = AsyncMock(side_effect=RuntimeError("boom"))
+    if path == "thread":
+        monkeypatch.setattr(
+            "bot.ai.handler.flags",
+            SimpleNamespace(getFlag=AsyncMock(return_value=SimpleNamespace(value=1))),
+        )
+        handler._handleThreadMessage = crash
+        channel = Mock(spec=disnake.Thread)
+        channel.id = 1
+        handler.bot = SimpleNamespace(user=SimpleNamespace())
+    else:
+        handler._handleMention = crash
+        channel = SimpleNamespace(id=1)
+        handler.bot = SimpleNamespace(user=SimpleNamespace(mentioned_in=Mock(return_value=True)))
+    message = SimpleNamespace(
+        author=SimpleNamespace(bot=False),
+        content="привет",
+        guild=object(),
+        channel=channel,
+        reference=None,
+    )
+
+    await handler.robocatAI(message)  # не должен пробросить RuntimeError
+
+    handler._reportFailure.assert_awaited_once()
+    assert "RuntimeError: boom" in handler._reportFailure.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_report_failure_targets_discord_logs_and_swallows_send_error():
+    handler = object.__new__(AIMessageHandler)
+    handler.logger = logging.getLogger("test")
+    log_channel = SimpleNamespace(send=AsyncMock())
+    handler.bot = SimpleNamespace(get_channel=Mock(return_value=log_channel))
+    message = SimpleNamespace(
+        author=SimpleNamespace(mention="<@1>"),
+        channel=SimpleNamespace(mention="<#2>"),
+        jump_url="https://discord.com/x",
+    )
+
+    await handler._reportFailure(message, "TraceTail")
+
+    handler.bot.get_channel.assert_called_once_with(Channels.discord_logs)
+    log_channel.send.assert_awaited_once()
+    text = component_text([log_channel.send.await_args.kwargs["components"]])
+    assert f"<@{Users.szarkan}>" in text
+    assert "TraceTail" in text
+
+    # сбой отправки репорта не пробрасывается наружу
+    log_channel.send.side_effect = RuntimeError("fail")
+    await handler._reportFailure(message, "TraceTail")
 
 
 @pytest.mark.asyncio

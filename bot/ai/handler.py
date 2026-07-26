@@ -2,11 +2,12 @@ import asyncio
 import datetime
 import logging
 import re
+import traceback
 
 import disnake
 from disnake.ext import commands, tasks
 
-from bot.discord_config import Channels, Roles, has_config_roles
+from bot.discord_config import Channels, Roles, Users, has_config_roles
 from bot.flag_system.flag_system import flags
 
 from bot.utils import create_container, neutralize_markers, neutralize_sections
@@ -145,6 +146,24 @@ class AIMessageHandler(commands.Cog):
         # хвост новее — старые статусы дешевле потерять, чем уронить edit 400-кой
         return text[-1999:] if len(text) > 1999 else text
 
+    async def _reportFailure(self, message: disnake.Message, detail: str):
+        """Поломка ИИ-контура → пост в лог-канал. Сбой самого репорта глотаем:
+        он не должен добивать и без того сломавшийся ответ."""
+        try:
+            channel = self.bot.get_channel(Channels.discord_logs)
+            if channel is None:
+                return
+            detail = (detail or "?").strip()
+            await channel.send(components=create_container(
+                "💥 Поломка ИИ-контура",
+                f"<@{Users.szarkan}> {message.author.mention} в {message.channel.mention}\n"
+                f"{message.jump_url}\n"
+                # хвост трейсбека информативнее начала
+                f"```\n{detail[-900:]}\n```",
+            ))
+        except Exception:
+            self.logger.exception("Не удалось отправить репорт о поломке ИИ-контура")
+
     async def _send(self, message: disnake.Message, ping: bool, content: str | None = None, **kwargs):
         """Ответить на сообщение (с пингом) либо отправить в канал без пинга."""
         if ping:
@@ -219,6 +238,7 @@ class AIMessageHandler(commands.Cog):
                         await thinking_message.edit(text)
                     else:
                         await self._send(message, ping, content=text)
+                    await self._reportFailure(message, event.detail or event.content)
                     return
 
     @commands.Cog.listener("on_message")
@@ -236,7 +256,13 @@ class AIMessageHandler(commands.Cog):
         if isinstance(message.channel, disnake.Thread):
             ai_chat_flag = await flags.getFlag(message.channel, "ai_chat")
             if ai_chat_flag:
-                await self._handleThreadMessage(message)
+                # Необработанный raise = юзер остался вообще без ответа —
+                # репортим в лог-канал, а не только в файл
+                try:
+                    await self._handleThreadMessage(message)
+                except Exception:
+                    self.logger.exception("ИИ-контур упал в треде %s", message.channel.id)
+                    await self._reportFailure(message, traceback.format_exc())
                 return
 
         # Обычный режим: пинг или реплай на сообщение робокотика
@@ -244,7 +270,11 @@ class AIMessageHandler(commands.Cog):
         pinged = self.bot.user.mentioned_in(message)
         replied = isinstance(resolved, disnake.Message) and resolved.author == self.bot.user
         if pinged or replied:
-            await self._handleMention(message)
+            try:
+                await self._handleMention(message)
+            except Exception:
+                self.logger.exception("ИИ-контур упал на упоминании в %s", message.channel.id)
+                await self._reportFailure(message, traceback.format_exc())
 
     async def _handleMention(self, message: disnake.Message):
         # Метка для учёта токенов: всё, что этот таск позовёт у llm, запишется

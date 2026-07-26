@@ -92,6 +92,8 @@ class FinalAnswer:
 @dataclass
 class AIError:
     content: str
+    # Техподробности для лог-канала поломок; юзеру не показываются
+    detail: str | None = None
 
 @dataclass
 class Context:
@@ -677,19 +679,28 @@ class AIEngine(commands.Cog):
                     top_p=self.top_p,
                     require_vision=needs_vision,
                 )
-            except AIUnavailable:
-                yield AIError(f"*Пш-ш-ш-ш... Процессор робокотика перегрелся! Все линии заняты — попробуй поговорить с ним через <t:{int(datetime.now(timezone.utc).timestamp() + 60)}:R>*")
+            except AIUnavailable as e:
+                yield AIError(
+                    f"*Пш-ш-ш-ш... Процессор робокотика перегрелся! Все линии заняты — попробуй поговорить с ним через <t:{int(datetime.now(timezone.utc).timestamp() + 60)}:R>*",
+                    detail=f"AIUnavailable: {e}",
+                )
                 return
             except Exception as e:
                 self.logger.exception("Ошибка нейросети: %s", e)
-                yield AIError("😞 *У Робокотика полетели гайки...*")
+                yield AIError(
+                    "😞 *У Робокотика полетели гайки...*",
+                    detail=f"{type(e).__name__}: {e}",
+                )
                 return
 
             # Пустой choices (напр. сработал safety-фильтр вендора) — не роняем ответ
             # необработанным IndexError, а отдаём честную ошибку.
             if not response.choices:
                 self.logger.warning("LLM вернул пустой choices — вероятно, safety-фильтр вендора")
-                yield AIError("😞 *У Робокотика полетели гайки...*")
+                yield AIError(
+                    "😞 *У Робокотика полетели гайки...*",
+                    detail="LLM вернул пустой choices (вероятно, safety-фильтр вендора)",
+                )
                 return
 
             answer = response.choices[0].message

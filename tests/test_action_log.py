@@ -52,6 +52,7 @@ def handler():
         return fake
 
     inst._send = fake_send
+    inst._reportFailure = AsyncMock()  # репорт поломок в лог-канал — не предмет этих тестов
     return inst
 
 
