@@ -1,86 +1,67 @@
 # Robocat
 
+Discord bot of the CATCRAFT: Reborn Minecraft community — news, an AI assistant, 24/7 radio, tickets and moderation in one place.
+
+English · [Русский](README.ru.md) · [中文](README.zh.md)
+
 [![CI/CD](https://github.com/szarkans/robocat/actions/workflows/deploy.yml/badge.svg)](https://github.com/szarkans/robocat/actions)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
-Production Discord bot serving an online gaming community (~500 MAU).
-Built with `disnake`, `asyncio`, PostgreSQL, and a multi-provider LLM integration layer.
-Full development → containerization → CI/CD → production lifecycle.
+## What it does
 
-> Live deployment: [discord.gg/6f3FwFRJWC](https://discord.gg/6f3FwFRJWC)
+**News**
 
----
+- `/news` — news editor: modal form, ephemeral preview, publishing as rich (Components V2) posts; `/news_edit` reopens a published post for editing.
+- `/digest` — LLM-written digest of recent news.
+- VK repost — a manual gate: an editor reposts a published news item to the VK community with one click, media included.
 
-## Tech Stack
+**AI assistant**
 
-| Layer            | Technology                                                        |
-| ---------------- | ----------------------------------------------------------------- |
-| Runtime          | Python 3.12, `asyncio`                                            |
-| Discord client   | `disnake` (Components V2)                                         |
-| Database         | PostgreSQL (Supabase) · `asyncpg`                                 |
-| LLM integration  | Provider rotation: Groq, OpenRouter, Moonshot AI                  |
-| Containerization | Docker                                                            |
-| CI/CD            | GitHub Actions → SSH deploy                                       |
+- Answers when mentioned in channels; private AI threads via `/aichat` with rolling conversation compression.
+- Searches the server wiki through embeddings, falls back to free web search (SearXNG or DuckDuckGo).
+- Remembers facts about players, "watches" videos by sampling frames with ffmpeg, tracks token spend per source (`/aistats`).
 
-LLM models in rotation: Gemma 4 31B, Gemini Embeddings 004
-Available but not used: Llama 3.1 405B, Llama 3.3 70B Versatile, GPT-OSS 120B, DeepSeek V3, DeepSeek R1, Kimi K2.6.
+**CatCraft FM**
 
----
+- 24/7 radio in a voice channel with next/previous track voting and a supervisor that survives disconnects and restarts.
 
-## Features
+**Moderation & tickets**
 
-- **Flag system** — attach arbitrary metadata to any Discord object (channel, user, category, message or abstract).
-- **Ticket system** — administration contact, bug reports, in-game moderation appeals.
-- **AI Integration** — multi-provider rotation with fallback on rate limits. Chatbot with users + archivist for Minecraft server's wiki
-- **FAQ, utility, role selection, moderation commands**.
+- Admin tickets and bug reports with rate limiting.
+- Punishments, a honeypot channel that auto-mutes spam bots, role selection, player lookup.
 
----
+**Integrations**
 
-## Quick Start (local)
+- RCON commands to the Minecraft server.
+- VK (news reposts), SearXNG/DuckDuckGo (web search).
 
-```bash
-git clone https://github.com/szarkans/robocat.git
-cd robocat
+## How it works
 
-cp .env.example .env # Insert discord token and AI API keys
+A single `disnake` bot process; every feature is a cog loaded in `main.py`.
 
-python -m venv .venv
-pip install -r requirements.txt
-```
-
----
+- **Storage** — SQLite via `aiosqlite`. The core primitive is the flag system: arbitrary key/value flags attached to any Discord entity (user, channel, message, or abstract), used both for feature data and for runtime configuration.
+- **LLM layer** — all model calls go through `bot/ai/llm.py`, the single access point. Providers are OpenAI-compatible endpoints (Gemini, Groq, OpenRouter, …) configured in `data/ai_settings.yaml`; the layer rotates vendors with per-vendor cooldowns on errors and accounts tokens.
+- **Config** — Discord IDs (channels, roles, users) live in `data/discord.local.yml`, deliberately untracked: operators edit it on the server and apply with `/config-reload`, no restart needed.
 
 ## Deployment
 
-Production deploys are fully automated:
+Fully automated, no manual steps:
 
-1. `git push` to `master`
-2. GitHub Actions runner picks up the workflow in `.github/workflows/`
-3. Workflow deploys updated files to the production server via SSH
-4. Container is restarted with the new build
+1. Push to `master`.
+2. GitHub Actions runs the pytest gate.
+3. On green, the workflow deploys over SSH to the VDS: installs dependencies, checks out the exact commit SHA, runs `data/db_init.py`.
+4. The `robocat` systemd service is restarted, followed by a health check.
 
-No manual steps. Mean time from commit to production: 2–3 minutes.
+Rollback is a revert commit — it rides the same pipeline.
 
----
+## Community
 
-## Project Structure
+CATCRAFT: Reborn (Кошкокрафт) — a Russian-speaking Minecraft community.
 
-```
-robocat/
-├── bot/                    # cogs, handlers, services
-├── data/                   # schema, migrations, fixtures
-├── playground/             # experimental features, prototypes
-├── .github/workflows/      # CI/CD pipelines
-├── main.py                 # entry point
-├── requirements.txt
-└── .env.example
-```
-
----
+- Discord: [discord.gg/catcraftmc](https://discord.gg/catcraftmc) (direct invite: [discord.gg/6f3FwFRJWC](https://discord.gg/6f3FwFRJWC))
+- Telegram: [t.me/catcraftmc_tg](https://t.me/catcraftmc_tg)
 
 ## License
 
-AGPL-3.0 — see [LICENSE](LICENSE).
-
-Commercial use, modification, and distribution are permitted provided derivatives are released under the same license, including network-service deployments.
+AGPL-3.0 — see [LICENSE](LICENSE). Derivatives, including network-service deployments, must be released under the same license.
