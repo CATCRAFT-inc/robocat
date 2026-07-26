@@ -52,10 +52,19 @@ def test_enabled_without_required_env_returns_false(monkeypatch):
 
 
 def test_enabled_with_both_env_returns_true(monkeypatch):
-    # Наличие обоих секретов — единственное условие включения клиента.
+    # Валидный положительный id группы вместе с токеном включает клиент.
     _set_vk_env(monkeypatch)
 
     assert vk.enabled() is True
+
+
+@pytest.mark.parametrize("group_id", ["-123", "0", "abc"])
+def test_enabled_invalid_group_id_returns_false(monkeypatch, group_id):
+    # Минус, ноль и мусор не должны превращать групповой пост в личный.
+    monkeypatch.setenv("VK_USER_TOKEN", "token")
+    monkeypatch.setenv("VK_GROUP_ID", group_id)
+
+    assert vk.enabled() is False
 
 
 def test_post_url_with_group_env_returns_wall_link(monkeypatch):
@@ -63,6 +72,46 @@ def test_post_url_with_group_env_returns_wall_link(monkeypatch):
     _set_vk_env(monkeypatch)
 
     assert vk.post_url(456) == "https://vk.com/wall-123_456"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://cdn.discordapp.com/attachments/1/cat.png",
+        "https://example.com/cat.png",
+    ],
+)
+async def test_download_untrusted_url_raises_without_network(url):
+    # Проверка схемы и хоста обязана сработать до создания HTTP-сессии.
+    with pytest.raises(vk.VKError) as exc_info:
+        await vk.download(url)
+
+    assert exc_info.value.code == 0
+    assert "внешний URL пропущен" in exc_info.value.msg
+
+
+def test_discord_md_to_plain_overflow_timestamp_keeps_original():
+    # JS-миллисекунды не должны ронять конверсию всего сообщения.
+    raw = "<t:1753500000000:R>"
+
+    assert vk.discord_md_to_plain(raw) == raw
+
+
+def test_discord_md_to_plain_same_seed_returns_same_emoji():
+    # Превью и фактический пост с одним message.id обязаны совпадать.
+    raw = "<:cat:1> <a:cat:2> <:cat:3>"
+
+    first = vk.discord_md_to_plain(raw, seed=555)
+    second = vk.discord_md_to_plain(raw, seed=555)
+
+    assert first == second
+
+
+def test_discord_md_to_plain_code_placeholder_restores_once():
+    # Восстановленный код не должен повторно раскрывать похожий плейсхолдер.
+    marker = "\x00VKCODE1\x00"
+
+    assert vk.discord_md_to_plain(f"`{marker}` `код`") == f"{marker} код"
 
 
 async def test_vk_call_success_returns_response(monkeypatch):
@@ -310,7 +359,9 @@ async def test_post_to_group_attachments_returns_post_id(monkeypatch):
     post = AsyncMock(return_value={"response": {"post_id": 42}})
     monkeypatch.setattr(vk, "_post", post)
 
-    result = await vk.post_to_group("Текст", ["photo-1_2", "doc-1_3"])
+    result = await vk.post_to_group(
+        "Текст", ["photo-1_2", "doc-1_3"], guid="555"
+    )
 
     assert result == 42
     post.assert_awaited_once_with(
@@ -320,6 +371,7 @@ async def test_post_to_group_attachments_returns_post_id(monkeypatch):
             "from_group": 1,
             "message": "Текст",
             "attachments": "photo-1_2,doc-1_3",
+            "guid": "555",
             "access_token": "token",
             "v": "5.199",
         },

@@ -5,12 +5,15 @@ import os
 import random
 import re
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 
 logger = logging.getLogger("robocat.vk")
 
 API_BASE = "https://api.vk.com/method"
 API_VERSION = "5.199"
+_DOWNLOAD_HOSTS = ("cdn.discordapp.com", "media.discordapp.net")
+_MAX_DOWNLOAD = 50 * 2**20
 
 # Пул для замены кастомных Discord-эмодзи, правится тут.
 EMOJI_POOL = ("😺", "😸", "😹", "😻", "😼", "😽", "🙀", "🐱", "🐾", "❤️", "✨")
@@ -38,7 +41,13 @@ class VKError(Exception):
 
 def enabled() -> bool:
     """Вернуть True, когда настроены и токен, и группа ВК."""
-    return bool(os.getenv("VK_USER_TOKEN") and os.getenv("VK_GROUP_ID"))
+    group_id = os.getenv("VK_GROUP_ID", "")
+    return bool(
+        os.getenv("VK_USER_TOKEN")
+        and group_id.isascii()
+        and group_id.isdigit()
+        and int(group_id) > 0
+    )
 
 
 def _group_id() -> int:
@@ -75,23 +84,33 @@ async def _post(
             if response.status != 200:
                 logger.warning("ВК вернул HTTP %s", response.status)
                 raise VKError(response.status, f"HTTP {response.status}")
-            return await response.json()
+            return await response.json(content_type=None)
 
 
 async def download(url: str) -> tuple[bytes, str]:
     """Скачать внешнее вложение для последующей загрузки в ВК."""
+    # Галерейные URL приходят из вебхуков и модалки: произвольный серверный GET
+    # здесь был бы SSRF-поверхностью.
+    parsed = urlsplit(url)
+    host = parsed.hostname or ""
+    if parsed.scheme != "https" or host not in _DOWNLOAD_HOSTS:
+        raise VKError(0, f"внешний URL пропущен: {host}")
+
     import aiohttp  # транзитивная зависимость disnake, импорт остаётся ленивым
 
     timeout = aiohttp.ClientTimeout(total=300)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as response:
+        async with session.get(url, allow_redirects=False) as response:
+            if 300 <= response.status < 400:
+                logger.warning("Скачивание вложения вернуло редирект HTTP %s", response.status)
+                raise VKError(response.status, f"редирект HTTP {response.status}")
             if response.status != 200:
                 logger.warning("Скачивание вложения вернуло HTTP %s", response.status)
                 raise VKError(response.status, f"HTTP {response.status}")
-            return (
-                await response.read(),
-                response.content_type or "application/octet-stream",
-            )
+            data = await response.content.read(_MAX_DOWNLOAD + 1)
+            if len(data) > _MAX_DOWNLOAD:
+                raise VKError(0, "вложение больше 50 МиБ")
+            return data, response.content_type or "application/octet-stream"
 
 
 async def _vk_call(method: str, **params):
@@ -158,15 +177,22 @@ async def upload_attachment(data: bytes, filename: str, content_type: str) -> st
     return await _upload_doc(data, filename)
 
 
-async def post_to_group(text: str, attachments: list[str]) -> int:
+async def post_to_group(
+    text: str, attachments: list[str], guid: str | None = None
+) -> int:
     """Опубликовать запись от имени группы и вернуть id поста."""
     group_id = _group_id()
+    params = {
+        "owner_id": -group_id,
+        "from_group": 1,
+        "message": text,
+        "attachments": ",".join(attachments),
+    }
+    if guid is not None:
+        params["guid"] = guid
     result = await _vk_call(
         "wall.post",
-        owner_id=-group_id,
-        from_group=1,
-        message=text,
-        attachments=",".join(attachments),
+        **params,
     )
     return result["post_id"]
 
@@ -177,6 +203,7 @@ async def comment(post_id: int, text: str):
     params = {
         "owner_id": -group_id,
         "post_id": post_id,
+        # В wall.post from_group — флаг 1, здесь то же имя означает id сообщества.
         "from_group": group_id,
         "message": text,
     }
@@ -189,13 +216,26 @@ async def comment(post_id: int, text: str):
     return await _vk_call("wall.createComment", **params)
 
 
-def discord_md_to_plain(text: str) -> str:
+def discord_md_to_plain(text: str, *, seed=None) -> str:
     """Преобразовать поддерживаемую Discord-разметку в обычный текст."""
     code_parts: list[str] = []
+    choice = random.choice if seed is None else random.Random(seed).choice
 
     def stash_code(match: re.Match) -> str:
         code_parts.append(match.group(1))
         return f"\x00VKCODE{len(code_parts) - 1}\x00"
+
+    def timestamp(match: re.Match) -> str:
+        try:
+            return datetime.fromtimestamp(
+                int(match.group(1)), timezone(timedelta(hours=3))
+            ).strftime("%d.%m.%Y %H:%M")
+        except (ValueError, OverflowError, OSError):
+            return match.group(0)
+
+    def restore_code(match: re.Match) -> str:
+        index = int(match.group(1))
+        return code_parts[index] if index < len(code_parts) else match.group(0)
 
     text = re.sub(r"```[^\n`]*\n(.*?)```", stash_code, text, flags=re.DOTALL)
     text = re.sub(r"`([^`\n]+)`", stash_code, text)
@@ -206,14 +246,12 @@ def discord_md_to_plain(text: str) -> str:
     )
     text = re.sub(
         r"<a?:[A-Za-z0-9_]+:\d+>",
-        lambda _: random.choice(EMOJI_POOL),
+        lambda _: choice(EMOJI_POOL),
         text,
     )
     text = re.sub(
         r"<t:(\d+)(?::[^>]+)?>",
-        lambda match: datetime.fromtimestamp(
-            int(match.group(1)), timezone(timedelta(hours=3))
-        ).strftime("%d.%m.%Y %H:%M"),
+        timestamp,
         text,
     )
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
@@ -231,6 +269,5 @@ def discord_md_to_plain(text: str) -> str:
     text = re.sub(r"(?<!\w)_(\w(?:[^_\n]*\w)?)_(?!\w)", r"\1", text)
     text = re.sub(r"\n(?:[ \t]*\n){2,}", "\n\n", text)
 
-    for index, content in enumerate(code_parts):
-        text = text.replace(f"\x00VKCODE{index}\x00", content)
+    text = re.sub(r"\x00VKCODE(\d+)\x00", restore_code, text)
     return text.strip()
