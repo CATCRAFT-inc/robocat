@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import mimetypes
+import os
 import re
 from urllib.parse import unquote, urlsplit
 
@@ -17,7 +18,6 @@ from bot.utils import component_text
 logger = logging.getLogger("robocat.vkrepost")
 
 _COMMENT_TEXT = "http://discord.gg/catcraftmc\nhttp://t.me/catcraftmc_tg\n\n❤"
-_MAX_ATTACHMENTS = 10
 _PREVIEW_LIMIT = 3000
 _DETAILS_LIMIT = 300
 _ERROR_LIMIT = 300
@@ -33,6 +33,9 @@ class VKRepost(commands.Cog):
         self.bot = bot
         # In-flight живёт только до рестарта, но закрывает два быстрых клика.
         self._in_flight: set[str] = set()
+        self._published_urls: dict[str, str] = {}
+        if os.getenv("VK_USER_TOKEN") and not vk.enabled():
+            logger.warning("VK_GROUP_ID некорректен — ВК-репост выключен")
 
     @staticmethod
     def _gallery_urls(message) -> list[str]:
@@ -44,7 +47,9 @@ class VKRepost(commands.Cog):
             if isinstance(component, _GALLERY_TYPES):
                 for item in component.items:
                     media = getattr(item, "media", None)
-                    url = getattr(media, "url", None)
+                    url = getattr(media, "proxy_url", None) or getattr(
+                        media, "url", None
+                    )
                     if (
                         url
                         and not getattr(media, "attachment_id", None)
@@ -67,7 +72,7 @@ class VKRepost(commands.Cog):
 
         def role_name(match):
             role = guild.get_role(int(match.group(1))) if guild else None
-            return f"@{role.name}" if role else ""
+            return f"@{role.name}" if role else "@роль"
 
         text = re.sub(r"<@!?(\d+)>", user_name, text)
         text = re.sub(r"<#(\d+)>", channel_name, text)
@@ -75,11 +80,17 @@ class VKRepost(commands.Cog):
 
     def _message_text(self, message) -> str:
         body = component_text(message.components) or (message.content or "")
+        # Порядок обязателен: сначала вырезание сырой строки-роль-пинга,
+        # потом резолв.
         text = self._resolve_mentions(
             vk.discord_md_to_plain(body, seed=message.id),
             message.guild,
         )
-        if message.channel.id == Channels.newspaper and not message.author.bot:
+        if not text:
+            return ""
+        if message.channel.id == Channels.newspaper and (
+            not message.author.bot or message.webhook_id
+        ):
             return f"Пост от репортёра: {message.author.display_name}\n\n{text}"
         return text
 
@@ -94,17 +105,17 @@ class VKRepost(commands.Cog):
         if total:
             names = [
                 attachment.filename
-                for attachment in message.attachments[:_MAX_ATTACHMENTS]
+                for attachment in message.attachments[: vk.MAX_ATTACHMENTS]
             ]
-            gallery_slots = _MAX_ATTACHMENTS - len(names)
+            gallery_slots = vk.MAX_ATTACHMENTS - len(names)
             if gallery_count and gallery_slots:
                 names.append(
                     "картинок из MediaGallery: "
                     f"{min(gallery_count, gallery_slots)}"
                 )
-            overflow = max(0, total - _MAX_ATTACHMENTS)
+            overflow = max(0, total - vk.MAX_ATTACHMENTS)
             suffix = (
-                f" (+{overflow} не уедут: лимит ВК {_MAX_ATTACHMENTS})"
+                f" (+{overflow} не уедут: лимит ВК {vk.MAX_ATTACHMENTS})"
                 if overflow
                 else ""
             )
@@ -155,6 +166,8 @@ class VKRepost(commands.Cog):
         try:
             if not vk.enabled():
                 return
+            # Второй потребитель набора, см. bot/bot.py:on_message;
+            # расширение набора включит и ВК-гейт.
             if message.channel.id not in Channels.news_reaction_channels:
                 return
             if message.type not in (
@@ -179,65 +192,82 @@ class VKRepost(commands.Cog):
     @staticmethod
     def _error_text(error: Exception) -> str:
         if isinstance(error, vk.VKError):
-            text = f"{error.code}: {error.msg}"
+            friendly = {
+                6: "лимит запросов ВК — подожди минуту",
+                9: "флуд-контроль ВК — подожди",
+                14: "ВК требует капчу (токен под подозрением)",
+            }
+            text = f"{error.code}: {friendly.get(error.code, error.msg)}"
         else:
             text = str(error) or type(error).__name__
         if len(text) > _ERROR_LIMIT:
             return text[: _ERROR_LIMIT - 1].rstrip() + "…"
         return text
 
-    async def _upload_attachments(self, message) -> list[str]:
+    async def _upload_attachments(self, message) -> tuple[list[str], int]:
         gallery_urls = self._gallery_urls(message)
         total = len(message.attachments) + len(gallery_urls)
-        if total > _MAX_ATTACHMENTS:
+        if total > vk.MAX_ATTACHMENTS:
             logger.warning(
                 "У сообщения %s вложений %s, в ВК уйдут первые %s",
                 message.id,
                 total,
-                _MAX_ATTACHMENTS,
+                vk.MAX_ATTACHMENTS,
             )
 
         uploaded = []
-
-        async def upload(data, filename, content_type):
-            if uploaded:
-                await asyncio.sleep(0.35)
-            uploaded.append(
-                await vk.upload_attachment(data, filename, content_type)
-            )
+        skipped = 0
 
         for attachment in message.attachments:
-            if len(uploaded) == _MAX_ATTACHMENTS:
-                break
+            if len(uploaded) == vk.MAX_ATTACHMENTS:
+                skipped += 1
+                continue
+            if attachment.size > vk.MAX_UPLOAD:
+                skipped += 1
+                logger.warning(
+                    "Вложение %s сообщения %s больше лимита и пропущено",
+                    attachment.filename,
+                    message.id,
+                )
+                continue
             data = await attachment.read()
-            await upload(
-                data,
-                attachment.filename,
-                attachment.content_type or "application/octet-stream",
+            uploaded.append(
+                await vk.upload_attachment(
+                    data,
+                    attachment.filename,
+                    attachment.content_type or "application/octet-stream",
+                )
             )
         for url in gallery_urls:
-            if len(uploaded) == _MAX_ATTACHMENTS:
-                break
+            if len(uploaded) == vk.MAX_ATTACHMENTS:
+                skipped += 1
+                continue
             try:
                 data, content_type = await vk.download(url)
             except vk.VKError as error:
-                if error.msg.startswith("внешний URL пропущен:"):
-                    logger.warning(
-                        "Внешнее вложение сообщения %s пропущено: %s",
-                        message.id,
-                        error.msg,
-                    )
-                    continue
-                raise
+                skipped += 1
+                logger.warning(
+                    "Внешнее вложение сообщения %s пропущено: %s",
+                    message.id,
+                    error.msg,
+                )
+                continue
             filename = unquote(urlsplit(url).path.rsplit("/", 1)[-1]) or "image.jpg"
-            if "." not in filename:
+            if "." not in filename or not filename.rpartition(".")[2]:
                 extension = mimetypes.guess_extension(
                     content_type.split(";", 1)[0]
                 )
                 if extension:
                     filename += extension
-            await upload(data, filename, content_type)
-        return uploaded
+            uploaded.append(await vk.upload_attachment(data, filename, content_type))
+        return uploaded, skipped
+
+    @staticmethod
+    def _source_url(inter, channel_id: int, message_id: int) -> str:
+        return (
+            f"https://discord.com/channels/{inter.guild_id}/"
+            f"{channel_id}/{message_id}"
+        )
 
     async def _restore_failure(
         self,
@@ -246,68 +276,129 @@ class VKRepost(commands.Cog):
         message_id: int,
         error: Exception,
     ):
+        source_url = self._source_url(inter, channel_id, message_id)
         components = [
             disnake.ui.TextDisplay(
                 f"❌ Не получилось: {self._error_text(error)}. "
-                "Возможно, пост уже ушёл — проверь стену."
+                f"Возможно, пост уже ушёл — проверь стену. {source_url}"
             ),
             self._buttons(channel_id, message_id),
         ]
-        await inter.edit_original_response(components=components)
+        await inter.edit_original_response(
+            components=components,
+            allowed_mentions=disnake.AllowedMentions.none(),
+        )
 
-    async def _post(self, inter, channel_id: int, message_id: int):
+    async def _post(
+        self,
+        inter,
+        channel_id: int,
+        message_id: int,
+        publish_key: str,
+    ) -> str | None:
+        source_url = self._source_url(inter, channel_id, message_id)
         try:
-            channel = self.bot.get_channel(channel_id)
-            if channel is None:
-                channel = await self.bot.fetch_channel(channel_id)
-            message = await channel.fetch_message(message_id)
+            async with asyncio.timeout(600):
+                channel = self.bot.get_channel(channel_id)
+                if channel is None:
+                    channel = await self.bot.fetch_channel(channel_id)
+                message = await channel.fetch_message(message_id)
+
+                if (
+                    message.edited_at
+                    and inter.message
+                    and (inter.message.edited_at or inter.message.created_at)
+                    and message.edited_at
+                    > (inter.message.edited_at or inter.message.created_at)
+                ):
+                    await inter.edit_original_response(
+                        components=[
+                            disnake.ui.TextDisplay(
+                                "⚠️ Пост изменили после пинга — проверь ещё раз."
+                            ),
+                            *self._gate_components(message),
+                        ],
+                        allowed_mentions=disnake.AllowedMentions(
+                            users=[disnake.Object(id=Users.szarkan)],
+                            everyone=False,
+                            roles=False,
+                        ),
+                    )
+                    return None
+
+                text = self._message_text(message)
+                attachments, skipped = await self._upload_attachments(message)
+                if not text.strip() and not attachments:
+                    await inter.edit_original_response(
+                        components=[
+                            disnake.ui.TextDisplay(
+                                f"❌ Пусто — нечего постить. {source_url}"
+                            )
+                        ],
+                        allowed_mentions=disnake.AllowedMentions.none(),
+                    )
+                    return None
+                post_id = await vk.post_to_group(
+                    text, attachments, guid=str(message_id)
+                )
+                url = vk.post_url(post_id)
+                self._published_urls[publish_key] = url
         except (disnake.NotFound, disnake.Forbidden):
             await inter.edit_original_response(
                 components=[
-                    disnake.ui.TextDisplay("❌ Оригинал не найден (удалили?)")
-                ]
+                    disnake.ui.TextDisplay(
+                        f"❌ Оригинал не найден (удалили?). {source_url}"
+                    ),
+                    self._buttons(channel_id, message_id),
+                ],
+                allowed_mentions=disnake.AllowedMentions.none(),
             )
-            return
+            return None
         except Exception as error:
-            logger.exception("Не удалось получить сообщение %s:%s", channel_id, message_id)
+            logger.exception(
+                "Не удалось подготовить сообщение %s:%s для ВК",
+                channel_id,
+                message_id,
+            )
             await self._restore_failure(inter, channel_id, message_id, error)
-            return
+            return None
+
+        skipped_suffix = (
+            f" (пропущено вложений: {skipped})" if skipped else ""
+        )
+        success_text = f"✅ Запощено: {url}{skipped_suffix}"
 
         try:
-            text = self._message_text(message)
-            attachments = await self._upload_attachments(message)
-            if not text.strip() and not attachments:
-                await inter.edit_original_response(
-                    components=[
-                        disnake.ui.TextDisplay("❌ Пусто — нечего постить.")
-                    ]
-                )
-                return
-            post_id = await vk.post_to_group(
-                text, attachments, guid=str(message_id)
-            )
-            url = vk.post_url(post_id)
-        except Exception as error:
-            logger.exception("Не удалось отправить сообщение %s в ВК", message.id)
-            await self._restore_failure(inter, channel_id, message_id, error)
-            return
-
-        try:
-            await vk.comment(post_id, _COMMENT_TEXT)
+            await vk.comment(post_id, _COMMENT_TEXT, guid=f"c{message_id}")
         except Exception as error:
             logger.exception("Пост %s вышел, но комментарий ВК не отправлен", post_id)
-            await inter.edit_original_response(
-                components=[
-                    disnake.ui.TextDisplay(
-                        f"✅ Запощено: {url}, но коммент не ушёл: "
-                        f"{self._error_text(error)}"
-                    )
-                ]
+            result_text = (
+                f"{success_text}, но коммент не ушёл: {self._error_text(error)}"
             )
-            return
-        await inter.edit_original_response(
-            components=[disnake.ui.TextDisplay(f"✅ Запощено: {url}")]
-        )
+            try:
+                await inter.edit_original_response(
+                    components=[disnake.ui.TextDisplay(result_text)],
+                    allowed_mentions=disnake.AllowedMentions.none(),
+                )
+            except Exception:
+                logger.exception("Не удалось обновить опубликованный ВК-гейт %s", post_id)
+                try:
+                    await inter.channel.send(f"{result_text} (гейт не обновился)")
+                except Exception:
+                    pass
+            return url
+
+        try:
+            await inter.edit_original_response(
+                components=[disnake.ui.TextDisplay(success_text)]
+            )
+        except Exception:
+            logger.exception("Не удалось обновить опубликованный ВК-гейт %s", post_id)
+            try:
+                await inter.channel.send(f"{success_text} (гейт не обновился)")
+            except Exception:
+                pass
+        return url
 
     @commands.Cog.listener("on_button_click")
     async def vkButtons(self, inter: disnake.MessageInteraction):
@@ -321,9 +412,32 @@ class VKRepost(commands.Cog):
             return
 
         action, _, raw_ids = cid.partition(":")
+        raw_channel_id, separator, raw_message_id = raw_ids.partition(":")
+        if (
+            not separator
+            or not raw_channel_id.isascii()
+            or not raw_message_id.isascii()
+            or not raw_channel_id.isdigit()
+            or not raw_message_id.isdigit()
+        ):
+            logger.warning("Некорректный custom_id ВК: %s", cid)
+            await inter.response.edit_message(
+                components=[
+                    disnake.ui.TextDisplay("❌ Некорректная кнопка ВК.")
+                ],
+                allowed_mentions=disnake.AllowedMentions.none(),
+            )
+            return
+        channel_id = int(raw_channel_id)
+        message_id = int(raw_message_id)
+        source_url = self._source_url(inter, channel_id, message_id)
+
         if action == "VKDROP":
             await inter.response.edit_message(
-                components=[disnake.ui.TextDisplay("❌ Отклонено.")]
+                components=[
+                    disnake.ui.TextDisplay(f"❌ Отклонено. {source_url}")
+                ],
+                allowed_mentions=disnake.AllowedMentions.none(),
             )
             return
 
@@ -331,9 +445,11 @@ class VKRepost(commands.Cog):
             await inter.response.edit_message(
                 components=[
                     disnake.ui.TextDisplay(
-                        "❌ ВК выключен (нет VK_USER_TOKEN/VK_GROUP_ID)."
+                        "❌ ВК выключен (нет VK_USER_TOKEN/VK_GROUP_ID). "
+                        f"{source_url}"
                     )
-                ]
+                ],
+                allowed_mentions=disnake.AllowedMentions.none(),
             )
             return
 
@@ -341,47 +457,50 @@ class VKRepost(commands.Cog):
             await inter.response.send_message("Уже пощу — секунду.", ephemeral=True)
             return
         self._in_flight.add(cid)
+        publish_key = f"{channel_id}:{message_id}"
+        published_url = None
         try:
             await inter.response.edit_message(
-                components=[disnake.ui.TextDisplay("⏳ Пощу в ВК...")]
-            )
-            channel_id = message_id = None
-            try:
-                raw_channel_id, separator, raw_message_id = raw_ids.partition(":")
-                if (
-                    not separator
-                    or not raw_channel_id.isascii()
-                    or not raw_message_id.isascii()
-                    or not raw_channel_id.isdigit()
-                    or not raw_message_id.isdigit()
-                ):
-                    logger.warning("Некорректный custom_id ВК: %s", cid)
-                    await inter.edit_original_response(
-                        components=[
-                            disnake.ui.TextDisplay(
-                                "❌ Некорректная кнопка ВК."
-                            )
-                        ]
+                components=[
+                    disnake.ui.TextDisplay(
+                        f"⏳ Пощу в ВК... {source_url}"
                     )
-                    return
-                channel_id = int(raw_channel_id)
-                message_id = int(raw_message_id)
-                await self._post(inter, channel_id, message_id)
+                ]
+            )
+            try:
+                published_url = await self._post(
+                    inter,
+                    channel_id,
+                    message_id,
+                    publish_key,
+                )
             except Exception as error:
                 logger.exception("Не удалось обработать кнопку ВК %s", cid)
+                published_url = (
+                    published_url or self._published_urls.get(publish_key)
+                )
                 try:
-                    components = [
-                        disnake.ui.TextDisplay(
-                            f"❌ Не получилось: {self._error_text(error)}"
+                    if published_url:
+                        await inter.channel.send(
+                            f"✅ Запощено: {published_url} "
+                            "(гейт не обновился)"
                         )
-                    ]
-                    if channel_id is not None and message_id is not None:
-                        components.append(self._buttons(channel_id, message_id))
-                    await inter.edit_original_response(components=components)
+                    else:
+                        await inter.edit_original_response(
+                            components=[
+                                disnake.ui.TextDisplay(
+                                    "❌ Не получилось: "
+                                    f"{self._error_text(error)}. {source_url}"
+                                ),
+                                self._buttons(channel_id, message_id),
+                            ],
+                            allowed_mentions=disnake.AllowedMentions.none(),
+                        )
                 except Exception:
                     pass
         finally:
             self._in_flight.discard(cid)
+            self._published_urls.pop(publish_key, None)
 
 
 def setup(bot: commands.Bot):

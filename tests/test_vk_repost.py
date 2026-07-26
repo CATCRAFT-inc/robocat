@@ -1,9 +1,11 @@
 """Тесты ручного гейта перепоста Discord → ВК (issue #32)."""
 
-import asyncio
+import logging
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import disnake
+import pytest
 
 from bot import vk
 from bot.discord_config import Channels, Users
@@ -29,10 +31,15 @@ def _message(
     message.content = text
     message.components = components or []
     message.attachments = attachments or []
+    for attachment in message.attachments:
+        if not isinstance(attachment.size, int):
+            attachment.size = 1
     message.author.display_name = "Рыжий кот"
     message.author.bot = False
+    message.webhook_id = None
     message.type = disnake.MessageType.default
     message.jump_url = "https://discord.test/channels/1/2/555"
+    message.edited_at = None
     message.guild = MagicMock()
     message.guild.get_member.return_value = None
     message.guild.get_channel.return_value = None
@@ -47,6 +54,10 @@ def _interaction(custom_id, *, author_id=Users.szarkan):
     inter.response.send_message = AsyncMock()
     inter.response.edit_message = AsyncMock()
     inter.edit_original_response = AsyncMock()
+    inter.guild_id = 999
+    inter.message.created_at = datetime(2026, 7, 26, tzinfo=timezone.utc)
+    inter.message.edited_at = None
+    inter.channel.send = AsyncMock()
     return inter
 
 
@@ -82,8 +93,21 @@ def _patch_vk(monkeypatch, *, post_id=77, comment_error=None):
     monkeypatch.setattr(vk, "comment", comment)
     monkeypatch.setattr(vk, "download", download)
     monkeypatch.setattr(vk, "post_url", lambda value: f"https://vk.test/{value}")
-    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
     return upload, post, comment, download
+
+
+def test_cog_invalid_group_with_token_logs_disabled_warning(
+    monkeypatch,
+    caplog,
+):
+    # Ошибка конфигурации должна быть видна один раз при загрузке кога.
+    monkeypatch.setenv("VK_USER_TOKEN", "token")
+    monkeypatch.setenv("VK_GROUP_ID", "-123")
+
+    with caplog.at_level(logging.WARNING, logger="robocat.vkrepost"):
+        _cog()
+
+    assert "VK_GROUP_ID некорректен" in caplog.text
 
 
 async def test_gate_newspaper_message_sends_header_ping_and_buttons(monkeypatch):
@@ -126,7 +150,7 @@ async def test_gate_announcements_message_omits_reporter_header(monkeypatch):
 
 
 async def test_gate_bot_newspaper_message_omits_reporter_header(monkeypatch):
-    # /news и вебхуки не должны подписываться именем Робокотика как репортёра.
+    # Голый /news-бот не должен подписываться именем Робокотика как репортёра.
     monkeypatch.setattr(vk, "enabled", lambda: True)
     message = _message(channel_id=Channels.newspaper)
     message.author.bot = True
@@ -138,6 +162,24 @@ async def test_gate_bot_newspaper_message_omits_reporter_header(monkeypatch):
     await cog.vkGate(message)
 
     assert "Пост от репортёра" not in "\n".join(
+        _texts(secret.send.await_args.kwargs["components"])
+    )
+
+
+async def test_gate_webhook_newspaper_message_includes_reporter_header(monkeypatch):
+    # Имя вебхука в газете — это имя репортёра, его шапка должна сохраниться.
+    monkeypatch.setattr(vk, "enabled", lambda: True)
+    message = _message(channel_id=Channels.newspaper)
+    message.author.bot = True
+    message.webhook_id = 123
+    cog = _cog()
+    secret = MagicMock()
+    secret.send = AsyncMock()
+    cog.bot.get_channel.return_value = secret
+
+    await cog.vkGate(message)
+
+    assert "Пост от репортёра: Рыжий кот" in "\n".join(
         _texts(secret.send.await_args.kwargs["components"])
     )
 
@@ -256,6 +298,16 @@ def test_message_text_reporter_header_keeps_display_name_markup():
     )
 
 
+def test_resolve_mentions_missing_role_keeps_placeholder():
+    # Неизвестная роль в середине предложения не должна молча исчезать.
+    guild = MagicMock()
+    guild.get_role.return_value = None
+
+    assert _cog()._resolve_mentions("Зовём <@&123> сюда", guild) == (
+        "Зовём @роль сюда"
+    )
+
+
 async def test_gate_human_role_ping_line_is_removed(monkeypatch):
     # Сырой content сохраняет роль-пинг до Markdown-чистки, чтобы строка исчезла.
     monkeypatch.setattr(vk, "enabled", lambda: True)
@@ -310,6 +362,33 @@ async def test_gate_long_attachment_names_fit_details_budget(monkeypatch):
     assert "(+2 не уедут: лимит ВК 10)" in details
 
 
+async def test_gate_long_preview_truncates_and_sends(monkeypatch):
+    # Текст длиннее бюджета должен обрезаться до 3000, а не гасить весь гейт.
+    monkeypatch.setattr(vk, "enabled", lambda: True)
+    cog = _cog()
+    secret = MagicMock()
+    secret.send = AsyncMock()
+    cog.bot.get_channel.return_value = secret
+
+    await cog.vkGate(_message(text="x" * 4000))
+
+    previews = [
+        text
+        for text in _texts(secret.send.await_args.kwargs["components"])
+        if text.startswith("x")
+    ]
+    assert len(previews[0]) == 3000
+    assert previews[0].endswith("…")
+
+
+def test_news_reaction_channels_exact_pair_guards_vk_scope():
+    # Расширение набора молча включит ВК-репост — прими решение осознанно.
+    assert Channels.news_reaction_channels == (
+        Channels.announcements,
+        Channels.newspaper,
+    )
+
+
 async def test_buttons_foreign_user_denies_without_vk_calls(monkeypatch):
     # Чужой пользователь не должен суметь ни опубликовать, ни отклонить пост.
     upload, post, comment, download = _patch_vk(monkeypatch)
@@ -355,7 +434,9 @@ async def test_vkpost_unicode_digit_custom_id_reports_error(monkeypatch):
 
     await cog.vkButtons(inter)
 
-    final = "\n".join(_texts(inter.edit_original_response.await_args.kwargs["components"]))
+    final = "\n".join(
+        _texts(inter.response.edit_message.await_args.kwargs["components"])
+    )
     assert "Некорректная кнопка" in final
 
 
@@ -376,6 +457,9 @@ async def test_vkpost_attachment_posts_comments_and_shows_link(monkeypatch):
     await cog.vkButtons(inter)
 
     inter.response.edit_message.assert_awaited_once()
+    assert "https://discord.com/channels/999" in "\n".join(
+        _texts(inter.response.edit_message.await_args.kwargs["components"])
+    )
     upload.assert_awaited_once_with(b"image", "cat.png", "image/png")
     post.assert_awaited_once_with(
         "Новость дня", ["photo-1_2"], guid="555"
@@ -383,6 +467,7 @@ async def test_vkpost_attachment_posts_comments_and_shows_link(monkeypatch):
     comment.assert_awaited_once_with(
         77,
         "http://discord.gg/catcraftmc\nhttp://t.me/catcraftmc_tg\n\n❤",
+        guid="c555",
     )
     final = "\n".join(_texts(inter.edit_original_response.await_args.kwargs["components"]))
     assert "✅ Запощено: https://vk.test/77" in final
@@ -411,6 +496,25 @@ async def test_vkpost_empty_message_reports_without_post(monkeypatch):
     post.assert_not_awaited()
     comment.assert_not_awaited()
     download.assert_not_awaited()
+
+
+async def test_vkpost_empty_newspaper_message_reports_without_post(monkeypatch):
+    # Шапка репортёра не должна превращать стикер без текста в непустой пост.
+    message = _message(channel_id=Channels.newspaper, text="")
+    channel = MagicMock()
+    channel.fetch_message = AsyncMock(return_value=message)
+    cog = _cog()
+    cog.bot.get_channel.return_value = channel
+    _, post, _, _ = _patch_vk(monkeypatch)
+    inter = _interaction(f"VKPOST:{Channels.newspaper}:555")
+
+    await cog.vkButtons(inter)
+
+    final = "\n".join(
+        _texts(inter.edit_original_response.await_args.kwargs["components"])
+    )
+    assert "Пусто" in final
+    post.assert_not_awaited()
 
 
 async def test_vkpost_gallery_downloads_url_and_uploads_basename(monkeypatch):
@@ -457,9 +561,9 @@ async def test_vkpost_gallery_without_extension_adds_mime_extension(monkeypatch)
 async def test_vkpost_external_gallery_url_skips_attachment_and_posts_text(
     monkeypatch,
 ):
-    # SSRF-отказ отдельной галереи не должен отменять безопасный текстовый пост.
+    # Протухший CDN URL не должен отменять безопасный текстовый пост.
     gallery = disnake.ui.MediaGallery(
-        disnake.MediaGalleryItem("https://example.com/cat.png")
+        disnake.MediaGalleryItem("https://cdn.discordapp.com/cat.png")
     )
     message = _message(
         components=[disnake.ui.Container(gallery)],
@@ -470,15 +574,17 @@ async def test_vkpost_external_gallery_url_skips_attachment_and_posts_text(
     cog = _cog()
     cog.bot.get_channel.return_value = channel
     upload, post, _, download = _patch_vk(monkeypatch)
-    download.side_effect = vk.VKError(
-        0, "внешний URL пропущен: example.com"
-    )
+    download.side_effect = vk.VKError(404, "HTTP 404")
     inter = _interaction(f"VKPOST:{Channels.announcements}:555")
 
     await cog.vkButtons(inter)
 
     upload.assert_not_awaited()
     post.assert_awaited_once_with("Новость", [], guid="555")
+    final = "\n".join(
+        _texts(inter.edit_original_response.await_args.kwargs["components"])
+    )
+    assert "(пропущено вложений: 1)" in final
 
 
 def test_gallery_urls_duplicate_and_attachment_backed_returns_unique(
@@ -492,10 +598,23 @@ def test_gallery_urls_duplicate_and_attachment_backed_returns_unique(
 
     duplicate = "https://cdn.discordapp.com/news/cat.png"
     gallery = Gallery(
-        MagicMock(media=MagicMock(url=duplicate, attachment_id=None)),
-        MagicMock(media=MagicMock(url=duplicate, attachment_id=None)),
         MagicMock(
             media=MagicMock(
+                proxy_url=None,
+                url=duplicate,
+                attachment_id=None,
+            )
+        ),
+        MagicMock(
+            media=MagicMock(
+                proxy_url=None,
+                url=duplicate,
+                attachment_id=None,
+            )
+        ),
+        MagicMock(
+            media=MagicMock(
+                proxy_url=None,
                 url="https://cdn.discordapp.com/news/attached.png",
                 attachment_id=123,
             )
@@ -504,6 +623,51 @@ def test_gallery_urls_duplicate_and_attachment_backed_returns_unique(
     monkeypatch.setattr(vk_repost, "_GALLERY_TYPES", (Gallery,))
 
     assert _cog()._gallery_urls(_message(components=[gallery])) == [duplicate]
+
+
+def test_gallery_urls_proxy_url_preferred_over_source_url(monkeypatch):
+    # Внешняя картинка должна идти через разрешённый Discord media proxy.
+    class Gallery:
+        def __init__(self, item):
+            self.items = [item]
+            self.children = []
+
+    media = MagicMock(
+        proxy_url="https://media.discordapp.net/proxy/cat.png",
+        url="https://example.com/cat.png",
+        attachment_id=None,
+    )
+    monkeypatch.setattr(vk_repost, "_GALLERY_TYPES", (Gallery,))
+
+    assert _cog()._gallery_urls(
+        _message(components=[Gallery(MagicMock(media=media))])
+    ) == ["https://media.discordapp.net/proxy/cat.png"]
+
+
+async def test_vkpost_oversized_attachment_skips_before_read(monkeypatch):
+    # Большой Discord-файл нельзя целиком читать в RAM до проверки лимита.
+    attachment = MagicMock()
+    attachment.filename = "huge.mp4"
+    attachment.content_type = "video/mp4"
+    attachment.size = vk.MAX_UPLOAD + 1
+    attachment.read = AsyncMock(return_value=b"too large")
+    message = _message(attachments=[attachment])
+    channel = MagicMock()
+    channel.fetch_message = AsyncMock(return_value=message)
+    cog = _cog()
+    cog.bot.get_channel.return_value = channel
+    upload, post, _, _ = _patch_vk(monkeypatch)
+    inter = _interaction(f"VKPOST:{Channels.announcements}:555")
+
+    await cog.vkButtons(inter)
+
+    attachment.read.assert_not_awaited()
+    upload.assert_not_awaited()
+    post.assert_awaited_once_with("Новость дня", [], guid="555")
+    final = "\n".join(
+        _texts(inter.edit_original_response.await_args.kwargs["components"])
+    )
+    assert "(пропущено вложений: 1)" in final
 
 
 async def test_vkpost_missing_original_reports_without_vk_calls(monkeypatch):
@@ -522,6 +686,10 @@ async def test_vkpost_missing_original_reports_without_vk_calls(monkeypatch):
 
     final = "\n".join(_texts(inter.edit_original_response.await_args.kwargs["components"]))
     assert "не найден" in final
+    assert "https://discord.com/channels/999" in final
+    assert len(
+        _buttons(inter.edit_original_response.await_args.kwargs["components"])
+    ) == 2
     upload.assert_not_awaited()
     post.assert_not_awaited()
     comment.assert_not_awaited()
@@ -545,6 +713,49 @@ async def test_vkpost_channel_cache_miss_fetches_channel(monkeypatch):
     post.assert_awaited_once()
 
 
+async def test_vkpost_edited_after_gate_rerenders_without_vk_calls(monkeypatch):
+    # Аппрув должен относиться к тем байтам, которые реально публикуются.
+    message = _message()
+    channel = MagicMock()
+    channel.fetch_message = AsyncMock(return_value=message)
+    cog = _cog()
+    cog.bot.get_channel.return_value = channel
+    upload, post, comment, download = _patch_vk(monkeypatch)
+    inter = _interaction(f"VKPOST:{Channels.announcements}:555")
+    message.edited_at = inter.message.created_at + timedelta(seconds=1)
+
+    await cog.vkButtons(inter)
+
+    components = inter.edit_original_response.await_args.kwargs["components"]
+    assert "⚠️ Пост изменили после пинга" in "\n".join(_texts(components))
+    assert len(_buttons(components)) == 2
+    assert "allowed_mentions" in inter.edit_original_response.await_args.kwargs
+    upload.assert_not_awaited()
+    post.assert_not_awaited()
+    comment.assert_not_awaited()
+    download.assert_not_awaited()
+
+
+async def test_vkpost_second_click_after_rerender_posts(monkeypatch):
+    # Время редактирования гейта должно разрешить повторный осознанный аппрув.
+    message = _message()
+    channel = MagicMock()
+    channel.fetch_message = AsyncMock(return_value=message)
+    cog = _cog()
+    cog.bot.get_channel.return_value = channel
+    _, post, _, _ = _patch_vk(monkeypatch)
+    first = _interaction(f"VKPOST:{Channels.announcements}:555")
+    message.edited_at = first.message.created_at + timedelta(seconds=1)
+
+    await cog.vkButtons(first)
+
+    second = _interaction(f"VKPOST:{Channels.announcements}:555")
+    second.message.edited_at = message.edited_at + timedelta(seconds=1)
+    await cog.vkButtons(second)
+
+    post.assert_awaited_once_with("Новость дня", [], guid="555")
+
+
 async def test_vkpost_post_error_restores_retry_buttons(monkeypatch):
     # Сбой до создания поста обязан вернуть кнопки, чтобы повторный клик был ретраем.
     message = _message()
@@ -564,6 +775,7 @@ async def test_vkpost_post_error_restores_retry_buttons(monkeypatch):
     assert "проверь стену" in final
     assert "Новость дня" not in final
     assert len(_buttons(components)) == 2
+    assert "allowed_mentions" in inter.edit_original_response.await_args.kwargs
     upload.assert_not_awaited()
     comment.assert_not_awaited()
 
@@ -613,6 +825,68 @@ async def test_vkpost_comment_error_keeps_success_without_buttons(monkeypatch):
     assert not _buttons(components)
     post.assert_awaited_once()
     comment.assert_awaited_once()
+
+
+async def test_vkpost_comment_error_reports_skipped_attachments(monkeypatch):
+    # Счётчик скипов не должен теряться в ветке ошибки комментария.
+    attachment = MagicMock()
+    attachment.filename = "huge.bin"
+    attachment.content_type = "application/octet-stream"
+    attachment.size = vk.MAX_UPLOAD + 1
+    attachment.read = AsyncMock()
+    message = _message(attachments=[attachment])
+    channel = MagicMock()
+    channel.fetch_message = AsyncMock(return_value=message)
+    cog = _cog()
+    cog.bot.get_channel.return_value = channel
+    _patch_vk(monkeypatch, comment_error=vk.VKError(222, "forbidden"))
+    inter = _interaction(f"VKPOST:{Channels.announcements}:555")
+
+    await cog.vkButtons(inter)
+
+    final = "\n".join(
+        _texts(inter.edit_original_response.await_args.kwargs["components"])
+    )
+    assert "(пропущено вложений: 1)" in final
+    assert "коммент не ушёл" in final
+
+
+async def test_vkpost_success_edit_failure_sends_channel_notice_without_buttons(
+    monkeypatch,
+):
+    # После wall.post сбой обновления гейта не должен возвращать опасный ретрай.
+    message = _message()
+    channel = MagicMock()
+    channel.fetch_message = AsyncMock(return_value=message)
+    cog = _cog()
+    cog.bot.get_channel.return_value = channel
+    _patch_vk(monkeypatch)
+    inter = _interaction(f"VKPOST:{Channels.announcements}:555")
+    inter.edit_original_response.side_effect = disnake.HTTPException(
+        MagicMock(status=500), "boom"
+    )
+
+    await cog.vkButtons(inter)
+
+    inter.channel.send.assert_awaited_once_with(
+        "✅ Запощено: https://vk.test/77 (гейт не обновился)"
+    )
+    assert not _buttons(
+        inter.response.edit_message.await_args.kwargs["components"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        (6, "6: лимит запросов ВК — подожди минуту"),
+        (9, "9: флуд-контроль ВК — подожди"),
+        (14, "14: ВК требует капчу (токен под подозрением)"),
+    ],
+)
+def test_error_text_known_vk_code_returns_friendly_message(code, expected):
+    # Частые ошибки ВК должны объяснять администратору следующий шаг.
+    assert _cog()._error_text(vk.VKError(code, "raw")) == expected
 
 
 async def test_vkpost_double_click_in_flight_denies_second_post(monkeypatch):
@@ -670,4 +944,3 @@ async def test_vkpost_eleven_attachments_uploads_only_ten(monkeypatch):
     assert upload.await_count == 10
     assert attachments[10].read.await_count == 0
     assert len(post.await_args.args[1]) == 10
-    assert asyncio.sleep.await_count == 9

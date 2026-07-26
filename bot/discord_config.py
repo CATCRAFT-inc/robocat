@@ -20,6 +20,7 @@ EXAMPLE_PATH = ROOT / "data" / "discord.example.yml"
 LOCAL_PATH = ROOT / "data" / "discord.local.yml"
 
 _DERIVED = {
+    # Второй потребитель — ВК-гейт; расширение набора включит и перепост в ВК.
     ("channels", "news_reaction_channels"): ("announcements", "newspaper"),
     (
         "channels",
