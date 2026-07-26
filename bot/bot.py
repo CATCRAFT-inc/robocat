@@ -62,12 +62,37 @@ bot = MainGuildBot(
 )
 
 _greeted = False  # «Я тут!» — только на первый ready: reconnect-ready дёргается постоянно
+_lag_watchdog_task = None
+
+# Порог: интеракциям Discord даётся 3с на ответ; лаг лупа >1.5с — уже половина бюджета.
+_LAG_THRESHOLD = 1.5
+
+
+async def _loop_lag_watchdog():
+    """Ловит затыки event loop (инцидент 25-26.07.2026: кнопки по всему серверу
+    опаздывали к 3с-дедлайну). sleep(5) проснулся заметно позже — луп был занят;
+    loadavg в той же строке отличает блокировку в процессе от голода CPU хоста."""
+    while True:
+        started = time.monotonic()
+        await asyncio.sleep(5)
+        drift = time.monotonic() - started - 5
+        if drift > _LAG_THRESHOLD:
+            # на Windows (дев-запуск) getloadavg нет
+            load1, load5, load15 = (
+                os.getloadavg() if hasattr(os, "getloadavg") else (0.0, 0.0, 0.0)
+            )
+            logger.warning(
+                "Event loop опоздал на %.2fс (loadavg %.2f %.2f %.2f)",
+                drift, load1, load5, load15,
+            )
 
 
 @bot.event
 async def on_ready():
     logger.info("Бот готов: залогинен как %s (id=%s)", bot.user, bot.user.id)
-    global _greeted
+    global _greeted, _lag_watchdog_task
+    if _lag_watchdog_task is None:
+        _lag_watchdog_task = asyncio.create_task(_loop_lag_watchdog())
     if _greeted:
         return
     _greeted = True

@@ -32,6 +32,13 @@ def setup_logger():
 
     logger.addHandler(file)
 
+    # Диагностика disnake («Heartbeat blocked» = завис event loop, rate limit,
+    # reconnect) шла только в stderr и терялась в journald из-за буферизации —
+    # инцидент 25-26.07.2026 расследовали вслепую.
+    disnake_logger = logging.getLogger("disnake")
+    disnake_logger.setLevel(logging.WARNING)
+    disnake_logger.addHandler(file)
+
 def load_extension():
     extensions = [
         ### Slash commands

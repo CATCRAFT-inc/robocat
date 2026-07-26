@@ -179,6 +179,21 @@ async def test_buttons_unicode_digit_reports_lost_draft():
     inter.response.edit_message.assert_awaited_once()
 
 
+async def test_failed_publish_ack_restores_draft():
+    # Упавший ack «⏳ Публикую...» не должен безвозвратно съедать черновик
+    # (инцидент 26.07.2026: интеракции перехватывал второй инстанс бота).
+    cog = _cog()
+    draft = _draft()
+    cog.drafts[1] = draft
+    inter = _button_inter("NEWS_PUB:1")
+    inter.response.edit_message.side_effect = disnake.HTTPException(MagicMock(status=404), "Unknown interaction")
+
+    with pytest.raises(disnake.HTTPException):
+        await cog.newsButtons(inter)
+
+    assert cog.drafts[1] is draft
+
+
 async def test_cancel_deletes_draft():
     cog = _cog()
     cog.drafts[1] = _draft()

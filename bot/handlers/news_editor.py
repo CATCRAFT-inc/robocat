@@ -310,7 +310,14 @@ class NewsEditor(commands.Cog):
             )
             return
         # публикация с реакциями занимает >3с — сначала отвечаем на интеракцию
-        await inter.response.edit_message(components=[disnake.ui.TextDisplay("⏳ Публикую...")])
+        try:
+            await inter.response.edit_message(components=[disnake.ui.TextDisplay("⏳ Публикую...")])
+        except disnake.HTTPException:
+            # ack не доставлен (интеракция протухла или её перехватил другой
+            # инстанс — инцидент 26.07.2026): черновик уже вынут из словаря,
+            # без возврата он терялся безвозвратно
+            self.drafts[draft_id] = draft
+            raise
         container = _news_container(draft)
         mentions = disnake.AllowedMentions(
             everyone=False, users=False,
