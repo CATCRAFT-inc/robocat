@@ -166,6 +166,8 @@ CLAUDE.md
 AGENTS.md
 CLAUDE.local.md
 STATUS.md
+docs/pre-pr-gate.md
+docs/review-angles.md
 notify_failure.py
 /data/seasons
 data/ai_vendors.json
