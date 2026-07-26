@@ -54,6 +54,7 @@ def load_extension():
         "handlers.honeypot",      # Ловушка для ботов
         "handlers.digest",        # /digest — выжимка новостей
         "handlers.news_editor",   # /news — редактор новостей
+        "handlers.vk_repost",     # ручной гейт перепоста новостей в ВК
 
         ### AI
         "ai.handler",
