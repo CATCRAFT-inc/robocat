@@ -46,6 +46,8 @@ _FAKE_ENV = {
     "OR": "x",
     "GHM": "x",
     "DS": "x",
+    "VK_USER_TOKEN": "",
+    "VK_GROUP_ID": "",
     "RCON_HOST": "",
     "RCON_PASSWORD": "",
 }

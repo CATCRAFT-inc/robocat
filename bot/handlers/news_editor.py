@@ -270,7 +270,7 @@ class NewsEditor(commands.Cog):
             await inter.response.send_message("Только для админов.", ephemeral=True)
             return
         action, _, raw_id = cid.partition(":")
-        draft_id = int(raw_id) if raw_id.isdigit() else -1
+        draft_id = int(raw_id) if raw_id.isascii() and raw_id.isdigit() else -1
         draft = self.drafts.get(draft_id)
         if draft is None:
             await inter.response.edit_message(

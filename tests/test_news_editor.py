@@ -169,6 +169,16 @@ async def test_lost_draft_reports_and_no_publish():
     inter.response.edit_message.assert_awaited_once()
 
 
+async def test_buttons_unicode_digit_reports_lost_draft():
+    # Unicode-цифра проходит isdigit(), но не должна ронять int().
+    cog = _cog()
+    inter = _button_inter("NEWS_PUB:²")
+
+    await cog.newsButtons(inter)
+
+    inter.response.edit_message.assert_awaited_once()
+
+
 async def test_cancel_deletes_draft():
     cog = _cog()
     cog.drafts[1] = _draft()
