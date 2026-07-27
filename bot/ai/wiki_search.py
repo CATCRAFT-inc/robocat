@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -16,14 +17,19 @@ class WikiSearcher:
             self._index = json.loads(self._index_file.read_text(encoding="utf-8"))
         return self._index
 
-    async def search(self, query: str, top_k: int = 5) -> list[dict]:
-        query_vec = await embed(query)
-        scored = sorted(
+    def _rank(self, query_vec: list[float], top_k: int) -> list[dict]:
+        return sorted(
             self.index,
             key=lambda c: cosine(query_vec, c["vector"]),
             reverse=True,
-        )
-        return scored[:top_k]
+        )[:top_k]
+
+    async def search(self, query: str, top_k: int = 5) -> list[dict]:
+        query_vec = await embed(query)
+        # Парсинг 9.5 МБ json (первый вызов) + косинусы по всем чанкам — секунды
+        # чистого CPU на однокоядерном VDS; в event loop это замораживало весь бот,
+        # и интеракции по всему серверу опаздывали к 3-секундному дедлайну Discord.
+        return await asyncio.to_thread(self._rank, query_vec, top_k)
 
     def build_context(self, results: list[dict]) -> str:
         """Контекст для LLM вставляется в системный промпт или user message.
