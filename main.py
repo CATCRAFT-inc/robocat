@@ -59,6 +59,7 @@ def load_extension():
         "handlers.idiot_check",
         "handlers.rcon",          # RCON команды
         "handlers.honeypot",      # Ловушка для ботов
+        "handlers.get_a_job",     # кнопка «Посмотреть доступные вакансии»
         "handlers.digest",        # /digest — выжимка новостей
         "handlers.news_editor",   # /news — редактор новостей
         "handlers.vk_repost",     # ручной гейт перепоста новостей в ВК

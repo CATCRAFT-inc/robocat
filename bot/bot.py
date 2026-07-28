@@ -3,6 +3,7 @@ import re
 import asyncio
 import logging
 import random
+import sys
 import time
 
 import disnake
@@ -117,8 +118,36 @@ async def on_slash_command_error(inter: disnake.ApplicationCommandInteraction, e
 
 @bot.event
 async def on_error(event, *args, **kwargs):
-    """Пишет необработанные исключения из listeners в bot.log (дефолт disnake печатает только в stderr)."""
-    logger.exception("Необработанная ошибка в событии %s", event)
+    """Пишет необработанные исключения из listeners в bot.log (дефолт disnake печатает только в stderr).
+
+    К записи добавляется возраст интеракции и разбор кодов 40060/10062 — без них
+    инцидент со вторым инстансом (25-28.07.2026) читался как «затык event loop»
+    и лечился не в том слое."""
+    logger.exception("Необработанная ошибка в событии %s%s", event, _interaction_hint(args))
+
+
+def _interaction_hint(args) -> str:
+    """Диагностический хвост к записи об ошибке: возраст интеракции и код отказа.
+
+    Возраст меряется по снежинке (время создания интеракции у Discord) — он
+    отделяет «мы отвечали слишком долго» от «ответ отверг Discord сразу»:
+    - 10062 при возрасте <3с и 40060 в любом виде = интеракцию подтвердил
+      кто-то другой, то есть боевым токеном залогинен ВТОРОЙ процесс;
+    - 10062 при возрасте >3с = мы действительно не уложились в дедлайн.
+    """
+    inter = next((a for a in args if isinstance(a, disnake.Interaction)), None)
+    if inter is None:
+        return ""
+    age = (disnake.utils.utcnow() - inter.created_at).total_seconds()
+    tail = f" (интеракция {inter.id}, возраст {age:.2f}с)"
+    error = sys.exc_info()[1]
+    code = getattr(error, "code", None)
+    if code == 40060 or (code == 10062 and age < 3):
+        tail += (
+            " — интеракцию подтвердил не мы: почти наверняка вторым инстансом"
+            " запущен боевой токен, см. .claude/rules/local-run.md"
+        )
+    return tail
 
 @bot.listen()
 async def on_message(message: disnake.Message):
