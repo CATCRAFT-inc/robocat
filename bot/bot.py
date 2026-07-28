@@ -123,7 +123,11 @@ async def on_error(event, *args, **kwargs):
     К записи добавляется возраст интеракции и разбор кодов 40060/10062 — без них
     инцидент со вторым инстансом (25-28.07.2026) читался как «затык event loop»
     и лечился не в том слое."""
-    logger.exception("Необработанная ошибка в событии %s%s", event, _interaction_hint(args))
+    try:
+        hint = _interaction_hint(args)
+    except Exception:  # диагностика не имеет права съесть саму запись об ошибке
+        hint = ""
+    logger.exception("Необработанная ошибка в событии %s%s", event, hint)
 
 
 def _interaction_hint(args) -> str:
