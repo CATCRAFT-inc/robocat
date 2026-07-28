@@ -135,9 +135,13 @@ def _interaction_hint(args) -> str:
 
     Возраст меряется по снежинке (время создания интеракции у Discord) — он
     отделяет «мы отвечали слишком долго» от «ответ отверг Discord сразу»:
-    - 10062 при возрасте <3с и 40060 в любом виде = интеракцию подтвердил
-      кто-то другой, то есть боевым токеном залогинен ВТОРОЙ процесс;
+    - 10062 при возрасте <3с и 40060 в любом виде = интеракцию подтвердили
+      раньше нас, наш собственный дедлайн ни при чём;
     - 10062 при возрасте >3с = мы действительно не уложились в дедлайн.
+
+    `send_message` заворачивает 10062 в `InteractionTimedOut` и теряет `code`,
+    а `send_modal`/`edit_message` бросают голый `NotFound` — ловим оба вида,
+    иначе половина отказов молча теряет диагноз.
     """
     inter = next((a for a in args if isinstance(a, disnake.Interaction)), None)
     if inter is None:
@@ -145,11 +149,12 @@ def _interaction_hint(args) -> str:
     age = (disnake.utils.utcnow() - inter.created_at).total_seconds()
     tail = f" (интеракция {inter.id}, возраст {age:.2f}с)"
     error = sys.exc_info()[1]
-    code = getattr(error, "code", None)
+    code = 10062 if isinstance(error, disnake.InteractionTimedOut) else getattr(error, "code", None)
     if code == 40060 or (code == 10062 and age < 3):
         tail += (
-            " — интеракцию подтвердил не мы: почти наверняка вторым инстансом"
-            " запущен боевой токен, см. .claude/rules/local-run.md"
+            " — подтвердили не мы. Кандидата два: второй процесс с боевым"
+            " токеном или два листенера на один custom_id внутри процесса;"
+            " как различить — docs/tasks/28.07-buttons/notes.md"
         )
     return tail
 

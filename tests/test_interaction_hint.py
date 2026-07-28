@@ -38,13 +38,23 @@ def test_hint_reports_interaction_age():
     assert "возраст 5.0" in _hint_for(10062, 5.0)
 
 
-def test_hint_blames_second_instance_on_already_acknowledged():
-    assert "инстанс" in _hint_for(40060, 0.5)
+def test_hint_names_foreign_ack_on_already_acknowledged():
+    assert "подтвердили не мы" in _hint_for(40060, 0.5)
 
 
-def test_hint_blames_second_instance_on_fast_unknown_interaction():
-    assert "инстанс" in _hint_for(10062, 0.5)
+def test_hint_names_foreign_ack_on_fast_unknown_interaction():
+    assert "подтвердили не мы" in _hint_for(10062, 0.5)
 
 
-def test_hint_keeps_silent_about_instance_when_deadline_really_missed():
-    assert "инстанс" not in _hint_for(10062, 4.0)
+def test_hint_names_foreign_ack_when_disnake_hides_code_in_timed_out():
+    """`send_message` отдаёт InteractionTimedOut без `code` — по нему одному
+    быстрый 10062 не отличить, поэтому тип ловим отдельно."""
+    inter = _interaction(0.5)
+    try:
+        raise disnake.InteractionTimedOut(inter)
+    except disnake.InteractionTimedOut:
+        assert "подтвердили не мы" in bot_module._interaction_hint((inter,))
+
+
+def test_hint_keeps_silent_about_foreign_ack_when_deadline_really_missed():
+    assert "подтвердили не мы" not in _hint_for(10062, 4.0)
