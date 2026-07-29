@@ -3,6 +3,7 @@ import re
 import asyncio
 import logging
 import random
+import sys
 import time
 
 import disnake
@@ -117,8 +118,45 @@ async def on_slash_command_error(inter: disnake.ApplicationCommandInteraction, e
 
 @bot.event
 async def on_error(event, *args, **kwargs):
-    """Пишет необработанные исключения из listeners в bot.log (дефолт disnake печатает только в stderr)."""
-    logger.exception("Необработанная ошибка в событии %s", event)
+    """Пишет необработанные исключения из listeners в bot.log (дефолт disnake печатает только в stderr).
+
+    К записи добавляется возраст интеракции и разбор кодов 40060/10062 — без них
+    инцидент со вторым инстансом (25-28.07.2026) читался как «затык event loop»
+    и лечился не в том слое."""
+    try:
+        hint = _interaction_hint(args)
+    except Exception:  # диагностика не имеет права съесть саму запись об ошибке
+        hint = ""
+    logger.exception("Необработанная ошибка в событии %s%s", event, hint)
+
+
+def _interaction_hint(args) -> str:
+    """Диагностический хвост к записи об ошибке: возраст интеракции и код отказа.
+
+    Возраст меряется по снежинке (время создания интеракции у Discord) — он
+    отделяет «мы отвечали слишком долго» от «ответ отверг Discord сразу»:
+    - 10062 при возрасте <3с и 40060 в любом виде = интеракцию подтвердили
+      раньше нас, наш собственный дедлайн ни при чём;
+    - 10062 при возрасте >3с = мы действительно не уложились в дедлайн.
+
+    `send_message` заворачивает 10062 в `InteractionTimedOut` и теряет `code`,
+    а `send_modal`/`edit_message` бросают голый `NotFound` — ловим оба вида,
+    иначе половина отказов молча теряет диагноз.
+    """
+    inter = next((a for a in args if isinstance(a, disnake.Interaction)), None)
+    if inter is None:
+        return ""
+    age = (disnake.utils.utcnow() - inter.created_at).total_seconds()
+    tail = f" (интеракция {inter.id}, возраст {age:.2f}с)"
+    error = sys.exc_info()[1]
+    code = 10062 if isinstance(error, disnake.InteractionTimedOut) else getattr(error, "code", None)
+    if code == 40060 or (code == 10062 and age < 3):
+        tail += (
+            " — подтвердили не мы. Кандидата два: второй процесс с боевым"
+            " токеном или два листенера на один custom_id внутри процесса;"
+            " как различить — docs/tasks/28.07-buttons/notes.md"
+        )
+    return tail
 
 @bot.listen()
 async def on_message(message: disnake.Message):
