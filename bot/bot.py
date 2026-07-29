@@ -152,9 +152,11 @@ def _interaction_hint(args) -> str:
     code = 10062 if isinstance(error, disnake.InteractionTimedOut) else getattr(error, "code", None)
     if code == 40060 or (code == 10062 and age < 3):
         tail += (
-            " — подтвердили не мы. Кандидата два: второй процесс с боевым"
-            " токеном или два листенера на один custom_id внутри процесса;"
-            " как различить — docs/tasks/28.07-buttons/notes.md"
+            " — подтвердили не мы. Кандидаты: боевой токен вписан в сторонний"
+            " сервис (прецедент 29.07 — конструктор эмбедов держал свою"
+            " gateway-сессию и молча ACKал клики), второй процесс бота, два"
+            " листенера на один custom_id; разбор —"
+            " docs/tasks/28.07-buttons/notes.md"
         )
     return tail
 
