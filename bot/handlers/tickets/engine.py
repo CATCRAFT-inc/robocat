@@ -250,8 +250,11 @@ class TicketEngine(commands.Cog):
         match inter.resolved_values[0]:
             case "TICKET_ADMIN":
                 await inter.response.send_modal(AdminTicket.AdminTicketModal())
+            # TODO(ОПК): пункт убран из меню (storage.choose_help_ticket), ветка живёт
+            # ради старых сообщений с закешированным селектом — заменить на реальный
+            # тикет к Ордену Помощи Крестов вместе с раскомментированием пункта.
             case "TICKET_POLICE":
-                await inter.send(components=create_container("## КСБ пока что нет!", "Сезон-то не начался, хех!"), ephemeral=True)
+                await inter.send(components=create_container("## ОПК пока что нет!", "Сезон-то не начался, хех!"), ephemeral=True)
             case "TICKET_BUGREPORT":
                 if await bug_rate_limit_ok(inter):
                     await inter.response.send_modal(BugHandler.BugModal())

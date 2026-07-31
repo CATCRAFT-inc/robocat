@@ -120,14 +120,17 @@ class Embeds:
             disnake.ui.Separator(),
             disnake.ui.TextDisplay(f"\n### <:admin:{Emojis.admin}> Связь с админами\nОтправить жалобу админам на игроков или связаться с админами по разным вопросам"),
             disnake.ui.Separator(),
-            disnake.ui.TextDisplay(f"\n### <:ksb_chief:{Emojis.ksb_chief}> Жалоба в КСБ\nЖалоба в Кошачью Службу Безопасности, если кто-то нарушил закон и нужна справедливость"),
-            disnake.ui.Separator(),
+            # TODO(ОПК): раскомментировать к старту сезона — Ордена Помощи Крестов
+            # пока нет, пункт убран из меню 31.07.2026 по просьбе Андрея.
+            # disnake.ui.TextDisplay(f"\n### <:ksb_chief:{Emojis.ksb_chief}> Жалоба к ОПК\nЖалоба в Орден Помощи Крестов, если кто-то нарушил закон и нужна справедливость"),
+            # disnake.ui.Separator(),
             disnake.ui.TextDisplay(f"\n### :broken_heart:  Баг-репорт\nЕсли нашёл баг, но правильное место для этого - <#{Channels.bugs}>"),
             disnake.ui.ActionRow(
                 disnake.ui.StringSelect(
                     options=[
                         disnake.SelectOption(label="Связь с админами", description="Жалоба на игроков или в целом", value="TICKET_ADMIN"),
-                        disnake.SelectOption(label="Жалоба в КСБ", description="Жалоба на нарушение законов", value="TICKET_POLICE"),
+                        # TODO(ОПК): раскомментировать вместе с блоком описания выше
+                        # disnake.SelectOption(label="Жалоба к ОПК", description="Жалоба на нарушение законов", value="TICKET_POLICE"),
                         disnake.SelectOption(label="Баг-репорт", description="Заявить о баге", value="TICKET_BUGREPORT")
                     ],
                     custom_id="CHOOSE_TICKET"
