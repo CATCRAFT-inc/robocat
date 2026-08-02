@@ -133,7 +133,7 @@ class FAQ(commands.Cog):
             ),
             disnake.ui.Separator(),
             disnake.ui.TextDisplay(
-                'Они указаны на [этой странице](<https://wiki.catcraftmc.ru/info/rules/rules#%D0%B7%D0%B0%D0%BF%D0%BE%D0%B2%D0%B5%D0%B4%D0%B8-%D0%B6%D0%B8%D0%B7%D0%BD%D0%B8>), проверяй актуальный список там.\n'
+                'Они указаны на [этой странице](<https://wiki.catcraft.ru/info/rules/rules), проверяй актуальный список там.\n'
                 '\n'
                 '- Любой вид мини-карт\n'
                 '- Любой вид авто-кликеров\n'
@@ -153,7 +153,7 @@ class FAQ(commands.Cog):
     @commands.command(name='карта', aliases=['map', 'онлайнкарта', 'rfhnf'], description="Ссылка на онлайн-карту")
     async def map_faq(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
-            disnake.ui.TextDisplay('### Онлайн-карта сервера\n<https://map.catcraftmc.ru>')
+            disnake.ui.TextDisplay('### Онлайн-карта сервера\n<https://map.catcraft.ru>')
         ))
 
     @commands.command(name='вики', aliases=['wiki', 'dbrb'], description="Ссылка на Вики")
@@ -194,7 +194,7 @@ class FAQ(commands.Cog):
             disnake.ui.TextDisplay('### Пожалуйста, прочитай Вики!'),
             disnake.ui.Separator(),
             disnake.ui.TextDisplay(
-                'Ответ на твой вопрос есть [на нашей Вики](<https://wiki.catcraftmc.ru>)!\n'
+                'Ответ на твой вопрос есть [на нашей Вики](<https://wiki.catcraft.ru>)!\n'
                 'Лучше ведь потратить 5 минут на прочтение, чем ждать 5 минут **каждый раз** в ожидании вопроса.'
             )
         ))
