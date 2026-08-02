@@ -231,6 +231,61 @@ async def test_refresh_clears_brief_when_there_is_no_news(cog, monkeypatch):
     assert digest.news_brief() == ""
 
 
+# Дословный выхлоп gemma с прода 02.08.2026 (флаг abstract/news_brief после
+# первого живого прогона цикла) — 870 символов, из них 180 болтовни.
+_LIVE_SUMMARY = """Мур-мяу! Я всё внимательно изучил и сохранил в свою память, \
+чтобы всегда быть полезным котиком! 🐾 Вот краткая справка о текущем состоянии \
+Кошкокрафта:
+
+*   Запущен новый сезон CATCRAFT Reborn с обновлением механик (до 31 июля).
+*   Введена новая валюта «Мурки» (получаемая через продажу ресурсов НПС), \
+предмет «Кошелек» и система передачи денег через Котоматы.
+*   Добавлены почтовый блок, почтовый колокольчик и НПС Курьер.
+
+Теперь я готов помогать тебе, как настоящий верный помощник! Мяу! 😺✨"""
+
+
+def test_keep_facts_only_strips_model_chatter():
+    facts = digest._keep_facts_only(_LIVE_SUMMARY)
+    assert "Мур-мяу" not in facts
+    assert "готов помогать" not in facts
+    assert facts.count("\n") == 2  # ровно три пункта, без пустых строк
+    assert "Мурки" in facts and "Котоматы" in facts and "Курьер" in facts
+    assert len(facts) < len(_LIVE_SUMMARY)
+
+
+def test_keep_facts_only_returns_text_when_there_is_no_list():
+    # Лучше болтливая справка, чем пустая: модель могла ответить абзацем
+    plain = "На сервере запущен 8 сезон, добавлены мурки."
+    assert digest._keep_facts_only(plain) == plain
+
+
+async def test_cached_brief_is_cleaned_too(cog, monkeypatch):
+    # Во флаге лежит сводка, записанная версией без фильтра — без повторной
+    # чистки она доживала бы в промпте до истечения TTL
+    cached = MagicMock()
+    cached.value = _LIVE_SUMMARY
+    cached.expires_at = int(time.time()) + 3600
+    _flags(monkeypatch, cached=cached)
+
+    await cog.refresh_brief()
+
+    assert "Мур-мяу" not in digest.news_brief()
+    assert "Мурки" in digest.news_brief()
+
+
+async def test_refresh_stores_only_the_facts(cog, monkeypatch):
+    _, put = _flags(monkeypatch)
+    monkeypatch.setattr(digest, "collect_news", AsyncMock(return_value=["новость"]))
+    monkeypatch.setattr(digest.llm, "ask", AsyncMock(return_value=_LIVE_SUMMARY))
+
+    await cog.refresh_brief()
+
+    assert "Мур-мяу" not in digest.news_brief()
+    assert "Мурки" in digest.news_brief()
+    assert "Мур-мяу" not in put.await_args.args[2]
+
+
 async def test_refresh_caps_summary_length(cog, monkeypatch):
     _flags(monkeypatch)
     monkeypatch.setattr(digest, "collect_news", AsyncMock(return_value=["новость"]))

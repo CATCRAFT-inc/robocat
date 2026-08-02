@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -60,6 +61,23 @@ class NewsUnavailable(RuntimeError):
     Отдельный класс нужен, чтобы отличить «новостей за период не было» от
     «мы не смогли посмотреть»: у этих двух случаев противоположная реакция.
     """
+
+
+def _keep_facts_only(summary: str) -> str:
+    """Оставить только пункты списка, выкинув болтовню модели вокруг них.
+
+    Инструкции «без приветствий» недостаточно: на живом прогоне 02.08 gemma
+    выдала «Мур-мяу! Я всё внимательно изучил…» плюс «Теперь я готов помогать!»
+    — 180 символов из 900, то есть болтовня вытесняла факты из бюджета блока.
+    Просить модель бесполезно, срезаем сами. Если списка не оказалось вовсе —
+    отдаём как есть: лучше болтливая справка, чем пустая.
+    """
+    bullets = [
+        line.strip()
+        for line in summary.splitlines()
+        if re.match(r"\s*[-*•—]\s+\S", line)
+    ]
+    return "\n".join(bullets) if bullets else summary.strip()
 
 
 def news_brief() -> str:
@@ -220,7 +238,10 @@ class Digest(commands.Cog):
             # ни квоту LLM, ни лимиты истории Discord на каждом деплое.
             # Возраст восстанавливаем из TTL флага: иначе поднятая после
             # рестарта сводка выглядела бы только что созданной.
-            _brief = cached.value or ""
+            # Фильтр и здесь, а не только на записи: во флаге может лежать
+            # сводка, записанная версией без него (02.08 — ровно этот случай),
+            # и без повторной чистки она доживала бы во флаге до истечения TTL
+            _brief = _keep_facts_only(cached.value or "")
             ttl = parse_duration(_BRIEF_TTL) or 0
             _brief_at = (cached.expires_at - ttl) if cached.expires_at else time.time()
             return
@@ -248,7 +269,9 @@ class Digest(commands.Cog):
             logger.exception("Не удалось сжать сводку новостей")
             return
 
-        summary = (summary or "").strip()[:_BRIEF_MAX_CHARS]
+        # Сначала срезаем болтовню, потом капим: иначе приветствие занимает
+        # место фактов, а обрезка по 900 символов рубит последний пункт
+        summary = _keep_facts_only(summary or "")[:_BRIEF_MAX_CHARS]
         if not summary:
             logger.warning("Модель вернула пустую сводку новостей — оставляю прошлую")
             return
