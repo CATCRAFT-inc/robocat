@@ -54,6 +54,7 @@ def load_extension():
         "handlers.tickets.admin_ticket",
         "handlers.tickets.bugs",
         "handlers.tickets.engine",
+        "handlers.tickets.news_request",  # заявки на новость от игроков
         "handlers.search_player",
         "handlers.catcraft_fm",
         "handlers.idiot_check",
