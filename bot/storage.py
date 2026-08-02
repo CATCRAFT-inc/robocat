@@ -71,6 +71,7 @@ class ButtonData:
 class Buttons:
     BUG_REPORT = ButtonData("bug_report", create_button(label="Сообщить о баге", custom_id="bug_report", style=disnake.ButtonStyle.danger))
     GET_A_JOB = ButtonData("show_vacansies", create_button(label="Посмотреть доступные вакансии", custom_id="show_vacansies", style=disnake.ButtonStyle.green))
+    NEWS_REQUEST = ButtonData("news_request", create_button(label="Отправить новость", custom_id="news_request", style=disnake.ButtonStyle.green))
 
 class Embeds:
     bug_report_embed = disnake.ui.Container(
@@ -81,6 +82,25 @@ class Embeds:
             disnake.ui.Button(style=disnake.ButtonStyle.green, label="Сообщить о баге", custom_id=Buttons.BUG_REPORT.id)
         )
     )
+    news_request_embed = disnake.ui.Container(
+        disnake.ui.TextDisplay("## 💎 Отправить новость репортёрам! 💎"),
+        disnake.ui.Separator(),
+        disnake.ui.TextDisplay(
+            "Ты запечатлел какое-то событие? Хочешь что-то осветить в нашей стране? "
+            "Тогда ты пришёл по нужному адресу!"
+        ),
+        disnake.ui.TextDisplay(
+            "**Как отправить новость:**\n"
+            "- Нажми на кнопку ниже и опиши свою новость\n"
+            "- Откроется приватный тред с репортёрами — там всё обсудите\n"
+            "- Решение репортёров придёт тебе в личные сообщения"
+        ),
+        disnake.ui.ActionRow(
+            disnake.ui.Button(style=disnake.ButtonStyle.green, label="Отправить новость", custom_id=Buttons.NEWS_REQUEST.id)
+        ),
+        accent_colour=disnake.Color.from_hex(ColorStorage.main),
+    )
+
     @staticmethod
     def role_choose():
         return disnake.ui.Container(
