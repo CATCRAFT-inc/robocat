@@ -77,6 +77,23 @@
 - [x] PASS · системный промпт больше не врёт про сезон · пруф: `[CONTEXT]` переписан по вики — идёт 8 сезон (авторитетный источник: `SERVER_MODE = 'online'` в `.vitepress/theme/HeroSection.vue` на `origin/main` вики), 1.21.11 Java, только лицензия, оба IP, мурки, ОПК
 - [ ] FAIL · ручной смоук на dev-боте: вопрос про Бестиарий + вопрос «что нового» — за Серёжей · пруф: ______
 
+## Довеском после мульти-ревью (lite, 02.08)
+
+- [x] PASS · сбой чтения каналов отличим от «новостей не было» · пруф: `NewsUnavailable`, 3 теста (`test_collect_news_raises_when_no_channel_is_readable`, `..._when_every_channel_errors`, `..._returns_empty_when_channel_is_readable_but_silent`)
+- [x] PASS · сводка не может «протухнуть навсегда» · пруф: `_BRIEF_MAX_AGE` 3 суток, `test_brief_is_dropped_once_it_is_too_old`, возраст поднятой из флага восстанавливается из TTL (`test_cached_brief_keeps_its_original_age`)
+- [x] PASS · неудачная запись флага замечена · пруф: `setFlag` возвращает False, а не бросает — `test_refresh_warns_when_flag_write_is_rejected`
+- [x] PASS · `--full` действительно пересчитывает всё · пруф: `test_load_reuse_full_ignores_every_source`
+- [x] PASS · `--out` не отключает переиспользование из основного индекса · пруф: `test_load_reuse_with_out_still_reads_the_main_index`
+- [x] PASS · вектор чужой размерности не переиспользуется · пруф: `test_load_reuse_rejects_vectors_of_wrong_dimension`
+- [x] PASS · текст соседних элементов не склеивается · пруф: правило инвертировано (блочное = всё, кроме строчных), `test_html_to_text_separates_arbitrary_component_tags` + `..._keeps_inline_tags_inline`; на живых данных «ЗапрещеноРазрешено», «СтолицаСпавн», «ИконкаЧто обозначает?» исчезли
+- [x] PASS · короткая страница целиком не исчезает из индекса · пруф: `test_chunk_page_keeps_short_page_whole`
+- [x] PASS · длинный абзац не рвётся посреди слова · пруф: `test_split_long_does_not_cut_mid_word`
+- [x] PASS · импорт модуля не читает `.env` · пруф: `test_module_import_does_not_read_dotenv`
+- [x] PASS · оплаченные векторы не теряются при сбое записи · пруф: поймано вживую (файл на VDS принадлежал root) — добавлен `_dump_partial` на пути ошибки записи
+- [x] PASS · полный pytest · пруф: 464 passed
+- [ ] FAIL · 🛑 индекс пересобран ПОЧИНЕННЫМ парсером · пруф: ______ — уперлись в дневную квоту (`limit: 1000` в ответе API). Осталось 14 чанков; прогресс лежит в `/opt/robocat/data/wiki_index.partial.json`, завтра добирается одной командой. В коммите — полный индекс от старого парсера (707 чанков, 20 страниц со склеенным текстом таблиц/вкладок).
+- [ ] FAIL · 🛑 `/info/guide` на вики перестал врать про межсезонье · пруф: ______ — чужой репозиторий, за Серёжей. Смягчено в промпте: `[CONTEXT]` объявлен старше вики по статусу сервера и IP.
+
 ## Правка системного промпта (`data/ai_settings.yaml`)
 
 Найденное враньё:

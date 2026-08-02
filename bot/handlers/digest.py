@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 import disnake
@@ -8,7 +9,12 @@ from bot.ai.llm import llm, AIUnavailable
 from bot.flag_system.flag_system import flags
 from bot.discord_config import Channels, Roles
 from bot.storage import ColorStorage
-from bot.utils import component_text, create_container, neutralize_markers
+from bot.utils import (
+    component_text,
+    create_container,
+    neutralize_markers,
+    parse_duration,
+)
 
 logger = logging.getLogger("robocat.digest")
 
@@ -38,10 +44,28 @@ _BRIEF_PROMPT = (
 # ходить туда за ней в SQLite незачем. Во флаге она живёт только чтобы пережить
 # рестарт (деплой) и не пересчитываться заново.
 _brief: str = ""
+_brief_at: float = 0.0
+
+# Сводка объявлена в промпте новостями «за последнюю неделю». Если обновление
+# падает несколько суток подряд, TTL во флаге этого не остановит — он решает
+# только, пробовать ли пересбор, и не трогает строку в памяти. Поэтому у неё
+# отдельный потолок возраста: протухшую лучше не показывать вовсе, чем выдавать
+# события двухнедельной давности за свежие.
+_BRIEF_MAX_AGE = 3 * 24 * 3600
+
+
+class NewsUnavailable(RuntimeError):
+    """Ни один новостной канал не удалось прочитать.
+
+    Отдельный класс нужен, чтобы отличить «новостей за период не было» от
+    «мы не смогли посмотреть»: у этих двух случаев противоположная реакция.
+    """
 
 
 def news_brief() -> str:
     """Свежая сводка новостей сервера или пустая строка. Без I/O — читает кэш."""
+    if not _brief or time.time() - _brief_at > _BRIEF_MAX_AGE:
+        return ""
     return _brief
 
 
@@ -54,6 +78,7 @@ async def collect_news(bot: commands.Bot, days: int, budget: int = _CHAR_BUDGET)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     collected: list[tuple] = []
     total = 0
+    reachable = 0
     for channel_id in Channels.digest_channels:
         channel = bot.get_channel(channel_id)
         if channel is None:
@@ -79,8 +104,18 @@ async def collect_news(bot: commands.Bot, days: int, budget: int = _CHAR_BUDGET)
                 )
                 collected.append((msg.created_at, line))
                 total += len(line)
+            reachable += 1
         except disnake.HTTPException:
             logger.exception("Не удалось прочитать историю канала %s", channel_id)
+
+    # 🛑 Ноль прочитанных каналов — это НЕ «новостей не было». Раньше отобранные
+    # права или 5xx превращались в пустой список, и вызывающие делали из него
+    # вывод: /digest отвечал «новостей не было», а фоновая сводка СТИРАЛА
+    # прошлую и оставалась пустой навсегда — молча, до перезапуска.
+    if not reachable:
+        raise NewsUnavailable(
+            f"ни один из {len(Channels.digest_channels)} новостных каналов не прочитан"
+        )
 
     # Глобальная хронология по всем каналам: бюджет режет действительно
     # самое старое, а не свежие сообщения первого канала списка
@@ -119,7 +154,14 @@ class Digest(commands.Cog):
 
         await inter.response.defer(ephemeral=True)
 
-        collected = await collect_news(self.bot, дней)
+        try:
+            collected = await collect_news(self.bot, дней)
+        except NewsUnavailable:
+            logger.exception("Каналы новостей недоступны для /digest")
+            await inter.edit_original_response(
+                content="Не смог прочитать новостные каналы — попробуй позже 🥺"
+            )
+            return
         if not collected:
             await inter.edit_original_response(content="За этот период новостей не было =(")
             return
@@ -164,7 +206,7 @@ class Digest(commands.Cog):
         Ошибка на любом шаге оставляет прошлую сводку в силе: устаревшая справка
         лучше, чем внезапно ослепший бот.
         """
-        global _brief
+        global _brief, _brief_at
         # getFlag пробрасывает сбой SQLite наружу, а необработанное исключение
         # в теле tasks.loop ГАСИТ задачу насовсем — до рестарта бота сводка
         # больше не обновится ни разу. Здесь и ниже ошибки глотаются осознанно.
@@ -175,8 +217,12 @@ class Digest(commands.Cog):
             cached = None
         if cached is not None:
             # Пережили рестарт внутри окна свежести — берём готовое и не жжём
-            # ни квоту LLM, ни лимиты истории Discord на каждом деплое
+            # ни квоту LLM, ни лимиты истории Discord на каждом деплое.
+            # Возраст восстанавливаем из TTL флага: иначе поднятая после
+            # рестарта сводка выглядела бы только что созданной.
             _brief = cached.value or ""
+            ttl = parse_duration(_BRIEF_TTL) or 0
+            _brief_at = (cached.expires_at - ttl) if cached.expires_at else time.time()
             return
 
         try:
@@ -185,7 +231,10 @@ class Digest(commands.Cog):
             logger.exception("Сбор новостей для сводки упал")
             return
         if not lines:
+            # Сюда попадаем только когда каналы ПРОЧИТАНЫ и в них правда пусто:
+            # недоступность каналов приезжает исключением выше
             _brief = ""
+            _brief_at = time.time()
             return
 
         try:
@@ -204,11 +253,20 @@ class Digest(commands.Cog):
             logger.warning("Модель вернула пустую сводку новостей — оставляю прошлую")
             return
         _brief = summary
+        _brief_at = time.time()
+        # setFlag ловит свои ошибки внутри и НЕ бросает — он возвращает False.
+        # Поэтому здесь проверка результата, а не try/except: иначе неудачная
+        # запись оставалась бы незамеченной, а лог всё равно рапортовал успех.
+        saved = False
         try:
-            await flags.setFlag("abstract", _BRIEF_FLAG, summary, expires_at=_BRIEF_TTL)
+            saved = await flags.setFlag(
+                "abstract", _BRIEF_FLAG, summary, expires_at=_BRIEF_TTL
+            )
         except Exception:
-            # Сводка уже в памяти и работает; не переживёт только рестарт
             logger.exception("Сводка не сохранилась во флаг")
+        if not saved:
+            # Сводка уже в памяти и работает; не переживёт только рестарт
+            logger.warning("Сводка новостей не записалась во флаг — живёт до рестарта")
         logger.info("Сводка новостей обновлена (%d символов)", len(summary))
 
     @refresh_brief.before_loop

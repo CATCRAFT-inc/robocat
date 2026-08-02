@@ -178,7 +178,7 @@ data/discord.local.yml
 _docs/
 .worktrees/
 
-# Промежуточный выхлоп scripts/build_wiki_index.py --chunks-only (векторы едут
-# в data/wiki_index.json, а этот файл — только чтобы доэмбеддить на VDS)
+# Выхлоп scripts/build_wiki_index.py --chunks-only: чанки без векторов, чтобы
+# глазами проверить, что вытащилось из вёрстки. В сборку обратно не подаётся.
 data/wiki_chunks.json
 data/wiki_index.partial.json

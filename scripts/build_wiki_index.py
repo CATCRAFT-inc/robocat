@@ -3,7 +3,7 @@
 Запуск из корня репозитория:
 
     python scripts/build_wiki_index.py                 # инкрементально
-    python scripts/build_wiki_index.py --chunks-only   # без сети к эмбеддингам
+    python scripts/build_wiki_index.py --chunks-only   # только текст, для глаз
     python scripts/build_wiki_index.py --full          # переэмбеддить всё
 
 Источник — `https://wiki.catcraft.ru/sitemap.xml`, и только он. Часть страниц
@@ -20,8 +20,15 @@
 существующий `bot.ai.embeddings`.
 
 🛑 Ключ `GEMINI` привязан к стране биллинга: с машины в РФ endpoint отвечает
-403 PERMISSION_DENIED. Шаг эмбеддингов гонять на VDS (там ключ рабочий), либо
-собрать чанки локально (`--chunks-only`) и доэмбеддить на VDS.
+403 PERMISSION_DENIED. Полный прогон гонять на VDS — там ключ рабочий:
+
+    sudo -u bots .venv/bin/python scripts/build_wiki_index.py --out /tmp/idx.json
+
+`--out` на проде обязателен: без него бот подхватит непроверенный индекс сразу.
+`--chunks-only` считает те же чанки без единого запроса к эмбеддингам и кладёт
+их в `data/wiki_chunks.json` — это материал ДЛЯ ГЛАЗ (посмотреть, что вообще
+вытащилось из вёрстки), обратно в сборку он не подаётся: векторы всё равно
+переиспользуются по `hash` из готового индекса.
 """
 
 from __future__ import annotations
@@ -41,10 +48,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv  # noqa: E402
-
-# Ключ GEMINI берётся так же, как его берёт бот. Прогон идёт на VDS (см. ниже),
-# где .env лежит рядом с кодом.
-load_dotenv(ROOT / ".env")
 
 SITEMAP_URL = "https://wiki.catcraft.ru/sitemap.xml"
 INDEX_PATH = ROOT / "data" / "wiki_index.json"
@@ -66,12 +69,21 @@ EMBED_CONCURRENCY = 4
 # на середине, спалив дневную квоту впустую.
 EMBED_RPM = 55
 EMBED_RETRIES = 4
+EMBED_DIMS = 768  # столько же просит bot/ai/embeddings.embed
 PARTIAL_PATH = ROOT / "data" / "wiki_index.partial.json"
 
 _SKIP_TAGS = {"script", "style", "noscript", "svg"}
-_BLOCK_TAGS = {
-    "p", "div", "section", "article", "li", "tr", "br", "hr", "blockquote",
-    "pre", "table", "ul", "ol", "dl", "dt", "dd", "figure", "figcaption",
+# Перечисляем СТРОЧНЫЕ теги, а блочным считаем всё остальное. Обратный список
+# («вот эти теги блочные») здесь не работает: вики собрана из Vue-компонентов,
+# которые рендерят что угодно — ячейки таблиц, PrimeVue-табы на <button>,
+# карточки. Каждый неучтённый тег склеивал соседний текст в одно слово:
+# `<th>Иконка</th><th>Что обозначает?</th>` → «ИконкаЧто обозначает?»,
+# `<button>Запрещено</button><button>Разрешено</button>` → «ЗапрещеноРазрешено».
+# Список строчных тегов конечен и стабилен, список компонентов — нет.
+_INLINE_TAGS = {
+    "a", "abbr", "b", "bdi", "bdo", "cite", "code", "data", "dfn", "em", "i",
+    "kbd", "mark", "q", "rp", "rt", "ruby", "s", "samp", "small", "span",
+    "strong", "sub", "sup", "time", "u", "var", "wbr", "font",
 }
 _HEADINGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 
@@ -112,11 +124,11 @@ class _MainTextParser(HTMLParser):
         level = _HEADINGS.get(tag)
         if level:
             self.parts.append(f"\n\n{'#' * level} ")
-        elif tag in _BLOCK_TAGS:
+        elif tag not in _INLINE_TAGS:
             self.parts.append("\n")
 
     def handle_startendtag(self, tag, attrs):
-        if self._inside and tag in _BLOCK_TAGS:
+        if self._inside and tag not in _INLINE_TAGS:
             self.parts.append("\n")
 
     def handle_endtag(self, tag):
@@ -126,7 +138,7 @@ class _MainTextParser(HTMLParser):
             self._skip_depth -= 1
         elif tag == "a" and self._anchor:
             self._anchor = False
-        elif self._skip_depth == 0 and (tag in _HEADINGS or tag in _BLOCK_TAGS):
+        elif self._skip_depth == 0 and tag not in _INLINE_TAGS:
             self.parts.append("\n")
         self._depth -= 1
         if tag == "main":
@@ -163,7 +175,11 @@ def _split_long(section: str) -> list[str]:
             current = f"{current}\n\n{para}" if current else para
         # Один абзац сам по себе длиннее лимита — режем его по строкам
         while len(current) > MAX_CHUNK:
+            # По строке, иначе по пробелу: у абзаца без переносов длиннее
+            # лимита `rfind("\n")` не находил ничего и резал посреди слова
             cut = current.rfind("\n", 0, MAX_CHUNK)
+            if cut <= 0:
+                cut = current.rfind(" ", 0, MAX_CHUNK)
             if cut <= 0:
                 cut = MAX_CHUNK
             out.append(current[:cut].strip())
@@ -210,10 +226,16 @@ def chunk_page(text: str, source: str, url: str) -> list[dict]:
         if not section:
             continue
         content = re.sub(r"^#{1,6} .*", "", section).strip()
-        if len(content) >= MIN_CONTENT:
+        if len(content) >= MIN_CONTENT or not merged:
+            # `not merged` — первая секция страницы. Раньше короткое вступление
+            # молча пропадало, а страница целиком короче порога («# 8 сезон /
+            # Скоро.») не давала вообще ни одного чанка и исчезала из индекса.
             merged.append(section)
-        elif merged:
+        else:
             merged[-1] = f"{merged[-1]}\n\n{section}"
+    # Единственная секция вообще без содержимого — страница пустая
+    if len(merged) == 1 and len(re.sub(r"^#{1,6} .*", "", merged[0]).strip()) < MIN_CONTENT:
+        return []
 
     chunks: list[dict] = []
     for section in merged:
@@ -355,18 +377,33 @@ def load_reuse(full: bool, out: Path | None = None) -> dict[str, list[float]]:
     индексом считается сам файл назначения — иначе повторный прогон в тот же
     файл пересчитывал бы всё заново, хотя рядом лежит готовый результат.
     """
+    if full:
+        # `--full` обязан значить «пересчитать всё». Раньше он всё равно тянул
+        # partial, и прогон, заявленный как полная пересборка, молча смешивал
+        # векторы неизвестного происхождения.
+        return {}
     reuse: dict[str, list[float]] = {}
-    previous = out or INDEX_PATH
-    sources = [PARTIAL_PATH] if full else [previous, PARTIAL_PATH]
+    # Файл назначения — тоже источник: без него `--out` (обязательный на проде)
+    # игнорировал бы готовый data/wiki_index.json и жёг дневную квоту целиком.
+    sources = [INDEX_PATH, PARTIAL_PATH] + ([out] if out else [])
+    seen: set[Path] = set()
     for path in sources:
-        if not path.exists():
+        path = path.resolve()
+        if path in seen or not path.exists():
             continue
+        seen.add(path)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
+            found = {
+                c["hash"]: c["vector"]
+                for c in data
+                # Размерность сверяем: вектор от другой модели или от другого
+                # `dimensions` молча испортил бы всё векторное пространство
+                if c.get("hash") and len(c.get("vector") or ()) == EMBED_DIMS
+            }
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
             print(f"{path.name} не прочитался ({exc}) — пропускаю")
             continue
-        found = {c["hash"]: c["vector"] for c in data if c.get("hash") and c.get("vector")}
         print(f"{path.name}: {len(found)} готовых векторов")
         reuse.update(found)
     return reuse
@@ -388,7 +425,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Ключ GEMINI берётся так же, как его берёт бот. Читаем .env ЗДЕСЬ, а не при
+    # импорте: тесты импортируют этот модуль, и на импорте настоящие значения
+    # протекали бы в окружение тестового процесса мимо фейков из conftest.
+    load_dotenv(ROOT / ".env")
+
     chunks = build_chunks()
+    if not chunks:
+        raise RuntimeError("сайт не отдал ни одного чанка — проверь вёрстку страниц")
     lengths = [len(c["text"]) for c in chunks]
     print(
         f"\nВсего чанков: {len(chunks)} со {len({c['source'] for c in chunks})} страниц; "
@@ -407,10 +451,21 @@ def main() -> int:
     chunks = asyncio.run(embed_chunks(chunks, load_reuse(args.full, args.out)))
     missing = [c["source"] for c in chunks if not c.get("vector")]
     if missing:
+        # Тоже сохраняем прогресс: без этого путь «вектор не пришёл, но и
+        # исключения не было» терял всю посчитанную пачку и дневную квоту
+        _dump_partial(chunks)
         raise RuntimeError(f"без вектора остались чанки: {sorted(set(missing))[:5]}")
 
     out = args.out or INDEX_PATH
-    out.write_text(json.dumps(chunks, ensure_ascii=False), encoding="utf-8")
+    try:
+        out.write_text(json.dumps(chunks, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        # Векторы уже оплачены дневной квотой — терять их из-за прав на файл
+        # или кончившегося места нельзя (прецедент 02.08: файл назначения на
+        # VDS принадлежал root, скрипт бежит от bots, 48 эмбеддингов в трубу)
+        _dump_partial(chunks)
+        raise RuntimeError(f"не записать {out}: {exc}. Прогресс — в {PARTIAL_PATH.name}")
+
     PARTIAL_PATH.unlink(missing_ok=True)
     print(f"Готово: {out} ({out.stat().st_size / 1e6:.1f} МБ)")
     return 0

@@ -6,6 +6,7 @@
 
 import asyncio
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -105,6 +106,102 @@ def test_chunk_page_drops_empty_page():
 def test_chunk_page_skips_page_without_content():
     # Ни в одной секции нет содержимого — приклеивать не к чему, чанков ноль
     assert build.chunk_page("# А\n\n## Б\n\nв", "src", "u") == []
+
+
+def test_chunk_page_keeps_short_page_whole():
+    # Страница целиком короче порога («# 8 сезон / Скоро.») раньше исчезала из
+    # индекса — бот переставал знать о её существовании.
+    chunks = build.chunk_page("# 8 сезон\n\nЭта история ещё не началась.", "s", "u")
+    assert len(chunks) == 1
+    assert "не началась" in chunks[0]["text"]
+
+
+def test_html_to_text_separates_table_cells():
+    # На живой вики `<th>Иконка</th><th>Что обозначает?</th>` склеивалось в
+    # «ИконкаЧто обозначает?» и доезжало до игрока слипшимся.
+    html = ("<main><table><tr><th>Иконка</th><th>Что обозначает?</th></tr>"
+            "<tr><td>Меч</td><td>100</td></tr></table></main>")
+    text = build.html_to_text(html)
+    assert "ИконкаЧто" not in text
+    assert "Меч100" not in text
+    assert "Меч" in text and "100" in text
+
+
+def test_html_to_text_separates_arbitrary_component_tags():
+    # Вики собрана из Vue-компонентов: PrimeVue рисует вкладки правил на
+    # <button>, и «Запрещено»/«Разрешено» слипались в «ЗапрещеноРазрешено».
+    # Правило инвертировано — блочным считается всё, кроме строчных тегов.
+    html = ("<main><button><span>Запрещено</span></button>"
+            "<button><span>Разрешено</span></button>"
+            "<custom-card>Столица</custom-card><custom-card>Спавн</custom-card></main>")
+    text = build.html_to_text(html)
+    assert "ЗапрещеноРазрешено" not in text
+    assert "СтолицаСпавн" not in text
+
+
+def test_html_to_text_keeps_inline_tags_inline():
+    # Обратная сторона инверсии: строчная разметка не должна рвать предложение
+    html = "<main><p>Купи <b>меч</b> у <a href='#'>НПС</a> за 10 мурок</p></main>"
+    assert "Купи меч у НПС за 10 мурок" in build.html_to_text(html)
+
+
+def test_split_long_does_not_cut_mid_word():
+    para = "слово " * 700  # ~4200 символов без единого перевода строки
+    parts = build._split_long(para.strip())
+    assert len(parts) > 1
+    for part in parts:
+        assert part.startswith("слово") and part.endswith("слово"), part
+
+
+def _index(tmp_path, name, chunks):
+    path = tmp_path / name
+    path.write_text(json.dumps(chunks, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_load_reuse_full_ignores_every_source(tmp_path, monkeypatch):
+    # `--full` обязан значить «пересчитать всё»: раньше он всё равно тянул
+    # partial и выдавал смешанное пространство векторов за полную пересборку.
+    partial = _index(tmp_path, "p.json", [{"hash": "a", "vector": [0.0] * 768}])
+    monkeypatch.setattr(build, "PARTIAL_PATH", partial)
+    monkeypatch.setattr(build, "INDEX_PATH", partial)
+    assert build.load_reuse(full=True) == {}
+
+
+def test_load_reuse_with_out_still_reads_the_main_index(tmp_path, monkeypatch):
+    # `--out` обязателен на проде. Раньше он ОТКЛЮЧАЛ переиспользование из
+    # data/wiki_index.json, и «поправить одну страницу» жгло дневную квоту.
+    index = _index(tmp_path, "i.json", [{"hash": "a", "vector": [0.1] * 768}])
+    out = _index(tmp_path, "o.json", [{"hash": "b", "vector": [0.2] * 768}])
+    monkeypatch.setattr(build, "INDEX_PATH", index)
+    monkeypatch.setattr(build, "PARTIAL_PATH", tmp_path / "нет.json")
+    assert set(build.load_reuse(full=False, out=out)) == {"a", "b"}
+
+
+def test_load_reuse_rejects_vectors_of_wrong_dimension(tmp_path, monkeypatch):
+    index = _index(tmp_path, "i.json", [
+        {"hash": "ok", "vector": [0.1] * 768},
+        {"hash": "чужая модель", "vector": [0.1] * 1536},
+    ])
+    monkeypatch.setattr(build, "INDEX_PATH", index)
+    monkeypatch.setattr(build, "PARTIAL_PATH", tmp_path / "нет.json")
+    assert set(build.load_reuse(full=False)) == {"ok"}
+
+
+def test_load_reuse_survives_garbage_file(tmp_path, monkeypatch):
+    broken = tmp_path / "b.json"
+    broken.write_text('{"это": "словарь, а не список"}', encoding="utf-8")
+    monkeypatch.setattr(build, "INDEX_PATH", broken)
+    monkeypatch.setattr(build, "PARTIAL_PATH", tmp_path / "нет.json")
+    assert build.load_reuse(full=False) == {}
+
+
+def test_module_import_does_not_read_dotenv():
+    # Импорт модуля тестами не должен затягивать настоящие значения из .env
+    # в окружение процесса мимо фейков из conftest.
+    source = (ROOT / "scripts" / "build_wiki_index.py").read_text(encoding="utf-8")
+    body = source.split("def main(")[0]
+    assert "load_dotenv(" not in body
 
 
 def test_rate_limiter_spaces_out_calls():

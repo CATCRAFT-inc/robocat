@@ -3,6 +3,7 @@
 Discord и LLM мокаются целиком — сети нет.
 """
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,8 +16,10 @@ from bot.ai.engine import AIEngine
 @pytest.fixture(autouse=True)
 def clean_brief():
     digest._brief = ""
+    digest._brief_at = time.time()
     yield
     digest._brief = ""
+    digest._brief_at = 0.0
 
 
 class _Cog:
@@ -87,11 +90,48 @@ async def test_collect_news_neutralizes_untrusted_text(monkeypatch):
     assert lines and "[[" not in lines[0]
 
 
-async def test_collect_news_survives_unreadable_channel(monkeypatch):
+async def test_collect_news_raises_when_no_channel_is_readable(monkeypatch):
+    # 🛑 Ноль прочитанных каналов ≠ «новостей не было». Раньше отобранные права
+    # превращались в пустой список, /digest отвечал «новостей не было», а
+    # фоновая сводка СТИРАЛА прошлую и оставалась пустой навсегда.
     bot = MagicMock()
     bot.user.id = 999
     bot.get_channel.return_value = None
     _channels(monkeypatch, (1, 2))
+    with pytest.raises(digest.NewsUnavailable):
+        await digest.collect_news(bot, 7)
+
+
+async def test_collect_news_raises_when_every_channel_errors(monkeypatch):
+    channel = MagicMock()
+    channel.name = "новости"
+
+    async def history(**kwargs):
+        raise digest.disnake.HTTPException(MagicMock(status=403), "нет прав")
+        yield  # pragma: no cover — делает функцию генератором
+
+    channel.history = history
+    bot = MagicMock()
+    bot.user.id = 999
+    bot.get_channel.return_value = channel
+    _channels(monkeypatch, (1,))
+    with pytest.raises(digest.NewsUnavailable):
+        await digest.collect_news(bot, 7)
+
+
+async def test_collect_news_returns_empty_when_channel_is_readable_but_silent(monkeypatch):
+    channel = MagicMock()
+    channel.name = "новости"
+
+    async def history(**kwargs):
+        return
+        yield  # pragma: no cover
+
+    channel.history = history
+    bot = MagicMock()
+    bot.user.id = 999
+    bot.get_channel.return_value = channel
+    _channels(monkeypatch, (1,))
     assert await digest.collect_news(bot, 7) == []
 
 
@@ -101,6 +141,7 @@ async def test_collect_news_survives_unreadable_channel(monkeypatch):
 async def test_refresh_uses_cached_brief_after_restart(cog, monkeypatch):
     cached = MagicMock()
     cached.value = "— идёт межсезонье"
+    cached.expires_at = int(time.time()) + 3600
     _flags(monkeypatch, cached=cached)
     collect = AsyncMock()
     monkeypatch.setattr(digest, "collect_news", collect)
@@ -198,6 +239,61 @@ async def test_refresh_caps_summary_length(cog, monkeypatch):
     await cog.refresh_brief()
 
     assert len(digest.news_brief()) == digest._BRIEF_MAX_CHARS
+
+
+async def test_refresh_keeps_previous_brief_when_channels_are_unreadable(cog, monkeypatch):
+    # Тот же класс, что и в collect_news: недоступность каналов не должна
+    # выглядеть как «новостей нет» и стирать сводку.
+    digest._brief = "— прошлая сводка"
+    _flags(monkeypatch)
+    monkeypatch.setattr(
+        digest, "collect_news", AsyncMock(side_effect=digest.NewsUnavailable("403"))
+    )
+
+    await cog.refresh_brief()
+
+    assert digest.news_brief() == "— прошлая сводка"
+
+
+def test_brief_is_dropped_once_it_is_too_old():
+    # TTL во флаге решает только «пробовать ли пересбор» и не трогает строку в
+    # памяти. Без потолка возраста многодневный сбой обновления выдавал бы
+    # события двухнедельной давности за новости «за последнюю неделю».
+    digest._brief = "— древняя сводка"
+    digest._brief_at = time.time() - digest._BRIEF_MAX_AGE - 1
+    assert digest.news_brief() == ""
+
+    digest._brief_at = time.time() - digest._BRIEF_MAX_AGE + 60
+    assert digest.news_brief() == "— древняя сводка"
+
+
+async def test_cached_brief_keeps_its_original_age(cog, monkeypatch):
+    # Возраст восстанавливается из TTL флага: поднятая после рестарта сводка
+    # не должна выглядеть только что созданной.
+    cached = MagicMock()
+    cached.value = "— сводка"
+    cached.expires_at = int(time.time()) + 60  # почти истёк ⇒ создана ~20ч назад
+    _flags(monkeypatch, cached=cached)
+
+    await cog.refresh_brief()
+
+    age = time.time() - digest._brief_at
+    assert age > 19 * 3600
+
+
+async def test_refresh_warns_when_flag_write_is_rejected(cog, monkeypatch, caplog):
+    # setFlag не бросает — он возвращает False. try/except такую неудачу
+    # не заметил бы, а лог всё равно рапортовал бы успех.
+    _, put = _flags(monkeypatch)
+    put.return_value = False
+    monkeypatch.setattr(digest, "collect_news", AsyncMock(return_value=["новость"]))
+    monkeypatch.setattr(digest.llm, "ask", AsyncMock(return_value="— сводка"))
+
+    with caplog.at_level("WARNING"):
+        await cog.refresh_brief()
+
+    assert any("не записалась" in r.message for r in caplog.records)
+    assert digest.news_brief() == "— сводка"
 
 
 def test_brief_ttl_is_shorter_than_loop_period():
