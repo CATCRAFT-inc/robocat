@@ -47,6 +47,8 @@
 - [x] PASS · `bot/handlers/tickets/news_request.py`: модалка, приватный тред,
       добавление репортёров, кнопки, тройная рассылка
 - [x] PASS · `main.py`: расширение в список `extensions`
+- [x] PASS · fail-closed: ни одного репортёра в треде → автору говорим прямо и зовём
+      админов в тред, а не рапортуем «отправлено репортёрам» (найдено пре-PR гейтом)
 - [x] PASS · `tests/test_news_request.py` · пруф: 7 passed
 
 ## Acceptance
