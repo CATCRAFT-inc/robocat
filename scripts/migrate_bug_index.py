@@ -14,7 +14,14 @@
     sudo -u bots .venv/bin/python scripts/migrate_bug_index.py
 
 Записи хранят исходный `text`, так что пересчёт полный и без потерь. Рядом
-кладётся `.bak-<модель>` — откат ручным `mv`.
+кладётся `.bak-<модель, которая лежала внутри>` — откат ручным `mv`.
+
+Скрипт ДОКАТЫВАЕМЫЙ: каждая посчитанная запись сразу пишется на диск, и
+повторный запуск берёт только те, у которых `model` ещё не совпадает. Это
+обязательное свойство, а не удобство — когда суточной квоты остаётся на пару
+запросов, вариант «всё или ничего» выбрасывает оплаченное и не доедет никогда.
+Наполовину мигрированный индекс безопасен: `bugs.py` сверяет `model` и просто
+пропускает записи, до которых ещё не дошли.
 """
 
 from __future__ import annotations
@@ -49,51 +56,80 @@ async def main() -> int:
         return 0
     index = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
 
-    todo = {k: v for k, v in index.items() if v.get("text")}
-    skipped = sorted(set(index) - set(todo))
-    print(f"Записей: {len(index)}, пересчитать: {len(todo)}, модель: {MODEL}")
-    if skipped:
-        # Без текста вектор не воспроизвести. Такие записи останутся в ЧУЖОМ
-        # пространстве и будут тихо мешать дедупу — их честнее удалить.
-        print(f"🛑 Без поля text ({len(skipped)}), будут УДАЛЕНЫ: {skipped}")
+    no_text = sorted(k for k, v in index.items() if not v.get("text"))
+    done = {k for k, v in index.items() if v.get("model") == MODEL}
+    todo = [k for k, v in index.items() if v.get("text") and k not in done]
+    print(
+        f"Записей: {len(index)}, уже на {MODEL}: {len(done)}, "
+        f"пересчитать: {len(todo)}"
+    )
+    if no_text:
+        # Без текста вектор не воспроизвести. Такие записи остаются в ЧУЖОМ
+        # пространстве — дедуп их пропустит (bugs.py сверяет model), поэтому
+        # молча удалять их не надо: пусть лежат видимым мусором.
+        print(f"🛑 Без поля text ({len(no_text)}), пересчитать нельзя: {no_text}")
+    if not todo:
+        print("Мигрировать нечего.")
+        return 0
     if args.dry_run:
         return 0
 
-    # Имя бэкапа — по модели, которая ЛЕЖИТ ВНУТРИ, а не по той, на которую
-    # переезжаем: иначе `.bak-gemini-embedding-2` содержит векторы от 001, и
-    # восстановление из него вернёт ровно ту поломку, от которой откатывались.
-    was = {v.get("model") for v in index.values()} or {None}
-    backup = INDEX_PATH.with_suffix(f".bak-{'-'.join(sorted(str(m) for m in was))}")
-    shutil.copyfile(INDEX_PATH, backup)
-    print(f"Бэкап (модель внутри: {', '.join(str(m) for m in was)}): {backup}")
+    # Бэкап делаем ОДИН раз, до первой правки, и называем по модели, которая
+    # ЛЕЖИТ ВНУТРИ, а не по той, на которую переезжаем: иначе восстановление
+    # из `.bak-gemini-embedding-2` вернёт ровно ту поломку, от которой
+    # откатывались. Повторный запуск бэкап не перезаписывает — иначе докат
+    # затёр бы исходник уже наполовину мигрированной копией.
+    # Проверяем ЛЮБОЙ существующий бэкап, а не совпадение имени: на втором
+    # прогоне состав моделей в файле уже другой, и проверка по имени создала бы
+    # второй бэкап — с наполовину мигрированного индекса, то есть бесполезный
+    # как точка отката.
+    existing = sorted(INDEX_PATH.parent.glob(f"{INDEX_PATH.stem}.bak-*"))
+    if existing:
+        print(f"Бэкап уже есть, не трогаю: {existing[0].name}")
+    else:
+        was = sorted({str(v.get("model") or "неизвестна") for v in index.values()})
+        backup = INDEX_PATH.with_suffix(f".bak-{'-'.join(was)}")
+        shutil.copyfile(INDEX_PATH, backup)
+        print(f"Бэкап (модели внутри: {', '.join(was)}): {backup.name}")
 
-    migrated: dict = {}
-    for i, (key, value) in enumerate(todo.items(), 1):
+    def save():
+        # Атомарно: убитый посреди записи процесс иначе оставит битый JSON
+        tmp = INDEX_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(INDEX_PATH)
+
+    for i, key in enumerate(todo, 1):
         for attempt in range(RETRIES):
             try:
-                vector = await embed(value["text"])
+                vector = await embed(index[key]["text"])
                 break
             except Exception as exc:
                 if attempt + 1 == RETRIES:
-                    # Прогресса не сохраняем намеренно: записей два десятка,
-                    # частично мигрированный индекс сложнее объяснить, чем
-                    # повторный запуск. Исходник цел — мы его не переписывали.
+                    save()
+                    # 🛑 Прогресс сохраняем ОБЯЗАТЕЛЬНО. Всё-или-ничего здесь
+                    # не работает: когда квоты остаётся на пару запросов,
+                    # такой скрипт выбрасывает оплаченное и не доедет никогда
+                    # (прецедент 02.08 — три вектора в трубу). Смешанный
+                    # индекс безопасен: bugs.py сверяет model и просто
+                    # пропускает ещё не переехавшие записи.
                     raise RuntimeError(
                         f"{type(exc).__name__} на записи {i}/{len(todo)}. "
-                        f"Индекс НЕ изменён, запусти снова (при 429 — завтра)."
+                        f"Переехало {len(done)} из {len(index)}, прогресс сохранён — "
+                        f"запусти снова (при 429 — после сброса суточной квоты)."
                     ) from exc
                 backoff = 10 * 2**attempt
                 print(f"  {type(exc).__name__} — жду {backoff}s")
                 await asyncio.sleep(backoff)
         if len(vector) != DIMENSIONS:
             raise RuntimeError(f"{key}: пришло {len(vector)} измерений вместо {DIMENSIONS}")
-        migrated[key] = {**value, "vector": vector, "model": MODEL}
+        index[key] = {**index[key], "vector": vector, "model": MODEL}
+        done.add(key)
+        save()
         print(f"  [{i}/{len(todo)}] {key}")
         if i < len(todo):
             await asyncio.sleep(60 / RPM)
 
-    INDEX_PATH.write_text(json.dumps(migrated, ensure_ascii=False), encoding="utf-8")
-    print(f"Готово: {len(migrated)} записей на {MODEL}")
+    print(f"Готово: {len(done)} из {len(index)} записей на {MODEL}")
     return 0
 
 
