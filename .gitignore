@@ -177,3 +177,8 @@ data/discord.local.yml
 /data/catcraftfm
 _docs/
 .worktrees/
+
+# Промежуточный выхлоп scripts/build_wiki_index.py --chunks-only (векторы едут
+# в data/wiki_index.json, а этот файл — только чтобы доэмбеддить на VDS)
+data/wiki_chunks.json
+data/wiki_index.partial.json
