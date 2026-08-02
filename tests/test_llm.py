@@ -206,3 +206,21 @@ def test_strip_thoughts_removes_tag_in_the_middle():
 
 def test_strip_thoughts_empty_string():
     assert strip_thoughts("") == ""
+
+
+def test_strip_thoughts_removes_orphan_closing_tag():
+    # Прецедент 02.08.2026: модель потеряла открывающий тег, и игрок увидел
+    # «</thought>Ой, что-то пошло не так…» на вопрос про К+
+    answer = "</thought>Ой, что-то пошло не так, и я не смог найти информацию"
+    assert strip_thoughts(answer) == "Ой, что-то пошло не так, и я не смог найти информацию"
+
+
+def test_strip_thoughts_orphan_closing_tag_takes_the_thought_with_it():
+    # Всё, что стоит перед осиротевшим закрывающим тегом, — это и есть
+    # размышление: открывающий тег просто потерялся
+    assert strip_thoughts("я думаю про игрока</thought>Привет!") == "Привет!"
+
+
+def test_strip_thoughts_keeps_text_after_pair_then_orphan():
+    answer = "<thought>первое</thought>Ответ. хвост размышления</thought>Продолжение."
+    assert strip_thoughts(answer) == "Продолжение."

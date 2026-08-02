@@ -1,12 +1,28 @@
-"""Эмбеддинги через OpenAI-совместимый endpoint Gemini (gemini-embedding-001, 768-мерные).
+"""Эмбеддинги через OpenAI-совместимый endpoint Gemini (768-мерные).
 
 Клиент ленивый — импорт модуля без сети/ключей ничего не запрашивает.
+
+🛑 СМЕНА МОДЕЛИ = ПЕРЕСБОРКА ВСЕХ ВЕКТОРОВ. Пространства моделей несовместимы:
+косинус между вектором от одной и вектором от другой — не «похуже», а мусор,
+и мусор МОЛЧАЛИВЫЙ (ошибки нет, выдача просто перестаёт попадать в тему).
+Потребителей два, и переезжать они обязаны вместе с этой строкой:
+`data/wiki_index.json` (`scripts/build_wiki_index.py`) и `data/bug_index.json`
+(дедуп баг-репортов, живёт только на проде, мигрируется
+`scripts/migrate_bug_index.py`).
+
+Квоты free-tier считаются НА МОДЕЛЬ (`...PerProjectPerModel-FreeTier`), поэтому
+переезд заодно даёт нетронутый суточный лимит.
 """
 
 import math
 import os
 
 from openai import AsyncClient
+
+# 3072 родных, режется до 1536/768 без потери качества; 768 — рекомендованный
+# компромисс по объёму хранения, на нём собраны оба индекса.
+MODEL = "gemini-embedding-2"
+DIMENSIONS = 768
 
 _client: AsyncClient | None = None
 
@@ -24,9 +40,9 @@ def _get_client() -> AsyncClient:
 async def embed(text: str) -> list[float]:
     """768-мерный вектор для текста."""
     response = await _get_client().embeddings.create(
-        model="gemini-embedding-001",
+        model=MODEL,
         input=text,
-        dimensions=768,
+        dimensions=DIMENSIONS,
     )
     return response.data[0].embedding
 

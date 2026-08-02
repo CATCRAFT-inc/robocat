@@ -70,6 +70,14 @@ EMBED_CONCURRENCY = 4
 EMBED_RPM = 55
 EMBED_RETRIES = 4
 EMBED_DIMS = 768  # столько же просит bot/ai/embeddings.embed
+# 🛑 Суточная квота (1000) ОБЩАЯ с живым ботом: тем же ключом он делает
+# вики-поиск и дедуп багов. 02.08.2026 пересборка выбрала её до дна, и до конца
+# суток каждый вопрос по вики отвечал «Поиск не удался». Оставляем боту запас;
+# недосчитанное доедет следующим запуском из partial.
+# Полная пересборка — ~710 запросов, плюс миграция дедупа багов; потолок должен
+# её пропускать целиком и всё равно оставлять боту запас.
+EMBED_DAILY_BUDGET = 850
+PARTIAL_EVERY = 50  # как часто ронять прогресс на диск
 PARTIAL_PATH = ROOT / "data" / "wiki_index.partial.json"
 
 _SKIP_TAGS = {"script", "style", "noscript", "svg"}
@@ -317,8 +325,10 @@ class _RateLimiter:
             await asyncio.sleep(delay)
 
 
-async def embed_chunks(chunks: list[dict], reuse: dict[str, list[float]]) -> list[dict]:
-    from bot.ai.embeddings import embed
+async def embed_chunks(
+    chunks: list[dict], reuse: dict[str, list[float]], budget: int = EMBED_DAILY_BUDGET
+) -> list[dict]:
+    from bot.ai.embeddings import MODEL, embed
 
     for chunk in chunks:
         if chunk["hash"] in reuse:
@@ -327,6 +337,15 @@ async def embed_chunks(chunks: list[dict], reuse: dict[str, list[float]]) -> lis
     print(f"Векторов взято из прошлых сборок: {len(chunks) - len(todo)}, считать: {len(todo)}")
     if not todo:
         return chunks
+    if len(todo) > budget:
+        # Молча урезать нельзя: недосчитанные страницы выпали бы из индекса, а
+        # прогон отрапортовал бы успех. Считаем сколько влезло и честно падаем
+        # в partial — следующий запуск (завтра) доберёт остаток.
+        print(
+            f"🛑 Нужно {len(todo)} запросов, бюджет прогона — {budget}. "
+            f"Считаю {budget}, остальные {len(todo) - budget} доедут следующим запуском."
+        )
+        todo = todo[:budget]
 
     semaphore = asyncio.Semaphore(EMBED_CONCURRENCY)
     limiter = _RateLimiter(EMBED_RPM)
@@ -339,6 +358,11 @@ async def embed_chunks(chunks: list[dict], reuse: dict[str, list[float]]) -> lis
                 await limiter.wait()
                 try:
                     chunk["vector"] = await embed(chunk["text"])
+                    # Чем посчитан вектор — часть данных, а не примечание:
+                    # `hash` считается по ТЕКСТУ, поэтому без этой метки
+                    # инкрементальный прогон после смены модели переиспользовал
+                    # бы старые векторы и намешал два несовместимых пространства
+                    chunk["model"] = MODEL
                     break
                 except Exception as exc:
                     if attempt + 1 == EMBED_RETRIES:
@@ -349,6 +373,11 @@ async def embed_chunks(chunks: list[dict], reuse: dict[str, list[float]]) -> lis
         done += 1
         if done % 25 == 0 or done == len(todo):
             print(f"  эмбеддинги: {done}/{len(todo)}")
+        # Периодический дамп: аварийный `_dump_partial` спасает только на путях,
+        # где мы сами ловим ошибку. SIGKILL (обрыв сессии, OOM) их обходит, и
+        # тогда теряется ВСЁ оплаченное — 02.08 так сгорело 125 векторов.
+        if done % PARTIAL_EVERY == 0:
+            _dump_partial(chunks, quiet=True)
 
     # return_exceptions: одна упавшая страница не должна выбрасывать сотни уже
     # посчитанных векторов — недосчитанное доедет следующим запуском из partial
@@ -360,13 +389,26 @@ async def embed_chunks(chunks: list[dict], reuse: dict[str, list[float]]) -> lis
             f"{len(errors)} чанков не посчитались (первая ошибка: {errors[0]!r}). "
             f"Прогресс сохранён в {PARTIAL_PATH.name} — просто запусти скрипт снова."
         )
+    if any(not c.get("vector") for c in chunks):
+        _dump_partial(chunks)
+        raise RuntimeError(
+            f"Бюджет прогона ({budget} запросов) исчерпан — посчитано не всё. "
+            f"Прогресс в {PARTIAL_PATH.name}, запусти скрипт снова (лучше завтра: "
+            "суточная квота эмбеддингов общая с живым ботом)."
+        )
     return chunks
 
 
-def _dump_partial(chunks: list[dict]):
+def _dump_partial(chunks: list[dict], quiet: bool = False):
     ready = [c for c in chunks if c.get("vector")]
-    PARTIAL_PATH.write_text(json.dumps(ready, ensure_ascii=False), encoding="utf-8")
-    print(f"Сохранено готовых векторов: {len(ready)} → {PARTIAL_PATH}")
+    # Через временный файл: убитый посреди записи процесс иначе оставил бы
+    # обрезанный JSON, и следующий запуск выбросил бы весь прогресс как битый
+    tmp = PARTIAL_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(ready, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(PARTIAL_PATH)
+    print(f"Сохранено готовых векторов: {len(ready)} → {PARTIAL_PATH}", flush=True)
+    if quiet:
+        return
 
 
 def load_reuse(full: bool, out: Path | None = None) -> dict[str, list[float]]:
@@ -377,6 +419,8 @@ def load_reuse(full: bool, out: Path | None = None) -> dict[str, list[float]]:
     индексом считается сам файл назначения — иначе повторный прогон в тот же
     файл пересчитывал бы всё заново, хотя рядом лежит готовый результат.
     """
+    from bot.ai.embeddings import MODEL
+
     if full:
         # `--full` обязан значить «пересчитать всё». Раньше он всё равно тянул
         # partial, и прогон, заявленный как полная пересборка, молча смешивал
@@ -397,9 +441,12 @@ def load_reuse(full: bool, out: Path | None = None) -> dict[str, list[float]]:
             found = {
                 c["hash"]: c["vector"]
                 for c in data
-                # Размерность сверяем: вектор от другой модели или от другого
-                # `dimensions` молча испортил бы всё векторное пространство
-                if c.get("hash") and len(c.get("vector") or ()) == EMBED_DIMS
+                # Модель и размерность сверяем: вектор из чужого пространства
+                # не «похуже», а мусор — и мусор молчаливый. Индекс без метки
+                # `model` собран до её появления, то есть точно не текущей.
+                if c.get("hash")
+                and c.get("model") == MODEL
+                and len(c.get("vector") or ()) == EMBED_DIMS
             }
         except (OSError, ValueError, TypeError, AttributeError) as exc:
             print(f"{path.name} не прочитался ({exc}) — пропускаю")

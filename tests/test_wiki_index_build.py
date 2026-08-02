@@ -10,6 +10,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(
     "build_wiki_index", ROOT / "scripts" / "build_wiki_index.py"
@@ -171,21 +173,41 @@ def test_load_reuse_full_ignores_every_source(tmp_path, monkeypatch):
 def test_load_reuse_with_out_still_reads_the_main_index(tmp_path, monkeypatch):
     # `--out` обязателен на проде. Раньше он ОТКЛЮЧАЛ переиспользование из
     # data/wiki_index.json, и «поправить одну страницу» жгло дневную квоту.
-    index = _index(tmp_path, "i.json", [{"hash": "a", "vector": [0.1] * 768}])
-    out = _index(tmp_path, "o.json", [{"hash": "b", "vector": [0.2] * 768}])
+    from bot.ai.embeddings import MODEL
+
+    index = _index(tmp_path, "i.json", [{"hash": "a", "vector": [0.1] * 768, "model": MODEL}])
+    out = _index(tmp_path, "o.json", [{"hash": "b", "vector": [0.2] * 768, "model": MODEL}])
     monkeypatch.setattr(build, "INDEX_PATH", index)
     monkeypatch.setattr(build, "PARTIAL_PATH", tmp_path / "нет.json")
     assert set(build.load_reuse(full=False, out=out)) == {"a", "b"}
 
 
 def test_load_reuse_rejects_vectors_of_wrong_dimension(tmp_path, monkeypatch):
+    from bot.ai.embeddings import MODEL
+
     index = _index(tmp_path, "i.json", [
-        {"hash": "ok", "vector": [0.1] * 768},
-        {"hash": "чужая модель", "vector": [0.1] * 1536},
+        {"hash": "ok", "vector": [0.1] * 768, "model": MODEL},
+        {"hash": "другая размерность", "vector": [0.1] * 1536, "model": MODEL},
     ])
     monkeypatch.setattr(build, "INDEX_PATH", index)
     monkeypatch.setattr(build, "PARTIAL_PATH", tmp_path / "нет.json")
     assert set(build.load_reuse(full=False)) == {"ok"}
+
+
+def test_load_reuse_rejects_vectors_from_another_model(tmp_path, monkeypatch):
+    # 🛑 `hash` считается по ТЕКСТУ: без сверки модели инкрементальный прогон
+    # после переезда переиспользовал бы старые векторы, и в индексе оказались бы
+    # два несовместимых пространства — молча, без единой ошибки.
+    from bot.ai.embeddings import MODEL
+
+    index = _index(tmp_path, "i.json", [
+        {"hash": "свой", "vector": [0.1] * 768, "model": MODEL},
+        {"hash": "чужой", "vector": [0.1] * 768, "model": "gemini-embedding-001"},
+        {"hash": "без метки", "vector": [0.1] * 768},
+    ])
+    monkeypatch.setattr(build, "INDEX_PATH", index)
+    monkeypatch.setattr(build, "PARTIAL_PATH", tmp_path / "нет.json")
+    assert set(build.load_reuse(full=False)) == {"свой"}
 
 
 def test_load_reuse_survives_garbage_file(tmp_path, monkeypatch):
@@ -202,6 +224,51 @@ def test_module_import_does_not_read_dotenv():
     source = (ROOT / "scripts" / "build_wiki_index.py").read_text(encoding="utf-8")
     body = source.split("def main(")[0]
     assert "load_dotenv(" not in body
+
+
+def test_embed_stops_at_budget_and_saves_progress(tmp_path, monkeypatch):
+    # 🛑 Суточная квота общая с живым ботом: 02.08.2026 пересборка выбрала её
+    # до дна, и до конца суток вики-поиск отвечал «Поиск не удался».
+    # Урезание обязано быть громким и сохранять прогресс, а не молчать.
+    partial = tmp_path / "partial.json"
+    monkeypatch.setattr(build, "PARTIAL_PATH", partial)
+
+    async def fake_embed(text):
+        return [0.5] * 768
+
+    stub = type(sys)("bot.ai.embeddings")
+    stub.embed = fake_embed
+    stub.MODEL = "тестовая-модель"
+    monkeypatch.setitem(sys.modules, "bot.ai.embeddings", stub)
+
+    chunks = [{"hash": str(i), "text": f"чанк {i}", "source": "s"} for i in range(5)]
+    with pytest.raises(RuntimeError, match="Бюджет прогона"):
+        asyncio.run(build.embed_chunks(chunks, reuse={}, budget=3))
+
+    saved = json.loads(partial.read_text(encoding="utf-8"))
+    assert len(saved) == 3  # оплаченное не потеряно
+    assert all(len(c["vector"]) == 768 for c in saved)
+
+
+def test_partial_dump_is_atomic(tmp_path, monkeypatch):
+    # Процесс, убитый посреди записи, иначе оставил бы обрезанный JSON, и
+    # следующий запуск выбросил бы весь прогресс как битый.
+    partial = tmp_path / "partial.json"
+    monkeypatch.setattr(build, "PARTIAL_PATH", partial)
+    real_replace = Path.replace
+    seen: list[bool] = []
+
+    def spy(self, target):
+        # В момент подмены целевой файл либо ещё старый, либо уже целый —
+        # промежуточного состояния «наполовину записан» быть не может
+        seen.append(self.suffix == ".tmp")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", spy)
+    build._dump_partial([{"hash": "a", "vector": [0.1] * 768}, {"hash": "b"}])
+
+    assert seen == [True]
+    assert len(json.loads(partial.read_text(encoding="utf-8"))) == 1
 
 
 def test_rate_limiter_spaces_out_calls():

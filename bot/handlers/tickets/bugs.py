@@ -14,14 +14,16 @@ from bot.utils import create_container, create_embed
 from bot.flag_system.flag_system import flags
 
 try:  # W3 создаёт этот модуль; дедуп — необязательная фича
-    from bot.ai.embeddings import embed, cosine
+    from bot.ai.embeddings import MODEL as EMBED_MODEL, embed, cosine
 except Exception:  # pragma: no cover
     embed = None
     cosine = None
+    EMBED_MODEL = None
 
 logger = logging.getLogger("robocat.bugs")
 
-# Индекс баг-репортов для дедупликации: {thread_id: {"text", "url", "vector"}}
+# Индекс баг-репортов: {thread_id: {"text", "url", "vector", "model"}}
+# `model` обязателен — см. сравнение ниже и докстринг bot/ai/embeddings.py
 _BUG_INDEX_PATH = pathlib.Path(__file__).parent.parent.parent.parent / "data" / "bug_index.json"
 _bug_index_lock = asyncio.Lock()
 
@@ -224,6 +226,12 @@ class BugHandler(commands.Cog):
                             vec = entry.get("vector")
                             if not vec:
                                 continue
+                            # Косинус между векторами РАЗНЫХ моделей — не «похуже»,
+                            # а бессмыслица, и молчаливая. Записи чужой модели
+                            # пропускаем: дедуп теряет старую историю, но не врёт.
+                            # Лечится миграцией — scripts/migrate_bug_index.py.
+                            if entry.get("model") != EMBED_MODEL:
+                                continue
                             try:
                                 if cosine(vector, vec) >= 0.72:
                                     similar.append(entry)
@@ -241,6 +249,7 @@ class BugHandler(commands.Cog):
                                 raise
                         index[str(bug_thread.id)] = {
                             "text": bug_description,
+                            "model": EMBED_MODEL,
                             "url": f"https://discord.com/channels/{inter.guild_id}/{bug_thread.id}",
                             "vector": vector,
                         }
