@@ -4,6 +4,11 @@
 процесса до публикации; рестарт бота их теряет — превью живёт минуты, тащить
 их в БД незачем. /news_edit разбирает опубликованный контейнер обратно в поля
 и открывает ту же модалку.
+
+Тело новости — размеченный текст: строка-ссылка становится галереей картинок,
+строка из трёх дефисов — разделителем, остальное уходит в TextDisplay как есть
+(markdown Discord рисует сам). Так в одном поле модалки задаётся произвольное
+чередование текста и картинок — форма на пять полей этого не умеет.
 """
 
 import asyncio
@@ -21,13 +26,32 @@ from bot.storage import ColorStorage
 
 _NEWS_CHANNEL_NAMES = ("Объявления", "Газета", "Медиа", "Информатор", "Секретный")
 _NO_PING = "Без пинга"
+# placeholder модалки: у Discord на него 100 символов, поэтому пример короткий
+_TEXT_HINT = "Что нового.\nhttps://ссылка-на-картинку.png\n---\n**Дальше** ещё текст."
 
 _PING_LINE = re.compile(r"^<@&(\d+)>$")
+# только картинки: голая ссылка на discord.gg или сайт — обычный кликабельный
+# текст, в галерее она стала бы битой плиткой (или отказом Discord)
+_IMAGE_LINE = re.compile(r"^https?://\S+\.(?:png|jpe?g|gif|webp)(?:\?\S*)?$", re.IGNORECASE)
+_DIVIDER_LINE = re.compile(r"^(?:-{3,}|\*{3,}|_{3,})$")
+_CODE_FENCE = "```"
+_DIVIDER = "---"
+_GALLERY_LIMIT = 10  # столько картинок держит одна MediaGallery
+# у сообщения V2 потолки: 40 компонентов и 4000 символов текста, оба считают
+# ВЛОЖЕННЫЕ. Тяжелее публикации не она, а превью: подпись + контейнер + три кнопки
+_PREVIEW_OVERHEAD = 6
+_MAX_BLOCKS = 40 - _PREVIEW_OVERHEAD
+_MAX_TEXT = 4000 - 200  # запас на подпись превью и заголовок
+# id служебных блоков пинга: Discord возвращает заданный id обратно, и это
+# единственный способ отличить наш пинг от строки-упоминания, набранной руками
+_PING_TEXT_ID = 99
+_PING_SEPARATOR_ID = 98
 
 # message.components отдаёт read-side классы, в тестах контейнер собран из ui-классов —
 # атрибуты (children/content/items) совпадают, парсер принимает оба
 _TEXT_TYPES = (disnake.ui.TextDisplay, disnake.TextDisplay)
 _GALLERY_TYPES = (disnake.ui.MediaGallery, disnake.MediaGallery)
+_SEPARATOR_TYPES = (disnake.ui.Separator, disnake.Separator)
 
 
 def _news_channels() -> dict[str, int]:
@@ -61,42 +85,123 @@ class _Draft:
     channel_id: int
     title: str = ""
     text: str = ""
-    image_url: str = ""
     ping_role_id: int | None = None
     edit_message_id: int | None = None  # /news_edit: правим существующий пост
+
+
+def _body_blocks(text: str) -> list:
+    """Размеченный текст → компоненты тела: TextDisplay / MediaGallery / Separator."""
+    blocks: list = []
+    paragraph: list[str] = []
+    images: list[str] = []
+
+    def flush_paragraph() -> None:
+        chunk = "\n".join(paragraph).strip()
+        paragraph.clear()
+        if chunk:  # пустой TextDisplay Discord не принимает
+            blocks.append(disnake.ui.TextDisplay(chunk))
+
+    def flush_images() -> None:
+        while images:
+            batch = images[:_GALLERY_LIMIT]
+            del images[:_GALLERY_LIMIT]
+            blocks.append(disnake.ui.MediaGallery(*(disnake.MediaGalleryItem(u) for u in batch)))
+
+    in_code = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith(_CODE_FENCE):
+            # содержимое ``` не разбираем: разрезанный по строкам блок кода
+            # не закроется, и у читателя останутся голые backtick'и
+            in_code = not in_code
+            flush_images()
+            paragraph.append(line)
+        elif in_code:
+            paragraph.append(line)
+        elif _IMAGE_LINE.match(stripped):
+            flush_paragraph()
+            images.append(stripped)
+        elif _DIVIDER_LINE.match(stripped):
+            flush_paragraph()
+            flush_images()
+            blocks.append(disnake.ui.Separator())
+        else:
+            # пустая строка между ссылками не рвёт галерею: они собираются в сетку
+            if stripped:
+                flush_images()
+            paragraph.append(line)
+    flush_paragraph()
+    flush_images()
+    return blocks
+
+
+def _too_big(draft: _Draft) -> str:
+    """Причина, по которой Discord не примет пост, либо пустая строка."""
+    children = _news_container(draft).children
+    blocks = len(children)
+    if blocks > _MAX_BLOCKS:
+        return (
+            f"Слишком много блоков: {blocks} при потолке {_MAX_BLOCKS} "
+            "(каждая картинка и каждый `---` — блок)"
+        )
+    symbols = sum(len(c.content) for c in children if isinstance(c, _TEXT_TYPES))
+    if symbols > _MAX_TEXT:
+        return f"Слишком много текста: {symbols} символов при потолке {_MAX_TEXT}"
+    return ""
 
 
 def _news_container(draft: _Draft) -> disnake.ui.Container:
     children = [
         disnake.ui.TextDisplay(f"# {draft.title}"),
         disnake.ui.Separator(),
-        disnake.ui.TextDisplay(draft.text),
+        *_body_blocks(draft.text),
     ]
-    if draft.image_url:
-        children.append(disnake.ui.MediaGallery(disnake.MediaGalleryItem(draft.image_url)))
     if draft.ping_role_id:
-        children.append(disnake.ui.Separator())
-        children.append(disnake.ui.TextDisplay(f"<@&{draft.ping_role_id}>"))
+        children.append(disnake.ui.Separator(id=_PING_SEPARATOR_ID))
+        children.append(disnake.ui.TextDisplay(f"<@&{draft.ping_role_id}>", id=_PING_TEXT_ID))
     return disnake.ui.Container(*children, accent_colour=disnake.Colour.from_hex(ColorStorage.main))
 
 
 def _parse_container(container) -> "_Draft | None":
-    """Опубликованный контейнер → черновик. None — не похоже на нашу новость."""
-    draft = _Draft(author_id=0, channel_id=0)
-    texts = []
-    for child in container.children:
+    """Опубликованный контейнер → черновик. None — не похоже на нашу новость.
+
+    Обратная сторона `_news_container`: тело сворачивается назад в размеченный
+    текст — не байт в байт (пустые строки вокруг картинок и вид разделителя
+    нормализуются), но с тем же набором и порядком блоков.
+
+    🛑 Пинг снимается ТОЛЬКО по служебному id, а не по виду строки. Иначе тело,
+    заканчивающееся упоминанием роли, при «Править» теряло бы две строки и молча
+    подставляло роль в выпадашку — а следом уходило в публикацию с разрешением
+    пинговать, которого автор не давал.
+    """
+    children = list(container.children)
+    if not children or not isinstance(children[0], _TEXT_TYPES):
+        return None
+    head = (children[0].content or "").strip()
+    if not head.startswith("# "):
+        return None
+    draft = _Draft(author_id=0, channel_id=0, title=head[2:].strip())
+
+    body = children[1:]
+    if body and isinstance(body[0], _SEPARATOR_TYPES):
+        body = body[1:]  # служебный разделитель под заголовком
+    if body and getattr(body[-1], "id", 0) == _PING_TEXT_ID:
+        m = _PING_LINE.match((body[-1].content or "").strip())
+        if m:
+            draft.ping_role_id = int(m.group(1))
+            body = body[:-1]
+            if body and getattr(body[-1], "id", 0) == _PING_SEPARATOR_ID:
+                body = body[:-1]
+
+    lines: list[str] = []
+    for child in body:
         if isinstance(child, _TEXT_TYPES):
-            content = (child.content or "").strip()
-            m = _PING_LINE.match(content)
-            if m:
-                draft.ping_role_id = int(m.group(1))
-            elif not draft.title and content.startswith("# "):
-                draft.title = content[2:].strip()
-            else:
-                texts.append(child.content)
-        elif isinstance(child, _GALLERY_TYPES) and child.items:
-            draft.image_url = child.items[0].media.url
-    draft.text = "\n".join(texts).strip()
+            lines.append(child.content or "")
+        elif isinstance(child, _GALLERY_TYPES):
+            lines.extend(item.media.url for item in child.items)
+        elif isinstance(child, _SEPARATOR_TYPES):
+            lines.append(_DIVIDER)
+    draft.text = "\n".join(lines).strip()
     if not draft.title or not draft.text:
         return None
     return draft
@@ -114,25 +219,26 @@ class NewsModal(disnake.ui.Modal):
             for label, role_id in _ping_roles().items()
         ]
         components = [
-            disnake.ui.TextInput(
-                label="Заголовок",
-                custom_id="news_title",
-                value=draft.title or None,
-                max_length=150,
+            # все поля — через Label: disnake заворачивает голый TextInput в legacy
+            # ActionRow, а смешивать два формата компонентов в одной модалке рискованно
+            disnake.ui.Label(
+                text="Заголовок",
+                component=disnake.ui.TextInput(
+                    custom_id="news_title",
+                    value=draft.title or None,
+                    max_length=150,
+                ),
             ),
-            disnake.ui.TextInput(
-                label="Текст",
-                custom_id="news_text",
-                style=disnake.TextInputStyle.paragraph,
-                value=draft.text or None,
-                max_length=3000,
-            ),
-            disnake.ui.TextInput(
-                label="Ссылка на картинку (необязательно)",
-                custom_id="news_image",
-                value=draft.image_url or None,
-                required=False,
-                max_length=500,
+            disnake.ui.Label(
+                text="Текст",
+                description="Ссылка на картинку отдельной строкой, --- — разделитель",
+                component=disnake.ui.TextInput(
+                    custom_id="news_text",
+                    style=disnake.TextInputStyle.paragraph,
+                    value=draft.text or None,
+                    placeholder=_TEXT_HINT,
+                    max_length=4000,
+                ),
             ),
             disnake.ui.Label(
                 text="Кого пинговать",
@@ -148,17 +254,44 @@ class NewsModal(disnake.ui.Modal):
             return
         draft.title = inter.text_values["news_title"].strip()
         draft.text = inter.text_values["news_text"].strip()
-        draft.image_url = (inter.text_values.get("news_image") or "").strip()
         picked = inter.resolved_values.get("news_ping")
         value = picked[0] if isinstance(picked, (list, tuple)) else picked
         draft.ping_role_id = int(value) if value and value != _NO_PING else None
 
-        components = self.cog._preview(draft, self.draft_id)
-        if inter.message is not None:
-            # модалка открыта кнопкой «Править» с превью — обновляем то же превью
-            await inter.response.edit_message(components=components)
+        # ловим здесь, а не на публикации: там отказ Discord читается как
+        # «сбой, попробуй ещё раз», и человек не понимает, что именно чинить
+        problem = _too_big(draft)
+        if problem:
+            components = self._refuse(problem)
         else:
-            await inter.response.send_message(components=components, ephemeral=True)
+            components = self.cog._preview(draft, self.draft_id)
+        try:
+            if inter.message is not None:
+                # модалка открыта кнопкой «Править» с превью — обновляем то же превью
+                await inter.response.edit_message(components=components)
+            else:
+                await inter.response.send_message(components=components, ephemeral=True)
+        except disnake.HTTPException:
+            # превью не приняли по причине, которой нет в наших проверках. Без этой
+            # ветки интеракция остаётся без ответа, а текст — в черновике, до
+            # которого не дотянуться: кнопки «Править» ещё не существует
+            self.cog.logger.exception("Превью новости отвергнуто Discord")
+            await inter.response.send_message(
+                components=self._refuse("Discord не принял превью — скорее всего пост слишком большой"),
+                ephemeral=True,
+            )
+
+    def _refuse(self, reason: str) -> list:
+        """Отказ, из которого есть выход: текст остаётся в черновике за кнопкой."""
+        return [
+            disnake.ui.TextDisplay(f"{reason}. Текст не потерян — жми «Править»."),
+            disnake.ui.ActionRow(
+                disnake.ui.Button(
+                    style=disnake.ButtonStyle.secondary, label="Править",
+                    custom_id=f"NEWS_EDIT:{self.draft_id}",
+                ),
+            ),
+        ]
 
 
 class NewsEditor(commands.Cog):

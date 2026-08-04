@@ -12,8 +12,11 @@ import disnake
 import pytest
 
 from bot.handlers.news_editor import (
+    _MAX_BLOCKS,
+    _PREVIEW_OVERHEAD,
     NewsEditor,
     NewsModal,
+    _body_blocks,
     _Draft,
     _news_container,
     _parse_container,
@@ -50,7 +53,7 @@ def test_news_container_minimal_structure():
 
 
 def test_news_container_with_image_and_ping():
-    container = _news_container(_draft(image_url="https://x/img.png", ping_role_id=Roles.events))
+    container = _news_container(_draft(text="Завезли\nhttps://x/img.png", ping_role_id=Roles.events))
     children = list(container.children)
     galleries = [c for c in children if isinstance(c, disnake.ui.MediaGallery)]
     assert len(galleries) == 1
@@ -58,19 +61,132 @@ def test_news_container_with_image_and_ping():
 
 
 def test_parse_container_roundtrip():
-    src = _draft(image_url="https://x/img.png", ping_role_id=Roles.events,
-                 text="Первая строка\nВторая строка")
+    src = _draft(ping_role_id=Roles.events,
+                 text="Первая строка\nВторая строка\nhttps://x/img.png")
     parsed = _parse_container(_news_container(src))
     assert parsed is not None
     assert parsed.title == src.title
     assert parsed.text == src.text
-    assert parsed.image_url == src.image_url
     assert parsed.ping_role_id == src.ping_role_id
 
 
 def test_parse_container_rejects_foreign():
     foreign = disnake.ui.Container(disnake.ui.TextDisplay("просто текст без заголовка"))
     assert _parse_container(foreign) is None
+
+
+# --- разметка тела ---
+
+def test_body_blocks_interleaves_text_and_images():
+    blocks = _body_blocks(
+        "Начало\nhttps://x/1.png\nСередина\n---\nКонец"
+    )
+    kinds = [type(b) for b in blocks]
+    assert kinds == [
+        disnake.ui.TextDisplay, disnake.ui.MediaGallery,
+        disnake.ui.TextDisplay, disnake.ui.Separator, disnake.ui.TextDisplay,
+    ]
+    assert blocks[0].content == "Начало"
+    assert blocks[2].content == "Середина"
+
+
+def test_body_blocks_accepts_star_divider():
+    # три звёздочки — привычная альтернатива дефисам, обе дают Separator
+    assert [type(b) for b in _body_blocks("А\n***\nБ")] == [
+        disnake.ui.TextDisplay, disnake.ui.Separator, disnake.ui.TextDisplay,
+    ]
+
+
+def test_body_blocks_groups_adjacent_images_into_one_gallery():
+    # соседние ссылки — сетка в одной галерее; пустая строка её не рвёт
+    blocks = _body_blocks("https://x/1.png\n\nhttps://x/2.png")
+    assert len(blocks) == 1
+    assert len(blocks[0].items) == 2
+
+
+def test_body_blocks_splits_gallery_over_ten_images():
+    blocks = _body_blocks("\n".join(f"https://x/{i}.png" for i in range(12)))
+    assert [len(b.items) for b in blocks] == [10, 2]
+
+
+def test_body_blocks_skips_empty_paragraphs():
+    # пустой TextDisplay Discord отвергает — блоков из пустоты быть не должно
+    assert _body_blocks("\n\n\n") == []
+    blocks = _body_blocks("\n\nТекст\n\n")
+    assert len(blocks) == 1 and blocks[0].content == "Текст"
+
+
+def test_body_blocks_keeps_inline_url_as_text():
+    # ссылка внутри предложения — не картинка, а обычный markdown-текст
+    blocks = _body_blocks("Подробности тут https://x/page — заходите")
+    assert len(blocks) == 1
+    assert isinstance(blocks[0], disnake.ui.TextDisplay)
+
+
+def test_body_blocks_keeps_non_image_link_as_text():
+    # приглашение/соцсеть отдельной строкой — кликабельный текст, а не битая плитка
+    blocks = _body_blocks("Заходи\nhttps://discord.gg/catcraftmc\nhttps://t.me/catcraftmc_tg")
+    assert len(blocks) == 1
+    assert isinstance(blocks[0], disnake.ui.TextDisplay)
+
+
+def test_body_blocks_image_link_survives_query_string():
+    # у ссылок из Discord после расширения идёт подпись — картинкой быть не мешает
+    blocks = _body_blocks("https://cdn.discordapp.com/a/1.PNG?ex=68&is=67&hm=ab")
+    assert isinstance(blocks[0], disnake.ui.MediaGallery)
+
+
+def test_body_blocks_keeps_url_with_trailing_punctuation_as_text():
+    blocks = _body_blocks("https://x/1.png.")
+    assert isinstance(blocks[0], disnake.ui.TextDisplay)
+
+
+def test_body_blocks_does_not_split_code_block():
+    # разрезанный по строкам ``` не закроется — у читателя останутся backtick'и
+    blocks = _body_blocks("```\nhttps://x/1.png\n---\n```")
+    assert len(blocks) == 1
+    assert blocks[0].content.count("```") == 2
+
+
+def test_parse_container_roundtrip_keeps_layout():
+    src = _draft(text="Начало\nhttps://x/1.png\n---\nКонец", ping_role_id=Roles.events)
+    parsed = _parse_container(_news_container(src))
+    assert parsed is not None
+    # порядок блоков переживает публикацию → «Править» → повторную сборку
+    assert parsed.text == src.text
+    assert _parse_container(_news_container(parsed)).text == src.text
+
+
+def test_parse_container_ignores_handwritten_role_mention():
+    # тело, кончающееся упоминанием роли: пинг не заказан — и не должен появиться.
+    # Иначе «Править» съедало бы две строки и подставляло роль в выпадашку,
+    # а следом публикация уходила бы с разрешением пинговать
+    src = _draft(text=f"Текст\n---\n<@&{Roles.events}>")
+    parsed = _parse_container(_news_container(src))
+    assert parsed is not None
+    assert parsed.ping_role_id is None
+    assert parsed.text == src.text
+
+
+def test_parse_container_reads_own_ping_by_id():
+    src = _draft(text="Текст", ping_role_id=Roles.events)
+    parsed = _parse_container(_news_container(src))
+    assert parsed is not None
+    assert parsed.ping_role_id == Roles.events
+    assert parsed.text == "Текст"  # служебные блоки в тело не протекли
+
+
+def test_parse_container_reads_legacy_post():
+    # новости, опубликованные до разметки: картинка отдельным блоком снизу
+    legacy = disnake.ui.Container(
+        disnake.ui.TextDisplay("# Обнова"),
+        disnake.ui.Separator(),
+        disnake.ui.TextDisplay("Завезли контент"),
+        disnake.ui.MediaGallery(disnake.MediaGalleryItem("https://x/img.png")),
+    )
+    parsed = _parse_container(legacy)
+    assert parsed is not None
+    assert parsed.text == "Завезли контент\nhttps://x/img.png"
 
 
 # --- ссылка/ID сообщения ---
@@ -111,13 +227,81 @@ def test_modal_constructs_with_prefill():
     assert modal.custom_id == "news_modal:1"
 
 
+async def _run_modal(cog, text: str, *, fail_preview: bool = False):
+    modal = NewsModal(cog, 1)
+    inter = MagicMock()
+    inter.message = None
+    inter.text_values = {"news_title": "Обнова", "news_text": text}
+    inter.resolved_values = {}
+    inter.response.send_message = AsyncMock()
+    if fail_preview:
+        inter.response.send_message.side_effect = [
+            disnake.HTTPException(MagicMock(status=400), "Invalid"), None,
+        ]
+    await modal.callback(inter)
+    return inter.response.send_message.await_args.kwargs["components"]
+
+
+async def test_modal_callback_rejects_oversized_post_and_keeps_text():
+    # больше блоков, чем держит сообщение → понятный отказ вместо падения на публикации
+    cog = _cog()
+    cog.drafts[1] = _draft()
+
+    components = await _run_modal(cog, "\n".join(f"строка {i}\n---" for i in range(30)))
+
+    assert "Слишком много блоков" in components[0].content
+    assert cog.drafts[1].text  # текст не потерян, кнопка «Править» вернёт его в модалку
+    assert components[1].children[0].custom_id == "NEWS_EDIT:1"
+
+
+async def test_modal_callback_counts_preview_overhead_not_just_post():
+    # 36 блоков: публикуемый пост (37 компонентов) в лимит Discord влезает,
+    # а превью с подписью и тремя кнопками — уже нет. Число намеренно жёсткое:
+    # тест, считающий его от _MAX_BLOCKS, подстроится под сдвинутый порог и
+    # перестанет ловить регрессию
+    cog = _cog()
+    cog.drafts[1] = _draft()
+
+    components = await _run_modal(cog, "\n".join(["текст", "---"] * 17))
+
+    assert len(_news_container(cog.drafts[1]).children) == 36
+    assert "Слишком много блоков" in components[0].content
+
+
+def test_max_blocks_leaves_room_for_preview():
+    # порог считает превью (контейнер + подпись + строка из трёх кнопок), не пост
+    assert _MAX_BLOCKS + _PREVIEW_OVERHEAD <= 40
+
+
+async def test_modal_callback_rejects_over_text_budget():
+    # 4000 символов в поле больше, чем текстовый бюджет сообщения V2
+    cog = _cog()
+    cog.drafts[1] = _draft()
+
+    components = await _run_modal(cog, "я" * 3999)
+
+    assert "Слишком много текста" in components[0].content
+
+
+async def test_modal_callback_survives_rejected_preview():
+    # Discord отверг превью по причине, которой нет в наших проверках:
+    # интеракция всё равно должна получить ответ с выходом на «Править»
+    cog = _cog()
+    cog.drafts[1] = _draft()
+
+    components = await _run_modal(cog, "Нормальный текст", fail_preview=True)
+
+    assert "Править" in components[0].content
+    assert cog.drafts[1].text
+
+
 async def test_modal_callback_updates_draft_and_sends_preview():
     cog = _cog()
     cog.drafts[1] = _draft(title="", text="")
     modal = NewsModal(cog, 1)
     inter = MagicMock()
     inter.message = None
-    inter.text_values = {"news_title": " Обнова ", "news_text": "Текст", "news_image": ""}
+    inter.text_values = {"news_title": " Обнова ", "news_text": "Текст"}
     inter.resolved_values = {"news_ping": [str(Roles.events)]}
     inter.response.send_message = AsyncMock()
 
