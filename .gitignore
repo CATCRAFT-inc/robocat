@@ -182,3 +182,7 @@ _docs/
 # глазами проверить, что вытащилось из вёрстки. В сборку обратно не подаётся.
 data/wiki_chunks.json
 data/wiki_index.partial.json
+
+# Кэш голов игроков для !пинг (scripts/warm_heads.py). Генерённое, переживает
+# деплой (git reset --hard ignored-файлы не трогает) — поэтому и не в git.
+data/heads/
