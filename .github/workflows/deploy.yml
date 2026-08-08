@@ -26,10 +26,15 @@ jobs:
 
       - name: Install dependencies
         # пины тулов: breaking-релиз pytest не должен блокировать срочный хотфикс
-        run: pip install -r requirements.txt "pytest~=9.1" "pytest-asyncio~=1.4"
+        run: pip install -r requirements.txt "pytest~=9.1" "pytest-asyncio~=1.4" "pytest-timeout~=2.4"
 
       - name: Run tests
-        run: pytest -q
+        # 🛑 --timeout: зависший тест обязан НАЗВАТЬ СЕБЯ и уронить прогон, а не
+        # молча съесть timeout-minutes job'а. Прецедент 08.08.2026: один тест
+        # повис на Server.wait_closed() (регресс asyncio в 3.12, на 3.14 его
+        # нет), job убился по лимиту, deploy пропустился — прод остался на
+        # старом коде, а в логе не было ни одного имени теста.
+        run: pytest -q --timeout=120 --timeout-method=thread
 
   deploy:
     runs-on: ubuntu-latest

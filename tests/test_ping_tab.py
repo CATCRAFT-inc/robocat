@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import contextlib
 import io
 import json
 import os
@@ -1337,6 +1338,24 @@ def test_warm_heads_deduplicates():
 
 # ── RCON: несколько команд в одном соединении ────────────────────────────
 
+@contextlib.asynccontextmanager
+async def _serving(handler, port):
+    """Поднятый сервер, который ГАРАНТИРОВАННО отпускает тест.
+
+    🛑 Штатный `async with server` использовать нельзя: на Python 3.12 (а CI
+    гоняет именно его) `Server.wait_closed()` не будит ожидающих, если клиент
+    отвалился с ошибкой, а обработчик его пережил. Тест виснет навсегда —
+    именно так один зависший тест съел десятиминутный лимит job'а и отменил
+    деплой прода. На 3.14 того же зависания нет, поэтому локально всё зелёное.
+    Нам от сервера нужно только закрыть слушающий сокет — этого достаточно.
+    """
+    server = await asyncio.start_server(handler, "127.0.0.1", port)
+    try:
+        yield server
+    finally:
+        server.close()
+
+
 def _packet(req_id: int, ptype: int, payload: str) -> bytes:
     # req_id знаковый: провал аутентификации сервер отвечает -1.
     body = payload.encode() + b"\x00\x00"
@@ -1359,8 +1378,7 @@ async def test_rcon_exec_many_keeps_response_order(unused_tcp_port):
                 writer.write(_packet(req_id, 0, answers.get(req_id, "")))
             await writer.drain()
 
-    server = await asyncio.start_server(serve, "127.0.0.1", unused_tcp_port)
-    async with server:
+    async with _serving(serve, unused_tcp_port):
         result = await rcon_exec_many(
             "127.0.0.1", unused_tcp_port, "pass", ["a", "b", "c"], timeout=5.0
         )
@@ -1395,8 +1413,7 @@ async def test_rcon_exec_many_never_sends_two_packets_in_one_read(unused_tcp_por
         finally:
             writer.close()
 
-    server = await asyncio.start_server(serve, "127.0.0.1", unused_tcp_port)
-    async with server:
+    async with _serving(serve, unused_tcp_port):
         result = await rcon_exec_many(
             "127.0.0.1", unused_tcp_port, "pass", ["a", "b", "c"], timeout=5.0
         )
@@ -1426,8 +1443,7 @@ async def test_rcon_exec_many_returns_empty_for_a_silent_command(unused_tcp_port
                 continue
             await writer.drain()
 
-    server = await asyncio.start_server(serve, "127.0.0.1", unused_tcp_port)
-    async with server:
+    async with _serving(serve, unused_tcp_port):
         result = await asyncio.wait_for(
             rcon_exec_many("127.0.0.1", unused_tcp_port, "pass", ["тихая"], timeout=5.0),
             timeout=10.0,
@@ -1444,8 +1460,7 @@ async def test_rcon_exec_many_rejects_an_absurd_packet_length(unused_tcp_port):
         await writer.drain()
         await asyncio.sleep(5)
 
-    server = await asyncio.start_server(serve, "127.0.0.1", unused_tcp_port)
-    async with server:
+    async with _serving(serve, unused_tcp_port):
         with pytest.raises(ValueError):
             await asyncio.wait_for(
                 rcon_exec_many("127.0.0.1", unused_tcp_port, "pass", ["a"], timeout=5.0),
@@ -1556,7 +1571,6 @@ async def test_rcon_exec_many_raises_on_wrong_password(unused_tcp_port):
         writer.write(_packet(-1, 2, ""))
         await writer.drain()
 
-    server = await asyncio.start_server(serve, "127.0.0.1", unused_tcp_port)
-    async with server:
+    async with _serving(serve, unused_tcp_port):
         with pytest.raises(PermissionError):
             await rcon_exec_many("127.0.0.1", unused_tcp_port, "bad", ["a"], timeout=5.0)
