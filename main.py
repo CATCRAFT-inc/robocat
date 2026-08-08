@@ -46,7 +46,6 @@ def load_extension():
 
         # Prefix commands
         "commands.faq",
-        "commands.general",
 
         ### Handlers
         "handlers.role_select",
@@ -59,6 +58,7 @@ def load_extension():
         "handlers.catcraft_fm",
         "handlers.idiot_check",
         "handlers.rcon",          # RCON команды
+        "handlers.ping_tab",      # !пинг — список игроков картинкой в стиле TAB
         "handlers.honeypot",      # Ловушка для ботов
         "handlers.get_a_job",     # кнопка «Посмотреть доступные вакансии»
         "handlers.digest",        # /digest — выжимка новостей

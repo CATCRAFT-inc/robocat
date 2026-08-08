@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import struct
+import time
 
 import disnake
 from disnake.ext import commands
@@ -20,9 +21,29 @@ def _pack(req_id: int, ptype: int, payload: str) -> bytes:
     return struct.pack("<III", 4 + 4 + len(body), req_id, ptype) + body
 
 
-async def _read_packet(reader: asyncio.StreamReader) -> tuple[int, int, str]:
-    header = await reader.readexactly(4)
-    length = struct.unpack("<I", header)[0]
+MAX_PACKET = 8192  # спека Source RCON — 4096; вдвое с запасом
+FIRST_PACKET_WAIT = 2.0  # см. rcon_exec_many
+
+
+async def _read_length(reader: asyncio.StreamReader) -> int:
+    """Заголовок пакета.
+
+    🛑 Отменять ЭТО ожидание безопасно, а чтение тела — уже нет: `readexactly`
+    забирает байты из буфера только когда набралось нужное количество, поэтому
+    отмена на заголовке ничего не съедает, а отмена ПОСЛЕ него оставляет поток
+    сдвинутым на четыре байта. Именно поэтому короткий дедлайн вешается только
+    сюда (воспроизведено: после отмены на теле следующий разбор падал на
+    «неправдоподобной длине 2» — читал request id как длину).
+    """
+    length = struct.unpack("<I", await reader.readexactly(4))[0]
+    if not 8 <= length <= MAX_PACKET:
+        # Без границы битый заголовок с length=0xFFFFFFFF заставляет читателя
+        # копить буфер до таймаута. Путь стал публичным (его дёргает !пинг).
+        raise ValueError(f"RCON: неправдоподобная длина пакета {length}")
+    return length
+
+
+async def _read_body(reader: asyncio.StreamReader, length: int) -> tuple[int, int, str]:
     data = await reader.readexactly(length)
     req_id = struct.unpack("<i", data[0:4])[0]  # signed — auth fail returns -1
     ptype = struct.unpack("<I", data[4:8])[0]
@@ -30,42 +51,108 @@ async def _read_packet(reader: asyncio.StreamReader) -> tuple[int, int, str]:
     return req_id, ptype, payload
 
 
-async def rcon_exec(host: str, port: int, password: str, command: str, timeout: float = 10.0) -> str:
-    """Connect, authenticate, run command, collect full multi-packet response."""
+async def _read_packet(reader: asyncio.StreamReader) -> tuple[int, int, str]:
+    return await _read_body(reader, await _read_length(reader))
+
+
+async def rcon_exec_many(
+    host: str, port: int, password: str, commands_: list[str],
+    timeout: float = 10.0, total_timeout: float = 30.0,
+) -> list[str]:
+    """Одно соединение — несколько команд. Возвращает ответы в порядке команд.
+
+    Каждая команда получает свой request id и свой пакет-маркер следом: сервер
+    отвечает на пакеты по порядку, поэтому маркер надёжно отделяет ответ одной
+    команды от следующей, даже когда ответ приехал несколькими пакетами.
+
+    `timeout` — бюджет на ОДНУ операцию, `total_timeout` — на весь вызов.
+    Второй обязателен: без него сервер, сыплющий пакетами, держит корутину
+    сколько угодно, и потолок был только у `!пинг`, а у админской `/rcon` — нет.
+    """
+    deadline = time.monotonic() + total_timeout
+
+    def left(step: float) -> float:
+        """Сколько ждать следующую операцию: меньшее из шага и остатка бюджета."""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError("RCON: исчерпан общий бюджет времени")
+        return min(step, remaining)
+
     reader, writer = await asyncio.wait_for(
-        asyncio.open_connection(host, port), timeout=timeout
+        asyncio.open_connection(host, port), timeout=left(timeout)
     )
     try:
         # Auth
         writer.write(_pack(1, _AUTH, password))
         await writer.drain()
-        req_id, _, _ = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+        req_id, _, _ = await asyncio.wait_for(_read_packet(reader), timeout=left(timeout))
         if req_id == -1:
             raise PermissionError("RCON: неверный пароль")
 
-        # Command + sentinel
-        CMD_ID = 2
-        SENTINEL_ID = 3
-        writer.write(_pack(CMD_ID, _CMD, command))
-        writer.write(_pack(SENTINEL_ID, _CMD, ""))
-        await writer.drain()
+        responses: list[str] = []
+        for i, command in enumerate(commands_):
+            cmd_id = 2 + i * 2
+            sentinel_id = cmd_id + 1
 
-        # Collect all response packets until sentinel arrives
-        parts: list[str] = []
-        while True:
-            rid, _, payload = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
-            if rid == SENTINEL_ID:
-                break
-            if rid == CMD_ID:
-                parts.append(payload)
+            # 🛑 Маркер НЕЛЬЗЯ слать в одном всплеске с командой. Ванильный RCON
+            # разбирает сокет одним read(): если оба пакета попали в один
+            # TCP-сегмент, длина первого не сходится с размером прочитанного,
+            # и сервер молча закрывает соединение (наружу — IncompleteReadError).
+            # Поэтому маркер уходит только после первого пакета ответа: к этому
+            # моменту сервер дочитал команду и снова ждёт ввод.
+            writer.write(_pack(cmd_id, _CMD, command))
+            await writer.drain()
 
-        return "".join(parts)
+            parts: list[str] = []
+            # Ждём первый пакет, но НЕ бесконечно: команда, на которую сервер
+            # не отвечает ничем, раньше отдавала пустую строку сразу, и мы не
+            # имеем права превращать это в таймаут. Двух секунд с запасом
+            # хватает, чтобы сервер успел вычитать команду из сокета.
+            # Дедлайн — ТОЛЬКО на заголовке: см. докстринг `_read_length`.
+            try:
+                length = await asyncio.wait_for(
+                    _read_length(reader), timeout=left(min(FIRST_PACKET_WAIT, timeout))
+                )
+            except asyncio.TimeoutError:
+                logger.debug("RCON: команда не дала ни одного пакета, шлю маркер")
+            else:
+                rid, _, payload = await asyncio.wait_for(
+                    _read_body(reader, length), timeout=left(timeout)
+                )
+                if rid == cmd_id:
+                    parts.append(payload)
+                else:
+                    logger.warning("RCON: пакет с неожиданным id %s — отброшен", rid)
+
+            writer.write(_pack(sentinel_id, _CMD, ""))
+            await writer.drain()
+
+            # Хвост многопакетного ответа приедет до ответа на маркер.
+            while True:
+                rid, _, payload = await asyncio.wait_for(_read_packet(reader), timeout=left(timeout))
+                if rid == sentinel_id:
+                    break
+                if rid == cmd_id:
+                    parts.append(payload)
+                else:
+                    # Молчаливый отброс превращал ответ в пустую строку,
+                    # неотличимую от «команда ничего не вывела».
+                    logger.warning("RCON: пакет с неожиданным id %s — отброшен", rid)
+            responses.append("".join(parts))
+
+        return responses
     finally:
         writer.close()
         try:
             await writer.wait_closed()
         except Exception:
             logger.debug("RCON: не удалось корректно закрыть соединение", exc_info=True)
+
+
+async def rcon_exec(host: str, port: int, password: str, command: str, timeout: float = 10.0) -> str:
+    """Connect, authenticate, run command, collect full multi-packet response."""
+    responses = await rcon_exec_many(host, port, password, [command], timeout)
+    return responses[0]
 
 
 class RCONHandler(commands.Cog):
