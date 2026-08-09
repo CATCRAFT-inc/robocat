@@ -461,7 +461,9 @@ async def archive_ticket(bot: commands.Bot, thread: disnake.Thread, *, ticket_ty
         logger.error("Канал логов тикетов %s не найден", Channels.ticket_log)
         return False
     try:
-        await log_channel.send(components=[container], file=transcript_file)
+        # упоминания автора и закрывшего — только текстом, без уведомления
+        await log_channel.send(components=[container], file=transcript_file,
+                               allowed_mentions=disnake.AllowedMentions.none())
     except disnake.HTTPException:
         logger.exception("Не удалось запостить лог тикета %s", thread.id)
         return False
