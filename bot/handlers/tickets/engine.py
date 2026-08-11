@@ -90,7 +90,12 @@ class TicketEngine(commands.Cog):
             # утечка, а не забота. Транскрипт-файл игроку не уходит НИКОГДА:
             # он остаётся только в Channels.ticket_log.
             if summary:
-                description += f"\n**Что было:**\n{summary}"
+                # 🛑 Выжимка построена по тексту треда, а писать в тред бага
+                # может кто угодно. Без экранирования через неё уезжает
+                # `[клик](злой-сайт)` — ссылка от имени бота в ЛС автору.
+                # Тот же класс, что `_safe_name`. В админский лог выжимка идёт
+                # как есть: там разметка полезна, а адресат не жертва.
+                description += f"\n**Что было:**\n{disnake.utils.escape_markdown(summary)}"
             closed_embed = create_container(
                 title=f"## 💫 Баг «{_safe_name(thread)}» пофикшен!",
                 description=description

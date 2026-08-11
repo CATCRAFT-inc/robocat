@@ -242,6 +242,31 @@ async def test_bug_close_dm_carries_the_ai_summary(closing_with_summary):
     assert "поправили редстоун" in _sent_texts(closing_with_summary.send)
 
 
+async def test_summary_cannot_smuggle_markdown_into_the_dm(monkeypatch, closing):
+    """🛑 Выжимка построена по тексту треда, а писать в тред бага может ЛЮБОЙ.
+
+    Значит через неё в ЛС автору уезжает ссылка от имени бота. Экранируем ровно
+    как имя тикета (`_safe_name`) — тот же класс, третий call-site.
+    """
+    monkeypatch.setattr(
+        engine_module,
+        "archive_ticket",
+        AsyncMock(return_value="Чинили: [клик](http://evil.example) и **жирный**"),
+    )
+    cog = TicketEngine(MagicMock())
+    thread = _thread(Channels.bugs)
+    inter = _interaction(thread)
+    inter.guild.get_member.return_value = closing
+
+    await cog._finishTicketInner(inter, thread, "поправили")
+
+    sent = _sent_texts(closing.send)
+    # Проверяем ЭКРАНИРОВАНИЕ, а не отсутствие подстроки: голое `[клик](`
+    # содержится и в уже безопасном `\[клик](`, поэтому «нет подстроки» тут лжёт.
+    assert r"\[клик]" in sent, sent
+    assert r"\*\*жирный\*\*" in sent, sent
+
+
 async def test_admin_ticket_close_dm_has_no_summary(closing_with_summary):
     """🛑 Тред админ-тикета — внутреннее обсуждение: наказания, чужие игроки.
 
