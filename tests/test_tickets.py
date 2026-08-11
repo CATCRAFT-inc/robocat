@@ -171,7 +171,7 @@ async def test_done_embed_keeps_the_intended_yellow():
 @pytest.fixture
 def closing(monkeypatch):
     """Общая обвязка закрытия: архив, флаги и индекс багов замокан."""
-    monkeypatch.setattr(engine_module, "archive_ticket", AsyncMock(return_value=True))
+    monkeypatch.setattr(engine_module, "archive_ticket", AsyncMock(return_value=""))
     monkeypatch.setattr(engine_module, "remove_bug_from_index", AsyncMock())
     monkeypatch.setattr(engine_module.flags, "removeFlag", AsyncMock())
     monkeypatch.setattr(
@@ -215,6 +215,100 @@ async def test_ticket_name_cannot_smuggle_markdown_into_the_dm(closing):
     assert r"\*\*жирный\*\*" in sent, sent
     assert r"\[клик]" in sent, sent
     assert r"\`код\`" in sent, sent
+
+
+# --- выжимка автору бага (и её границы) -------------------------------------
+
+
+@pytest.fixture
+def closing_with_summary(monkeypatch, closing):
+    """Та же обвязка, но архив вернул настоящую выжимку."""
+    monkeypatch.setattr(
+        engine_module,
+        "archive_ticket",
+        AsyncMock(return_value="Игрок не мог открыть ворота, поправили редстоун."),
+    )
+    return closing
+
+
+async def test_bug_close_dm_carries_the_ai_summary(closing_with_summary):
+    cog = TicketEngine(MagicMock())
+    thread = _thread(Channels.bugs)
+    inter = _interaction(thread)
+    inter.guild.get_member.return_value = closing_with_summary
+
+    await cog._finishTicketInner(inter, thread, "поправили")
+
+    assert "поправили редстоун" in _sent_texts(closing_with_summary.send)
+
+
+async def test_admin_ticket_close_dm_has_no_summary(closing_with_summary):
+    """🛑 Тред админ-тикета — внутреннее обсуждение: наказания, чужие игроки.
+
+    Пересказать его автору — утечка, а не забота. Выжимка уходит ТОЛЬКО
+    по багам, где переписка про сам баг.
+    """
+    cog = TicketEngine(MagicMock())
+    thread = _thread(Channels.support)
+    inter = _interaction(thread)
+    inter.guild.get_member.return_value = closing_with_summary
+
+    await cog._finishTicketInner(inter, thread, "разобрались")
+
+    assert "редстоун" not in _sent_texts(closing_with_summary.send)
+
+
+async def test_player_dm_never_carries_the_transcript_file(closing_with_summary):
+    """Транскрипт остаётся в админском логе. В ЛС — только выжимка."""
+    cog = TicketEngine(MagicMock())
+    thread = _thread(Channels.bugs)
+    inter = _interaction(thread)
+    inter.guild.get_member.return_value = closing_with_summary
+
+    await cog._finishTicketInner(inter, thread, "поправили")
+
+    for call in closing_with_summary.send.await_args_list:
+        assert "file" not in call.kwargs, call.kwargs
+        assert "files" not in call.kwargs, call.kwargs
+
+
+@pytest.mark.parametrize(
+    "method, arg",
+    [("_finishTicketInner", "поправили"), ("_rejectTicketInner", "не баг")],
+)
+@pytest.mark.parametrize("parent_id", [Channels.bugs, Channels.support])
+async def test_ticket_dm_starts_with_a_heading(closing, parent_id, method, arg):
+    """Первая строка ЛС обязана быть заголовком `##`, как в приветствии бага.
+
+    Без `##` контейнер печатает её обычным текстом, и сообщение о закрытии
+    выглядит куском абзаца.
+    """
+    cog = TicketEngine(MagicMock())
+    thread = _thread(parent_id)
+    inter = _interaction(thread)
+    inter.guild.get_member.return_value = closing
+
+    await getattr(cog, method)(inter, thread, arg)
+
+    assert _sent_texts(closing.send).lstrip().startswith("## ")
+
+
+async def test_empty_summary_is_not_read_as_a_failed_archive(closing):
+    """🛑 Сторож формы проверки: `archive_ticket` теперь возвращает СТРОКУ.
+
+    Удавшийся архив без AI даёт пустую строку. Проверка «если не архив» вместо
+    «если None» прочитала бы её как сбой: игрок не получил бы ЛС, а тред остался
+    бы висеть навсегда — и ни один прежний тест этого не заметил бы.
+    """
+    cog = TicketEngine(MagicMock())
+    thread = _thread(Channels.bugs)
+    inter = _interaction(thread)
+    inter.guild.get_member.return_value = closing
+
+    await cog._finishTicketInner(inter, thread, "поправили")
+
+    closing.send.assert_awaited_once()
+    thread.delete.assert_awaited_once()
 
 
 @pytest.mark.parametrize("parent_id", [Channels.bugs, Channels.support])
@@ -425,7 +519,9 @@ async def test_archive_log_also_escapes_the_ticket_name(monkeypatch):
     ok = await engine_module.archive_ticket(
         bot, thread, ticket_type="Баг", closer=MagicMock(), note=None
     )
-    assert ok, "архив не состоялся — тест не наблюдал бы ничего"
+    # 🛑 `is not None`, а не «истинность»: успех теперь возвращает выжимку, а без
+    # живого AI она пустая — `assert ok` объявил бы удавшийся архив провалом.
+    assert ok is not None, "архив не состоялся — тест не наблюдал бы ничего"
     assert channel.send.await_count == 1, "лог не отправлен — наблюдать нечего"
 
     sent = _sent_texts(channel.send)

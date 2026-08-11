@@ -166,7 +166,7 @@ def create_container(title: str, description: str, footer: str = None, color: st
     """ По сути - замена create_embed, добавляет Title, separator, description и опционально маленький футер и цвет.
 
     Args:
-        title (str): Большой текст, не включает в себя "#"
+        title (str): Первая строка. Заголовок — только если сам передашь "## " (см. call-sites)
         description (str): Текст ниже
         footer (str, optional): Маленький текст, если не указать - его не будет. Defaults to None.
         color (str, optional): Цвет в HEX формате. Defaults to DEFAULT_COLOUR.

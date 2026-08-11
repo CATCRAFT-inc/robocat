@@ -143,7 +143,7 @@ async def test_close_publishes_to_three_places_and_deletes_thread(cog, monkeypat
     reporters_chat.send = AsyncMock()
     cog.bot.get_channel.return_value = reporters_chat
 
-    archive = AsyncMock(return_value=True)
+    archive = AsyncMock(return_value="выжимка")
     monkeypatch.setattr(nr, "archive_ticket", archive)
     monkeypatch.setattr(nr.flags, "getFlag", AsyncMock(return_value=MagicMock(value=str(author.id))))
     monkeypatch.setattr(nr.flags, "removeFlag", AsyncMock())
@@ -160,7 +160,7 @@ async def test_close_publishes_to_three_places_and_deletes_thread(cog, monkeypat
 async def test_close_keeps_thread_when_archive_failed(cog, monkeypatch):
     reporter = _member(20, Roles.reporter)
     thread = _thread()
-    monkeypatch.setattr(nr, "archive_ticket", AsyncMock(return_value=False))
+    monkeypatch.setattr(nr, "archive_ticket", AsyncMock(return_value=None))
     monkeypatch.setattr(nr.flags, "removeFlag", AsyncMock())
 
     inter = _modal_inter(reporter, values={"note": None})
@@ -175,7 +175,7 @@ async def test_second_reporter_gets_busy_answer(cog, monkeypatch):
     reporter = _member(20, Roles.reporter)
     thread = _thread()
     cog._closing.add(thread.id)
-    monkeypatch.setattr(nr, "archive_ticket", AsyncMock(return_value=True))
+    monkeypatch.setattr(nr, "archive_ticket", AsyncMock(return_value="выжимка"))
 
     inter = _modal_inter(reporter, values={"note": None})
     await cog._closeRequest(inter, thread, None, published=True)

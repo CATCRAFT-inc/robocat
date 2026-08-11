@@ -280,7 +280,7 @@ class NewsRequestHandler(commands.Cog):
 
     async def _closeRequestInner(self, inter, thread: disnake.Thread, note: str | None, *, published: bool):
         ticket_type = "Заявка на новость (опубликована)" if published else "Заявка на новость (отклонена)"
-        if not await archive_ticket(self.bot, thread, ticket_type=ticket_type, closer=inter.author, note=note):
+        if await archive_ticket(self.bot, thread, ticket_type=ticket_type, closer=inter.author, note=note) is None:
             await inter.edit_original_response("⚠️ Не удалось сохранить лог заявки — тред НЕ удалён. Проверь канал логов и повтори.")
             return
 
