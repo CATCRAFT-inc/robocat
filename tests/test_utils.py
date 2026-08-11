@@ -102,3 +102,29 @@ def test_neutralize_sections_accepts_non_string():
     # compat-вендор присылает в args число/список вместо строки
     assert neutralize_sections(12345) == "12345"
     assert neutralize_sections(None) == "None"
+
+
+def test_as_colour_passes_through_valid_values():
+    import disnake
+
+    from bot.utils import _as_colour
+
+    assert _as_colour(disnake.Colour.red()) == disnake.Colour.red()
+    assert _as_colour("#ff0000") == disnake.Colour.from_hex("#ff0000")
+
+    # 🛑 Кривой вход обязан падать ГРОМКО: молчаливый дефолт означал бы, что
+    # следующий `Colour.yellow` без скобок (issue #42) не уронит даже pytest.
+    with pytest.raises(Exception):
+        _as_colour(disnake.Colour.yellow)
+
+
+def test_create_container_survives_a_bad_colour():
+    import disnake
+
+    from bot.utils import create_container
+
+    # Тот же класс этажом выше: create_container звал from_hex напрямую и падал
+    # на любом не-строковом цвете.
+    assert create_container("т", "о", color=disnake.Colour.blurple()) is not None
+
+

@@ -21,7 +21,7 @@ from disnake.ext import commands
 from bot.discord_config import Channels, Roles
 from bot.flag_system.flag_system import flags
 from bot.storage import Buttons, ColorStorage
-from bot.utils import create_container
+from bot.utils import AnsweringModal, create_container
 from .engine import archive_ticket
 
 logger = logging.getLogger("robocat.news_request")
@@ -81,7 +81,7 @@ class NewsRequestHandler(commands.Cog):
         if await news_rate_limit_ok(inter):
             await inter.response.send_modal(self.NewsModal(self))
 
-    class NewsModal(disnake.ui.Modal):
+    class NewsModal(AnsweringModal):
         def __init__(self, cog: "NewsRequestHandler"):
             self.cog = cog
             components = [
@@ -241,7 +241,7 @@ class NewsRequestHandler(commands.Cog):
         published = custom_id == _DONE_ID
         await inter.response.send_modal(self.DecisionModal(self, published=published))
 
-    class DecisionModal(disnake.ui.Modal):
+    class DecisionModal(AnsweringModal):
         def __init__(self, cog: "NewsRequestHandler", *, published: bool):
             self.cog = cog
             self.published = published
@@ -262,7 +262,9 @@ class NewsRequestHandler(commands.Cog):
             )
 
         async def callback(self, inter: disnake.ModalInteraction):
-            await inter.response.defer()
+            # ephemeral: плейсхолдер modal_submit по умолчанию ПУБЛИЧЕН,
+            # и сообщение об ошибке уходило в тред всем.
+            await inter.response.defer(ephemeral=True)
             note = inter.text_values.get("note") or None
             await self.cog._closeRequest(inter, inter.channel, note, published=self.published)
 
@@ -304,11 +306,26 @@ class NewsRequestHandler(commands.Cog):
         author_line = f"<@{author_id}>" if author_id is not None else "неизвестен"
         note_line = f"\n**Комментарий:** {note}" if note else ""
         container = create_container(
-            f"## {'✅ Новость опубликована' if published else '⛔ Новость отклонена'}: {thread.name}",
+            # 🛑 Имя треда — первые слова текста, который набрал репортёр. В
+            # имени треда разметка инертна, в теле сообщения — нет: заявка,
+            # начинающаяся с `**` или `[клик](…)`, разваливает заголовок и даёт
+            # ссылку от имени бота. В `engine.py` это уже закрыто, а сюда
+            # развёртка по классу не доехала.
+            f"## {'✅ Новость опубликована' if published else '⛔ Новость отклонена'}: "
+            f"{disnake.utils.escape_markdown(thread.name)}",
             f"**Автор:** {author_line}\n**Решил:** {closer.mention}{note_line}",
         )
         try:
-            await channel.send(components=container)
+            # Пинги автора и закрывшего — штатные, их и оставляем. Гасим только
+            # everyone/роли: имя треда — текст репортёра, и `<@&роль>` в нём
+            # пингнул бы канал. `AllowedMentions.none()` тут было ошибкой —
+            # оно глушило и тех двоих, ради кого сообщение пишется.
+            await channel.send(
+                components=container,
+                allowed_mentions=disnake.AllowedMentions(
+                    everyone=False, roles=False, users=True
+                ),
+            )
         except disnake.HTTPException:
             logger.exception("Не удалось отправить решение по заявке %s в чат репортёров", thread.id)
 

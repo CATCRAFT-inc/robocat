@@ -407,3 +407,25 @@ async def test_play_loop_exits_when_vc_is_zombie(cog, tmp_path):
     vc = _make_vc(connected=True, runner_done=True)  # зомби с порога
     await asyncio.wait_for(cog._play_loop(vc), timeout=5)
     vc.play.assert_not_called()
+
+
+async def test_radio_force_start_is_admin_only():
+    """`!radiostart` перезапускает радио — команда не должна быть открыта всем.
+
+    До issue #41 у неё не было ни одной проверки: перезапуск мог устроить любой
+    из ~500 участников, а с гостевыми серверами — вообще кто угодно через ЛС.
+    """
+    from bot.discord_config import Roles
+
+    checks = CatcraftFM._radioForceStart.checks
+    assert checks, "с !radiostart сняли проверку прав"
+
+    def ctx_with(role_id):
+        return SimpleNamespace(author=SimpleNamespace(roles=[SimpleNamespace(id=role_id)]))
+
+    assert all([await check(ctx_with(Roles.admin)) for check in checks])
+    assert not all([await check(ctx_with(Roles.kotikplus)) for check in checks])
+    # В ЛС у автора вообще нет .roles — проверка обязана отказывать, а не падать.
+    assert not all(
+        [await check(SimpleNamespace(author=SimpleNamespace())) for check in checks]
+    )

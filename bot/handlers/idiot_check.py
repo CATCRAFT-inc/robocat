@@ -4,6 +4,8 @@ import disnake
 from disnake.ext import commands
 import re
 
+from bot.discord_config import Guilds
+
 logger = logging.getLogger("robocat.idiot_check")
 
 
@@ -42,6 +44,13 @@ class IdiotCheck(commands.Cog):
 
     @commands.Cog.listener("on_message")
     async def checkUnderage(self, message: disnake.Message):
+        # 🛑 Только Кошкокрафт. Чужие гильдии отсекает диспетчер, а ЛС — нет:
+        # право писать боту в личку даёт общая гильдия, в том числе гостевая
+        # (бота зовут на любой сервер, issue #41). Без этой строки посторонний
+        # человек шлёт в ЛС «мне 5 лет» и жжёт вызов LLM на каждое сообщение —
+        # ни кулдауна, ни бюджета у этого пути нет.
+        if message.guild is None or message.guild.id != Guilds.main:
+            return
         if message.author.bot:
             return
         if message.content.startswith("!"):

@@ -15,17 +15,40 @@ import os
 from bot import storage
 from bot.discord_config import Bots, Channels, Guilds, Users
 from bot.flag_system.flag_system import flags
-from bot.utils import create_embed
+from bot.utils import answer_broken_interaction, create_embed, decorate_news
 from bot.storage import Messages
 
 os.environ["PYTHONIOENCODING"] = "UTF-8"
 
 logger = logging.getLogger("robocat.bot")
 
+# 🛑 `InteractionTimedOut` НЕ наследник `HTTPException` (он `ClientException`),
+# а именно им disnake заворачивает 10062 на протухшей интеракции. Один
+# `except disnake.HTTPException` пропускает его наружу, и падает уже сам
+# обработчик ошибок — в логе виноватым выглядит он, а не упавшая команда.
+# Сам disnake в таких местах перечисляет оба имени.
+_INTERACTION_GONE = (
+    disnake.HTTPException,
+    disnake.InteractionTimedOut,
+    # 🛑 «Уже отвечена» — тоже не `HTTPException`, а `InteractionException`,
+    # сосед `InteractionTimedOut`. Проверка на подкоманде или `CheckFailure`,
+    # поднятый после `send_message`, роняли сам обработчик ошибок — тот самый
+    # класс, который в этой строке и лечили.
+    disnake.InteractionResponded,
+)
+
 intents = disnake.Intents.all()
 
 
 def _event_guild_id(args) -> int | None:
+    """ID гильдии события, либо `_UNKNOWN_GUILD`, либо None для настоящей лички.
+
+    🛑 Неопознанность определяется по СВОЙСТВУ аргумента, а не по имени события.
+    Прежняя форма спрашивала «событие называется `message`?» — и `message_edit`,
+    `message_delete`, `typing` с не доехавшей в кэш гильдией уходили по
+    ДОМАШНЕМУ пути со всеми листенерами. Живого отказа не было только потому,
+    что таких листенеров в проекте пока нет; первый же вышел бы за барьер молча.
+    """
     for arg in args:
         guild_id = getattr(arg, "guild_id", None)
         if guild_id is not None:
@@ -33,19 +56,94 @@ def _event_guild_id(args) -> int | None:
         guild = getattr(arg, "guild", None)
         if guild is not None:
             return getattr(guild, "id", None)
+        # У `disnake.Message` атрибута `guild_id` нет вовсе, а `message.guild`
+        # пуст и в личке, и когда гильдия не доехала. Различает их только канал:
+        # личка — `DMChannel`, всё прочее без гильдии — неопознанная гильдия.
+        channel = getattr(arg, "channel", None)
+        if channel is not None:
+            return None if isinstance(channel, DMChannel) else _UNKNOWN_GUILD
     return None
 
 
+# Коги, которые Робокотик отдаёт ЧУЖИМ серверам (issue #41). Только
+# информативное: статичные ответы FAQ и `!пинг`. RCON-команды, админка, тикеты,
+# новости, модерация и весь ИИ-контур остаются кошкокрафтовскими.
+# Список по КОГАМ, а не по именам команд: новая команда в админском коге не
+# протечёт к гостям по недосмотру, а новый ког по умолчанию закрыт.
+GUEST_COGS = frozenset({"FAQ", "PingTab"})
+
+# 🛑 Ког открывается целиком, а имена команд выбирались для ДОМАШНЕГО чата, где
+# префикс `!` принадлежит нам. На чужом сервере эти же имена — либо обычные
+# слова («да», «нет»), либо самая частая команда любого бота («ping», «rules»,
+# «map»). Итог без этого списка: Робокотик отвечает на нормальный разговор и
+# спорит с хозяйским ботом, а выключить его владелец сервера не может — `!help`
+# гостям закрыт. Гостю остаются полные русские имена (`!пинг`, `!вики`,
+# `!айпи`, `!правила`), которых в чужом чате не набирают случайно.
+_GUEST_ALIAS_DENY = frozenset({
+    "ping", "ip", "map", "rules", "laws", "guide", "history", "wiki",
+    "yes", "no", "donate", "helpme", "nometa", "readwiki",
+    "да", "нет", "тут", "тут?",
+})
+
+# Гостевые серверы делят с нами RCON, CPU на рендер картинки и лимиты Discord,
+# а модерации у нас там нет. Потолок общий на ВСЕ гостевые команды: у кога FAQ
+# собственного кулдауна нет ни одного, и без этого он был бы безлимитным.
+_GUEST_RATE = commands.CooldownMapping.from_cooldown(5, 60.0, commands.BucketType.guild)
+# Отдельный счётчик на ОТВЕТ об отказе. Сам отказ обязан быть дешевле
+# разрешённой команды, иначе защита работает на спамера: реакция — это REST, и
+# без этой границы каждое сообщение сверх потолка стоило бы бота одного вызова
+# Discord. Одна ⏳ за окно: человеку хватает, чтобы понять, что его услышали.
+_GUEST_NOTICE = commands.CooldownMapping.from_cooldown(1, 60.0, commands.BucketType.guild)
+
+
+def _is_home_member(user) -> bool:
+    """Игрок Кошкокрафта? Единственный способ отличить своего в ЛС.
+
+    🛑 Fail-safe в сторону «чужой»: гильдия не в кэше (окно после рестарта,
+    сбой на стороне Discord) — отвечаем «нет». Цена ошибки здесь несимметрична:
+    лишний отказ своему — минутное неудобство, лишний доступ чужому — открытый
+    наружу канал без потолка.
+    """
+    home = bot.get_guild(Guilds.main)
+    if home is None:
+        return False
+    return home.get_member(getattr(user, "id", 0)) is not None
+
+# Гильдию не опознали. Отдельное значение, а не None: None означает «личка».
+_UNKNOWN_GUILD = -1
+
+
 class MainGuildBot(commands.Bot):
-    """Do not dispatch guild events received outside the configured server."""
+    """Гостям — только префиксные команды из GUEST_COGS, остальное вне Кошкокрафта не существует."""
 
     def __init__(self, *args, main_guild_id: int, **kwargs):
         self.main_guild_id = main_guild_id
         super().__init__(*args, **kwargs)
 
     def dispatch(self, event_name, *args, **kwargs):
+        # Пустая гильдия НЕ означает личку: она пуста и пока гильдия не доехала
+        # в кэш (окно между READY и GUILD_CREATE, сбой гильдии). Неизвестность
+        # обязана падать в сторону «чужой» — лишний отказ дешевле лишнего
+        # доступа. Разбор — в `_event_guild_id`, чтобы правило действовало на
+        # ВСЕ message-события, а не на одно по имени.
         guild_id = _event_guild_id(args)
         if guild_id is not None and guild_id != self.main_guild_id:
+            # Гостевой сервер: из всего потока событий пропускаем ТОЛЬКО разбор
+            # префиксных команд, и ни одного листенера. Поэтому новый
+            # on_message-листенер (ИИ, ловушка, реакции на новости, ВК-гейт)
+            # по умолчанию остаётся кошкокрафтовским — правку этого места
+            # забыть нельзя, её просто не требуется делать.
+            if event_name == "message" and args:
+                return super().dispatch("guest_message", args[0])
+            if event_name == "command_error":
+                # 🛑 Исключение — и оно ровно одно. `command_error` не листенер
+                # чужого сервера, а единственный путь, которым сбой УЖЕ
+                # РАЗРЕШЁННОЙ гостю команды доходит до лога. Погасив его здесь,
+                # мы делали настоящую поломку `!вики` неотличимой от «такой
+                # команды нет»: ни ответа человеку, ни строки оператору.
+                # Ответы наружу отсекает сам `on_command_error` — он молчит
+                # везде, кроме Кошкокрафта.
+                return super().dispatch(event_name, *args, **kwargs)
             return None
         return super().dispatch(event_name, *args, **kwargs)
 
@@ -111,10 +209,130 @@ async def on_slash_command_error(inter: disnake.ApplicationCommandInteraction, e
     if isinstance(error, commands.CheckFailure):
         try:
             await inter.response.send_message("Эта команда не для тебя :3", ephemeral=True)
-        except disnake.HTTPException:
+        except _INTERACTION_GONE:
             pass  # интеракция протухла/уже отвечена — отказ и так случился
         return
     logger.error("Ошибка слэш-команды %s", inter.application_command.name, exc_info=error)
+    # Без ответа юзер остаётся с вечным «Робокотик думает...»: команда, упавшая
+    # ПОСЛЕ defer, для него неотличима от зависшей (issue #42 — /done ставил тег
+    # и падал на TypeError, а подтверждение не приходило никогда).
+    await answer_broken_interaction(
+        inter, "😿 Команда сломалась на полпути — админы уже видят это в логах. "
+        "Проверь результат, прежде чем повторять."
+    )
+
+
+@bot.listen("on_guest_message")
+async def on_guest_message(message: disnake.Message):
+    """Единственное, что Робокотик делает на чужом сервере, — разбирает команду.
+
+    Сюда попадают только сообщения из гильдий, не равных Кошкокрафту
+    (см. `MainGuildBot.dispatch`). Какие команды реально выполнятся, решает
+    глобальная проверка `_guest_guild_allows_only_info_cogs`.
+    """
+    await bot.process_commands(message)
+
+
+@bot.check
+async def _guest_guild_allows_only_info_cogs(ctx: commands.Context) -> bool:
+    """Полный набор команд — только на Кошкокрафте, всё остальное урезано.
+
+    🛑 Условие намеренно «дом ИЛИ урезать», а не «чужая гильдия → урезать».
+    Прежняя форма выпускала ЛС в полный набор, а право писать боту в личку даёт
+    сам факт общей гильдии — в том числе гостевой. Через это открывались
+    `!очередь` (плейлист радио) и `!help` со списком админских команд, а `!пинг`
+    считался по домашнему потолку. Сюда же попадает неопознанная гильдия.
+
+    🛑 Но личка НАШЕГО игрока — это дом, а не гостевая территория. Первая версия
+    урезала личку всем подряд, и участник Кошкокрафта, годами писавший боту в
+    ЛС, получал на `!help` и `!очередь` полное молчание — поведение «бот сдох». Различаем по членству в главной гильдии: кэш не доехал —
+    считаем чужим, лишний отказ дешевле лишнего доступа.
+
+    🛑 И проверка на `DMChannel` тут ОБЯЗАТЕЛЬНА, а не для красоты. `guild is
+    None` означает личку ИЛИ не доехавшую в кэш гильдию — ровно та двузначность,
+    ради которой в `dispatch` заведён `_UNKNOWN_GUILD`. Без канала условие
+    fail-open: участник Кошкокрафта в ЧУЖОМ канале при промахе кэша получал
+    полный домашний набор — `!help`, `!очередь`, всё, — мимо allowlist, запрета
+    алиасов и потолка. Тот же класс, что чинили этажом ниже, внесённый заново
+    этажом выше.
+    """
+    if ctx.guild is not None and ctx.guild.id == Guilds.main:
+        return True
+    if isinstance(ctx.channel, DMChannel) and _is_home_member(ctx.author):
+        return True
+    if ctx.cog is None or type(ctx.cog).__name__ not in GUEST_COGS:
+        return False
+    if (ctx.invoked_with or "").lower() in _GUEST_ALIAS_DENY:
+        return False  # слишком общее имя для чужого чата — см. `_GUEST_ALIAS_DENY`
+    # Потолок считается ПОСЛЕ разрешения кога: чужие попытки достучаться до
+    # закрытого не должны съедать бюджет тех команд, что гостям разрешены.
+    if not _GUEST_RATE.update_rate_limit(ctx.message):
+        return True
+    # 🛑 Отвечаем один раз за окно, а не на каждый отказ. Реакция — сетевой
+    # вызов; без второго счётчика спамер, УЖЕ упёршийся в потолок, продолжал
+    # генерировать по REST-запросу на сообщение, то есть защита обходилась боту
+    # дороже, чем разрешённая команда, и жгла его же лимит Discord.
+    # Реакция, а не текст: чужой канал не наш, чтобы в него писать. Запрещённый
+    # ког не получает даже её — подтверждать каждую чужую команду значит
+    # приглашать перебирать их.
+    if not _GUEST_NOTICE.update_rate_limit(ctx.message):
+        try:
+            await ctx.message.add_reaction("⏳")
+        except Exception:
+            # 🛑 Ловим ШИРЕ `HTTPException`. Мы внутри глобального чека, а его
+            # зовёт `Command.prepare` — там перехватывается только
+            # `CommandError`. Обрыв сети (`OSError`, таймаут aiohttp) улетал бы
+            # мимо, давая полный трейсбек в лог на КАЖДЫЙ отказ: то есть отказ
+            # снова стоил бы дороже разрешённой команды, ровно наоборот тому,
+            # ради чего написан `_GUEST_NOTICE`.
+            logger.debug("Не удалось отметить отказ гостю", exc_info=True)
+    return False
+
+
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError):
+    """Тишина на «такой команды нет», видимый отказ по правам, лог на поломки.
+
+    Дефолтный обработчик disnake печатает трейсбек в stderr на ЛЮБУЮ ошибку,
+    включая «такой команды нет», а логгер проекта пишет только в файл.
+
+    🛑 На гостевых серверах он ВЫЗЫВАЕТСЯ, но наружу молчит. `command_error` —
+    единственное событие чужой гильдии, которое диспетчер пропускает: иначе сбой
+    уже разрешённой гостю команды (`!вики` упал на `fetch`) не давал ни ответа
+    человеку, ни строки оператору и был неотличим от «такой команды нет».
+    Ответы отсекаются ниже по одному признаку — `ctx.guild.id != Guilds.main`.
+    """
+    # Своя обработка у команды или кога — не мешаем ей (так же делает дефолт).
+    if ctx.command is not None and ctx.command.has_error_handler():
+        return
+    if ctx.cog is not None and ctx.cog.has_error_handler():
+        return
+    if isinstance(error, commands.CommandNotFound):
+        return
+    if isinstance(error, commands.CheckFailure):
+        # 🛑 Реакция — ТОЛЬКО дома. Там отказ означает «не хватило прав», и
+        # молчание неотличимо от «бот умер». В ЛС и на гостевых серверах это
+        # означает «команды тут нет», а подтверждать каждую чужую попытку —
+        # приглашение перебирать их: посторонний из своего сервера гоняет в
+        # личке закрытые команды по кругу и тратит наш лимит Discord на реакции.
+        if ctx.guild is None or ctx.guild.id != Guilds.main:
+            return
+        logger.info("Отказ по правам: %s у %s", ctx.command, getattr(ctx.author, "id", "?"))
+        try:
+            await ctx.message.add_reaction("⛔")
+        except disnake.HTTPException:
+            pass  # нет права на реакции — отказ и так состоялся
+        return
+    # Гильдию называем обязательно: после того как диспетчер стал пропускать
+    # `command_error` с чужих серверов, «Ошибка команды вики / Forbidden» без
+    # неё неотличима от поломки ДОМА — и ночью первым чинят прод.
+    logger.error(
+        "Ошибка команды %s (гильдия %s)",
+        ctx.command,
+        getattr(ctx.guild, "id", "ЛС"),
+        exc_info=error,
+    )
+
 
 @bot.event
 async def on_error(event, *args, **kwargs):
@@ -165,23 +383,35 @@ async def on_message(message: disnake.Message):
     + пишет, если игрок ошибся при написании Робокотику, а не Робокотику SRV
     """
     if message.channel.id in Channels.news_reaction_channels:
-        if message.author.bot or message.type not in (disnake.MessageType.default, disnake.MessageType.reply):
+        # Пост через вебхук — тоже новость, хотя author.bot у него True (issue #39).
+        # Свои посты бот шлёт токеном, а не вебхуком, поэтому под условие не попадает:
+        # реакции под /news вешает news_editor сам, дубля не будет.
+        if (message.author.bot and not message.webhook_id) or message.type not in (disnake.MessageType.default, disnake.MessageType.reply):
             return
-        reactions = ['❤️', '👍', '👎']
-        for reaction in reactions:
-            await message.add_reaction(reaction)
-            await asyncio.sleep(1)
-        try:
-            await message.create_thread(name="Обсуждение", reason="Тред на новую новость")
-        except disnake.HTTPException:
-            logger.warning("Не удалось создать тред под новостью %s в канале %s", message.id, message.channel.id)
+        # Реакции и тред — одна реализация на оба источника новостей (см.
+        # `decorate_news`): раньше это была копипаста, и фикс «сбой одной
+        # реакции не уносит остальные и тред» лёг только сюда, а вторая копия
+        # в `news_editor` продолжала их терять.
+        await decorate_news(message, logger)
     elif isinstance(message.channel, DMChannel):
-        # Если сообщение — ровно 4 цифры
-        if re.fullmatch(r'\d{4}', message.content):
-            # Отправляем ответ
-            await message.channel.send(
-                f"Привет, я не тот **Робокотик**! Тебе нужен <@{Bots.robocat_srv}> =)"
-            )
+        # Подсказка для игрока, перепутавшего двух Робокотиков: код привязки
+        # с сервера — ровно 4 цифры.
+        #
+        # 🛑 Гейт на членство обязателен, и он тут единственный. Личку боту
+        # открывает ЛЮБАЯ общая гильдия — в том числе гостевая (issue #41), а
+        # ЛС проходят диспетчер как домашнее событие. Без проверки посторонний
+        # получал по исходящему сообщению Discord на каждое своё: ни барьера,
+        # ни потолка на этой ветке не было вовсе. Кэша не хватило — молчим:
+        # цена ошибки тут потерянная подсказка, а не открытый наружу канал.
+        if not re.fullmatch(r'\d{4}', message.content):
+            return
+        if not _is_home_member(message.author):
+            return
+        if _GUEST_RATE.update_rate_limit(message):
+            return  # свой, но частит — потолок общий с остальными ЛС
+        await message.channel.send(
+            f"Привет, я не тот **Робокотик**! Тебе нужен <@{Bots.robocat_srv}> =)"
+        )
 
 @bot.listen()
 async def on_member_join(inter: disnake.Member):

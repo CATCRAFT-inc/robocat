@@ -39,6 +39,32 @@ class VKRepost(commands.Cog):
 
     @staticmethod
     def _gallery_urls(message) -> list[str]:
+        """URL картинок из MediaGallery, которые НЕ заберёт обход message.attachments.
+
+        Картинка галереи пропускается, только если её вложение лежит в
+        `message.attachments` — то есть попадёт в обход вложений. Прежний код
+        скипал по одному факту наличия `attachment_id`, считая, что вложение в
+        списке есть всегда; у постов Components V2 через вебхук это не так, и
+        все медиа контейнера молча терялись (issue #38).
+
+        🛑 «Попадёт в обход» — не то же самое, что «уедет в ВК»:
+        `_upload_attachments` независимо роняет вложения по `MAX_UPLOAD` и
+        `MAX_ATTACHMENTS`. Ключ дедупа — присутствие в списке, а не факт
+        загрузки; новый фильтр там (например по типу файла) обязан быть
+        отражён и здесь, иначе картинки исчезнут молча.
+
+        Проверено по существующим фильтрам (ревью 10.08.2026): зеркалить их
+        НЕ надо, и вот почему. `MAX_UPLOAD` — свойство самого файла, а не пути:
+        отправив его сюда, мы бы скачали те же байты по URL и упёрлись в тот же
+        лимит, только потратив трафик. Пропуск при этом не молчаливый — там
+        `logger.warning` с именем файла. `MAX_ATTACHMENTS` — общий потолок
+        поста, он считается уже после слияния обоих списков. Правило про
+        «отразить здесь» остаётся для фильтров по СОДЕРЖИМОМУ (тип, источник),
+        которых пока нет.
+        """
+        known_attachments = {
+            str(attachment.id) for attachment in (message.attachments or [])
+        }
         urls = []
         seen = set()
         stack = list(message.components or [])
@@ -50,11 +76,10 @@ class VKRepost(commands.Cog):
                     url = getattr(media, "proxy_url", None) or getattr(
                         media, "url", None
                     )
-                    if (
-                        url
-                        and not getattr(media, "attachment_id", None)
-                        and url not in seen
-                    ):
+                    attachment_id = getattr(media, "attachment_id", None)
+                    if attachment_id is not None and str(attachment_id) in known_attachments:
+                        continue
+                    if url and url not in seen:
                         seen.add(url)
                         urls.append(url)
             stack[:0] = list(getattr(component, "children", None) or [])

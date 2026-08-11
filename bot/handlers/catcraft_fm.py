@@ -9,7 +9,7 @@ import disnake
 from disnake.ext import commands
 from tinytag import TinyTag
 
-from bot.discord_config import Channels, Guilds
+from bot.discord_config import Channels, Guilds, has_config_roles
 from bot.flag_system.flag_system import flags
 from bot.storage import ColorStorage
 
@@ -613,6 +613,8 @@ class CatcraftFM(commands.Cog):
         await command.reply(components=await self._queue_components())
 
     @commands.command(name="radiostart")
+    # Перезапуск радио — побочный эффект, а команда была открыта всем.
+    @has_config_roles("admin", "st_admin")
     async def _radioForceStart(self, ctx):
         if self._started and self._task and not self._task.done():
             await ctx.reply("уже", delete_after=5)

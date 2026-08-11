@@ -21,6 +21,7 @@ import disnake
 from disnake.ext import commands
 from PIL import Image, ImageDraw, ImageFont
 
+from bot.discord_config import Guilds
 from bot.handlers.rcon import rcon_exec_many
 from bot.utils import create_container
 
@@ -102,7 +103,6 @@ SNAPSHOT_TTL = 20.0
 # Спам-фильтр сторожит уже не цену вызова (её съел кэш), а шум в канале.
 SPAM_CALLS = 3
 SPAM_WINDOW = 30.0
-
 TEXT_HINT = '-# Чтобы получить список игроков текстом, напиши `!пинг текст`'
 TEXT_LIST_LIMIT = 3000  # запас под лимит Components V2 в 4000 символов на сообщение
 
@@ -768,7 +768,7 @@ class PingTab(commands.Cog):
             names = parse_names_from_list(raw_list, count)
             logger.error(
                 "Пинг: сервер говорит про %s игроков, имён из `execute` нет — "
-                "взял %s из `list`. Ответ был: %r",
+                "взял %s из `list`. Форма ответа: %s",
                 count, len(names), raw_names[:200],
             )
         total = max(count or 0, len(names))
@@ -956,6 +956,23 @@ class PingTab(commands.Cog):
                 )
             except disnake.HTTPException:
                 logger.warning("Пинг: не получилось ответить на кулдаун", exc_info=True)
+            return
+
+        if isinstance(error, commands.CheckFailure):
+            # 🛑 Отказ гостевого барьера и потолка приходит СЮДА, а не в
+            # глобальный обработчик: disnake зовёт коговый напрямую, мимо
+            # `dispatch`. Без этой ветки превышение лимита печатало гостю
+            # «Что-то сломалось» и писало ERROR с полным трейсбеком — то есть
+            # отказ обходился боту дороже, чем разрешённой командой, и забивал
+            # `bot.log` со скоростью сообщений спамера. Ответ (⏳/тишину) даёт
+            # сама проверка в `bot/bot.py`.
+            #
+            # 🛑 Но ДОМА гостевой барьер не срабатывает никогда, значит любой
+            # `CheckFailure` тут — настоящий отказ по правам, и глушить его
+            # нельзя: наличие этого обработчика отключает коговые команды от
+            # общей политики (`on_command_error` уходит по `has_error_handler`).
+            # Без этой ветки первая же роль-гейтед команда пинга отказывала бы
+            # дома вообще молча.
             return
 
         logger.exception("Пинг упал", exc_info=error)

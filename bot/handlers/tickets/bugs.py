@@ -10,7 +10,7 @@ from disnake import TextInputStyle, TextInput, StringSelectMenu, SelectOption
 from disnake.ext import commands
 from bot.discord_config import Channels, Roles, Users, has_config_roles
 from bot.storage import Buttons, ColorStorage, FAQStorage
-from bot.utils import create_container, create_embed
+from bot.utils import AnsweringModal, create_container, create_embed
 from bot.flag_system.flag_system import flags
 
 try:  # W3 создаёт этот модуль; дедуп — необязательная фича
@@ -101,7 +101,7 @@ class BugHandler(commands.Cog):
             if await bug_rate_limit_ok(inter):
                 await inter.response.send_modal(modal=self.BugModal())
 
-    class BugModal(disnake.ui.Modal):
+    class BugModal(AnsweringModal):
         def __init__(self):
             # The details of the modal, and its components
             components = [

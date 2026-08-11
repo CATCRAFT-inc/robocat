@@ -8,7 +8,7 @@ from disnake.ui import TextDisplay, TextInput, Label, Container, Separator
 from bot.flag_system.flag_system import flags
 from bot.discord_config import Roles, Users
 from bot.storage import ColorStorage
-from bot.utils import create_container
+from bot.utils import AnsweringModal, create_container
 
 logger = logging.getLogger("robocat.admin_ticket")
 
@@ -18,7 +18,7 @@ class AdminTicket(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    class AdminTicketModal(disnake.ui.Modal):
+    class AdminTicketModal(AnsweringModal):
         def __init__(self):
             # The details of the modal, and its components
             components = [

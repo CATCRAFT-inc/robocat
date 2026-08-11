@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import disnake
 
 from bot.discord_config import Channels, Emojis, Roles
-from bot.utils import create_embed
+from bot.utils import DEFAULT_COLOUR, create_embed
 from bot.utils import create_button
 from .bot import commands
 
@@ -14,7 +14,7 @@ class LinksStorage:
     vkLink = 'https://vk.com/catcraftmc'
 
 class ColorStorage:
-    main = "#4f2dbe"
+    main = DEFAULT_COLOUR  # один источник цвета, см. bot/utils.py
     gray = "#808080"
 
 class Emotes:

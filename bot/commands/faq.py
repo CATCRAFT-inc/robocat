@@ -3,7 +3,7 @@ import logging
 import disnake
 from disnake.ext import commands
 
-from bot.discord_config import Channels, Roles
+from bot.discord_config import Channels, Guilds, Roles
 from bot.storage import FAQStorage
 
 logger = logging.getLogger("robocat.faq")
@@ -25,7 +25,14 @@ class FAQ(commands.Cog):
                 )
                 await ctx.channel.send(components=embed)
             else:
-                await ref_message.reply(components=embed)
+                # 🛑 Пинг цитируемого — только ДОМА. FAQ открыт гостевым
+                # серверам, где у нас нет модерации: там любой сделал бы бота
+                # пингалкой, отвечая `!да` на чужое старое сообщение. Но дома
+                # `!читайвики`/`!помощь` — это адресный ответ новичку, и без
+                # уведомления он его попросту не увидит: спросил, ушёл, ответ
+                # пришёл беззвучно. Глухой запрет был регрессией.
+                at_home = ctx.guild is not None and ctx.guild.id == Guilds.main
+                await ref_message.reply(components=embed, mention_author=at_home)
         else:
             await ctx.channel.send(components=embed)
 
@@ -239,6 +246,11 @@ class FAQ(commands.Cog):
 
     @commands.Cog.listener(name='on_message')
     async def findFAQInMessages(self, message: disnake.Message):
+        # 🛑 Только Кошкокрафт. Чужие гильдии отсекает диспетчер, а ЛС — нет:
+        # право писать боту в личку даёт общая гильдия, в том числе гостевая.
+        # Листенер не команда, поэтому гостевой потолок его не видит вовсе.
+        if message.guild is None or message.guild.id != Guilds.main:
+            return
         # Не отвечаем на ботов и на сообщения, где упомянут бот (иначе двойной ответ с ИИ)
         if message.author.bot or self.bot.user in message.mentions:
             return

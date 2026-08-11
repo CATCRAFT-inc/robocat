@@ -11,6 +11,7 @@ from bot.discord_config import Roles, has_config_roles
 
 logger = logging.getLogger("robocat.rcon")
 
+
 _AUTH = 3
 _CMD = 2
 _RESP = 0

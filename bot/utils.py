@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 import disnake
 
@@ -9,11 +10,28 @@ import re
 
 logger = logging.getLogger("robocat.utils")
 
+DEFAULT_COLOUR = "#4f2dbe"
+
+
+def _as_colour(value) -> disnake.Colour:
+    """Цвет из HEX-строки или готового `Colour`. Кривой вход падает ГРОМКО.
+
+    `disnake.Colour.yellow` БЕЗ скобок — это метод, а не цвет (issue #42): он
+    убивал команду уже после defer, и `except HTTPException` его не ловил.
+    Скобки расставлены по месту; здесь только нормализация двух легальных форм.
+    Молча подставлять дефолт нельзя — тогда следующая такая же опечатка не
+    уронит и pytest.
+    """
+    if isinstance(value, disnake.Colour):
+        return value
+    return disnake.Colour.from_hex(value)
+
+
 def create_embed(title: str = None,
                  description: str = None,
                  image: str = None,
                  footer: str = None,
-                 color: str | int | disnake.Color = "#4f2dbe"):
+                 color: str | int | disnake.Color = DEFAULT_COLOUR):
     """
     Метод для быстрого создания эмбедов без других полей
     :param color: Цвет в HEX. Без указания ставится базовый
@@ -24,14 +42,7 @@ def create_embed(title: str = None,
     :return: Готовый эмбед
     """
 
-    # Если ебанат поставил не HEX цвет - ставится дефолтный
-    if isinstance(color, str):
-        try:
-            color = disnake.Colour.from_hex(color)
-        except (ValueError, KeyError):
-            logger.warning("Некорректный HEX-цвет %r в create_embed — использую дефолтный", color)
-            color = disnake.Colour.from_hex("#4f2dbe")
-            
+    color = _as_colour(color)
 
     embed = disnake.Embed(
         title=title,
@@ -151,14 +162,14 @@ def duration_to_text(dur_str):
 
     return f'{nums} {word}'
 
-def create_container(title: str, description: str, footer: str = None, color: str = "#4f2dbe"):
+def create_container(title: str, description: str, footer: str = None, color: str = DEFAULT_COLOUR):
     """ По сути - замена create_embed, добавляет Title, separator, description и опционально маленький футер и цвет.
 
     Args:
         title (str): Большой текст, не включает в себя "#"
         description (str): Текст ниже
         footer (str, optional): Маленький текст, если не указать - его не будет. Defaults to None.
-        color (str, optional): Цвет в HEX формате. Defaults to "#4f2dbe".
+        color (str, optional): Цвет в HEX формате. Defaults to DEFAULT_COLOUR.
 
     Returns:
         _type_: disnake.ui.Container
@@ -172,8 +183,41 @@ def create_container(title: str, description: str, footer: str = None, color: st
         components.append(
             disnake.ui.TextDisplay(f"-# {footer}")
         )
-    container = disnake.ui.Container(*components, accent_colour=disnake.Color.from_hex(color))
+    container = disnake.ui.Container(*components, accent_colour=_as_colour(color))
     return container
+
+
+async def decorate_news(message, log) -> None:
+    """Реакции и тред под новостью. ОДНА реализация на оба источника.
+
+    Источников два: пост репортёра через вебхук (ловит `bot.bot.on_message`) и
+    публикация через `/news` (`news_editor`). Логика была скопирована, и фикс
+    «сбой одной реакции не уносит остальные и тред» лёг только в одну копию —
+    вторая продолжала терять реакции. Копий больше нет.
+
+    Реакции и тред независимы: между реакциями ждём по секунде, и за это окно
+    пост успевают удалить, а прав на реакции может не быть вовсе.
+
+    🛑 Ловим ШИРЕ `HTTPException`. Исчерпав внутренние ретраи, HTTP-клиент
+    disnake пробрасывает транспортный `OSError`/таймаут — и он обрывал цикл
+    вместе с созданием треда, то есть тот же дефект, ради которого try занесли
+    внутрь цикла, возвращался через другую дверь. Новость к этому моменту уже
+    опубликована: украшение не имеет права её испортить. `CancelledError` —
+    наследник `BaseException`, сюда не попадает, и отмена по-прежнему работает.
+    """
+    for reaction in ("\u2764\ufe0f", "\U0001f44d", "\U0001f44e"):
+        try:
+            await message.add_reaction(reaction)
+        except Exception:
+            log.warning(
+                "Не удалось повесить реакцию %s под новостью %s", reaction, message.id,
+                exc_info=True,
+            )
+        await asyncio.sleep(1)
+    try:
+        await message.create_thread(name="Обсуждение", reason="Тред на новую новость")
+    except Exception:
+        log.warning("Не удалось создать тред под новостью %s", message.id, exc_info=True)
 
 
 def neutralize_markers(text) -> str:
@@ -211,6 +255,49 @@ def component_text(components) -> str:
             parts.append(content)
         stack[:0] = list(getattr(c, "children", None) or [])
     return "\n".join(parts)
+
+
+async def answer_broken_interaction(inter, text: str) -> None:
+    """Сообщить о сбое и СНЯТЬ «Робокотик думает...».
+
+    🛑 Именно `edit_original_response`, а не `followup`: после `defer` followup
+    добавляет сообщение РЯДОМ, а плейсхолдер остаётся висеть вечно — это и есть
+    симптом issue #42.
+
+    Текст один на все случаи и просит ПРОВЕРИТЬ результат, а не повторить.
+    Пустой ответ доказывает, что мы не ответили, но не что мы не подействовали:
+    модалка успевает создать тред или заархивировать тикет до сбоя следующего
+    шага, и «попробуй ещё раз» там плодит дубли.
+    """
+    try:
+        if inter.response.is_done():
+            await inter.edit_original_response(content=text, embeds=[], components=[])
+        else:
+            await inter.response.send_message(text, ephemeral=True)
+    except Exception:
+        # Обработчик ошибок, который падает сам, не оставляет ВООБЩЕ ничего:
+        # `on_error` живёт в брошенной asyncio-таске, её исключение никуда не идёт.
+        logger.exception("Не получилось сообщить о сбое интеракции")
+
+
+class AnsweringModal(disnake.ui.Modal):
+    """Модалка, которая отвечает человеку, даже когда падает.
+
+    🛑 Дефолтный `disnake.ui.Modal.on_error` печатает трейсбек в stderr, а
+    логгер проекта пишет только в файл — значит падение модалки не видно НИ
+    пользователю, НИ в `bot.log`. Все модалки проекта сначала делают `defer`,
+    поэтому исключение после него оставляет человека с вечным «Робокотик
+    думает...» — кроме `news_editor.NewsModal`, которая отвечает правкой
+    сообщения-превью; её уже показанный ответ стирать нельзя. Это симптом issue #42 на пути, которым ходят ИГРОКИ (баг-репорт,
+    админ-тикет, заявка на новость), а не админы: слэш-команды тут ни при чём.
+    """
+
+    async def on_error(self, error: Exception, inter: disnake.ModalInteraction) -> None:
+        logger.error("Модалка %s упала", type(self).__name__, exc_info=error)
+        await answer_broken_interaction(
+            inter, "😿 Не получилось довести до конца — админы уже видят это в логах. "
+            "Проверь результат, прежде чем повторять."
+        )
 
 
 def setup(bot: commands.Bot):

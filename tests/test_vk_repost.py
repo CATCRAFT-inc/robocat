@@ -622,7 +622,33 @@ def test_gallery_urls_duplicate_and_attachment_backed_returns_unique(
     )
     monkeypatch.setattr(vk_repost, "_GALLERY_TYPES", (Gallery,))
 
-    assert _cog()._gallery_urls(_message(components=[gallery])) == [duplicate]
+    # Вложение 123 реально лежит в message.attachments — его зальёт обход
+    # вложений, галерея его не дублирует.
+    attached = MagicMock()
+    attached.id = 123
+    attached.size = 1
+    message = _message(components=[gallery], attachments=[attached])
+
+    assert _cog()._gallery_urls(message) == [duplicate]
+
+
+def test_gallery_urls_attachment_backed_missing_from_attachments_is_kept(
+    monkeypatch,
+):
+    # Посты Components V2 через вебхук не приносят медиа контейнера в
+    # message.attachments. Слепой скип по attachment_id терял их молча (#38).
+    class Gallery:
+        def __init__(self, *items):
+            self.items = items
+            self.children = []
+
+    orphan = "https://cdn.discordapp.com/news/in-container.png"
+    gallery = Gallery(
+        MagicMock(media=MagicMock(proxy_url=None, url=orphan, attachment_id=777))
+    )
+    monkeypatch.setattr(vk_repost, "_GALLERY_TYPES", (Gallery,))
+
+    assert _cog()._gallery_urls(_message(components=[gallery])) == [orphan]
 
 
 def test_gallery_urls_proxy_url_preferred_over_source_url(monkeypatch):

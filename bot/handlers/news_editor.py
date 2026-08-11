@@ -23,6 +23,7 @@ from disnake.ext import commands
 
 from bot.discord_config import Channels, Roles, has_config_roles
 from bot.storage import ColorStorage
+from bot.utils import AnsweringModal, decorate_news
 
 _NEWS_CHANNEL_NAMES = ("Объявления", "Газета", "Медиа", "Информатор", "Секретный")
 _NO_PING = "Без пинга"
@@ -207,7 +208,7 @@ def _parse_container(container) -> "_Draft | None":
     return draft
 
 
-class NewsModal(disnake.ui.Modal):
+class NewsModal(AnsweringModal):
     def __init__(self, cog: "NewsEditor", draft_id: int):
         self.cog = cog
         self.draft_id = draft_id
@@ -470,16 +471,7 @@ class NewsEditor(commands.Cog):
                 # Новость уже опубликована: сбой «декора» не должен читаться как сбой публикации,
                 # а сбой реакций (нет ADD_REACTIONS) — блокировать создание треда
                 if draft.channel_id in Channels.news_reaction_channels:
-                    try:
-                        for emoji in ("❤️", "👍", "👎"):
-                            await msg.add_reaction(emoji)
-                            await asyncio.sleep(1)
-                    except disnake.HTTPException:
-                        self.logger.warning("Не удалось повесить реакции под новостью %s", msg.id)
-                    try:
-                        await msg.create_thread(name="Обсуждение", reason="Тред на новую новость")
-                    except disnake.HTTPException:
-                        self.logger.warning("Не удалось создать тред под новостью %s", msg.id)
+                    await decorate_news(msg, self.logger)
         except disnake.HTTPException:
             self.logger.exception("Не удалось опубликовать новость в канал %s", draft.channel_id)
             # публикация НЕ случилась — вернуть черновик и кнопки, текст не теряем

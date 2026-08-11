@@ -10,7 +10,7 @@ from bot.discord_config import Channels, Roles, has_config_roles
 from bot.storage import ColorStorage
 from .admin_ticket import AdminTicket
 from bot.handlers.tickets.bugs import BugHandler, remove_bug_from_index, bug_rate_limit_ok, _extract_component_text
-from bot.utils import create_container, create_embed, neutralize_markers
+from bot.utils import AnsweringModal, create_container, create_embed, neutralize_markers
 
 try:  # W3 создаёт этот модуль; выжимка — необязательная фича
     from bot.ai.llm import llm, AIUnavailable
@@ -24,6 +24,18 @@ logger = logging.getLogger("robocat.tickets")
 
 _MSK = datetime.timezone(datetime.timedelta(hours=3))
 
+
+
+def _safe_name(thread) -> str:
+    """Имя треда — это ТЕКСТ ИГРОКА, и в сообщении он уже не инертен.
+
+    Имя тикета собирается из первых слов описания, которое набрал человек
+    (`bugs.py`, `admin_ticket.py`). В имени треда разметка не работает, в теле
+    сообщения — работает: описание, начинающееся с `**`, `#` или бэктика,
+    разваливает заголовок, а `[клик](http://…)` становится ссылкой от имени
+    бота. Нашли два угла ревью независимо.
+    """
+    return disnake.utils.escape_markdown(thread.name)
 
 class TicketEngine(commands.Cog):
 
@@ -60,9 +72,11 @@ class TicketEngine(commands.Cog):
             await inter.edit_original_response("⚠️ Не удалось сохранить лог тикета — тред НЕ удалён. Проверь канал логов и повтори.")
             return
 
+        # Имя тикета в ЛС обязательно: тред удаляется, и без него игрок с
+        # несколькими репортами не понимает, какой именно закрыли (issue #46).
         if is_support:
             closed_embed = disnake.ui.Container(
-                disnake.ui.TextDisplay("## ⭐️ Твой админский тикет закрыт!"),
+                disnake.ui.TextDisplay(f"## ⭐️ Твой админский тикет закрыт: {_safe_name(thread)}"),
                 disnake.ui.Separator(),
                 disnake.ui.TextDisplay(f"### Решение:\n{comment}\n-# Закрыл: <@{inter.author.id}>")
             )
@@ -71,7 +85,7 @@ class TicketEngine(commands.Cog):
             if comment:
                 description += f"\n**Комментарий:**\n{comment}"
             closed_embed = create_container(
-                title="💫 Сообщённый тобой баг пофикшен!",
+                title=f"💫 Баг «{_safe_name(thread)}» пофикшен!",
                 description=description
             )
 
@@ -110,14 +124,15 @@ class TicketEngine(commands.Cog):
             await inter.edit_original_response("⚠️ Не удалось сохранить лог тикета — тред НЕ удалён. Проверь канал логов и повтори.")
             return
 
+        # Имя тикета — см. комментарий в _finishTicketInner (issue #46).
         if is_support:
             declined_embed = create_container(
-                title="😔 Твой админский тикет отклонён...",
+                title=f"😔 Твой админский тикет «{_safe_name(thread)}» отклонён...",
                 description=f"К сожалению, твой тикет был отклонён...\n**Причина:** {reason or 'Не указали...'}"
             )
         else:
             declined_embed = create_container(
-                title="😔 Сообщённый тобой баг отклонён...",
+                title=f"😔 Баг «{_safe_name(thread)}» отклонён...",
                 description=f"Огромное спасибо за репорт бага, но он был отклонён...\n**Причина:** {reason or 'Не указали...'}"
             )
 
@@ -222,7 +237,7 @@ class TicketEngine(commands.Cog):
                 tag_added = forum.get_tag_by_name('Добавлено')
                 tag_rejected = forum.get_tag_by_name("Отклонено")
                 if tag_added is None:
-                    await inter.send("Не нашёл тег «Добавлено» — возможно, его переименовали. Сообщи админам!", ephemeral=True)
+                    await inter.edit_original_response("Не нашёл тег «Добавлено» — возможно, его переименовали. Сообщи админам!")
                     return
                 try:
                     if tag_rejected is not None and tag_rejected in thread.applied_tags:
@@ -231,46 +246,46 @@ class TicketEngine(commands.Cog):
                     idea_embed = create_embed(
                         title="💫 Идея добавлена!",
                         description="Предложенная тобой идея была реализована на сервере!\n**Спасибо**💖",
-                        color=disnake.Colour.yellow
+                        color=disnake.Colour.yellow()
                     )
                     if comment:
                         idea_embed.add_field(name="Комментарий", value=comment)
                     await thread.send(f"{owner.mention if owner else ''}", embed=idea_embed)
-                    await inter.send("💫 Идея отмечена как добавленная!", ephemeral=True)
+                    await inter.edit_original_response("💫 Идея отмечена как добавленная!")
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/done)", thread.id)
-                    await inter.send("Не удалось отметить идею — детали в логах.", ephemeral=True)
+                    await inter.edit_original_response("Не удалось отметить идею — детали в логах.")
 
             case Channels.requests:
                 tag_done = forum.get_tag_by_name('Исполнено')
                 tag_rejected = forum.get_tag_by_name("Отказано")
                 if tag_done is None:
-                    await inter.send("Не нашёл тег «Исполнено» — возможно, его переименовали. Сообщи админам!", ephemeral=True)
+                    await inter.edit_original_response("Не нашёл тег «Исполнено» — возможно, его переименовали. Сообщи админам!")
                     return
                 try:
                     if tag_rejected is not None and tag_rejected in thread.applied_tags:
                         await thread.remove_tags(tag_rejected)
                     await thread.add_tags(tag_done)
-                    request_embed = create_embed(title="💫 Запрос выполнен!", color=disnake.Colour.yellow)
+                    request_embed = create_embed(title="💫 Запрос выполнен!", color=disnake.Colour.yellow())
                     if comment:
                         request_embed.add_field(name="Комментарий", value=comment)
                     await thread.send(f"{owner.mention if owner else ''}", embed=request_embed)
-                    await inter.send("💫 Запрос отмечен как выполненный!", ephemeral=True)
+                    await inter.edit_original_response("💫 Запрос отмечен как выполненный!")
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/done)", thread.id)
-                    await inter.send("Не удалось отметить запрос — детали в логах.", ephemeral=True)
+                    await inter.edit_original_response("Не удалось отметить запрос — детали в логах.")
 
             case Channels.bugs:
                 await self._finishTicket(inter, thread, comment)
 
             case Channels.support:
                 if not comment:
-                    await inter.send("Для админских тикетов обязательно нужен комментарий с итогом!", ephemeral=True)
+                    await inter.edit_original_response("Для админских тикетов обязательно нужен комментарий с итогом!")
                     return
                 await self._finishTicket(inter, thread, comment)
 
             case _:
-                await inter.send("Команду можно прописывать только в тредах багов, идей, тикетов или запросов!", ephemeral=True)
+                await inter.edit_original_response("Команду можно прописывать только в тредах багов, идей, тикетов или запросов!")
 
     @commands.slash_command(name='decline', description='Отклонить баг, идею, тикет')
     @has_config_roles("admin", "st_admin")
@@ -293,7 +308,7 @@ class TicketEngine(commands.Cog):
                 tag_added = forum.get_tag_by_name('Добавлено')
                 tag_rejected = forum.get_tag_by_name("Отклонено")
                 if tag_rejected is None:
-                    await inter.send("Не нашёл тег «Отклонено» — возможно, его переименовали. Сообщи админам!", ephemeral=True)
+                    await inter.edit_original_response("Не нашёл тег «Отклонено» — возможно, его переименовали. Сообщи админам!")
                     return
                 try:
                     if tag_added is not None and tag_added in thread.applied_tags:
@@ -302,32 +317,32 @@ class TicketEngine(commands.Cog):
                     idea_embed = create_embed(
                         title="Идея отклонена...",
                         description="Большое спасибо за предложение, но, к сожалению, идея была отклонена...",
-                        color=disnake.Colour.yellow
+                        color=disnake.Colour.yellow()
                     )
                     idea_embed.add_field(name="Причина:", value=reason or "Не указали...")
                     await thread.send(f"{owner.mention if owner else ''}", embed=idea_embed)
-                    await inter.send("Идея отклонена.", ephemeral=True)
+                    await inter.edit_original_response("Идея отклонена.")
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/decline)", thread.id)
-                    await inter.send("Не удалось отклонить идею — детали в логах.", ephemeral=True)
+                    await inter.edit_original_response("Не удалось отклонить идею — детали в логах.")
 
             case Channels.requests:
                 tag_done = forum.get_tag_by_name('Исполнено')
                 tag_rejected = forum.get_tag_by_name("Отказано")
                 if tag_rejected is None:
-                    await inter.send("Не нашёл тег «Отказано» — возможно, его переименовали. Сообщи админам!", ephemeral=True)
+                    await inter.edit_original_response("Не нашёл тег «Отказано» — возможно, его переименовали. Сообщи админам!")
                     return
                 try:
                     if tag_done is not None and tag_done in thread.applied_tags:
                         await thread.remove_tags(tag_done)
                     await thread.add_tags(tag_rejected)
-                    request_embed = create_embed(title="😔 Запрос отклонён", color=disnake.Colour.yellow)
+                    request_embed = create_embed(title="😔 Запрос отклонён", color=disnake.Colour.yellow())
                     request_embed.add_field(name="Причина", value=reason or "Не указали...")
                     await thread.send(f"{owner.mention if owner else ''}", embed=request_embed)
-                    await inter.send("Запрос отклонён.", ephemeral=True)
+                    await inter.edit_original_response("Запрос отклонён.")
                 except disnake.HTTPException:
                     logger.exception("Не удалось проставить теги или уведомить в треде %s (/decline)", thread.id)
-                    await inter.send("Не удалось отклонить запрос — детали в логах.", ephemeral=True)
+                    await inter.edit_original_response("Не удалось отклонить запрос — детали в логах.")
 
             case Channels.bugs:
                 await self._rejectTicket(inter, thread, reason)
@@ -336,7 +351,7 @@ class TicketEngine(commands.Cog):
                 await self._rejectTicket(inter, thread, reason)
 
             case _:
-                await inter.send("Команду можно прописывать только в тредах багов, идей, тикетов или запросов!", ephemeral=True)
+                await inter.edit_original_response("Команду можно прописывать только в тредах багов, идей, тикетов или запросов!")
 
     @commands.Cog.listener("on_button_click")
     async def ticketButtons(self, inter: disnake.MessageInteraction):
@@ -361,7 +376,7 @@ class TicketEngine(commands.Cog):
         else:
             await inter.response.send_modal(self.TicketDeclineModal(self))
 
-    class TicketDoneModal(disnake.ui.Modal):
+    class TicketDoneModal(AnsweringModal):
         def __init__(self, cog: "TicketEngine", *, required: bool):
             self.cog = cog
             components = [
@@ -377,11 +392,13 @@ class TicketEngine(commands.Cog):
             super().__init__(title="Завершение тикета", components=components)
 
         async def callback(self, inter: disnake.ModalInteraction):
-            await inter.response.defer()
+            # ephemeral: плейсхолдер modal_submit по умолчанию ПУБЛИЧЕН,
+            # и сообщение об ошибке уходило в тред всем.
+            await inter.response.defer(ephemeral=True)
             comment = inter.text_values.get("comment") or None
             await self.cog._finishTicket(inter, inter.channel, comment)
 
-    class TicketDeclineModal(disnake.ui.Modal):
+    class TicketDeclineModal(AnsweringModal):
         def __init__(self, cog: "TicketEngine"):
             self.cog = cog
             components = [
@@ -397,7 +414,9 @@ class TicketEngine(commands.Cog):
             super().__init__(title="Отклонение тикета", components=components)
 
         async def callback(self, inter: disnake.ModalInteraction):
-            await inter.response.defer()
+            # ephemeral: плейсхолдер modal_submit по умолчанию ПУБЛИЧЕН,
+            # и сообщение об ошибке уходило в тред всем.
+            await inter.response.defer(ephemeral=True)
             reason = inter.text_values.get("reason") or None
             await self.cog._rejectTicket(inter, inter.channel, reason)
 
@@ -447,7 +466,7 @@ async def archive_ticket(bot: commands.Bot, thread: disnake.Thread, *, ticket_ty
     transcript_file = disnake.File(buf, filename=f"ticket-{thread.id}.txt")
     note_line = f"\n**Комментарий/причина:** {note}" if note else ""
     container = disnake.ui.Container(
-        disnake.ui.TextDisplay(f"## 📁 Тикет закрыт: {thread.name}"),
+        disnake.ui.TextDisplay(f"## 📁 Тикет закрыт: {_safe_name(thread)}"),
         disnake.ui.Separator(),
         disnake.ui.TextDisplay(f"**Тип:** {ticket_type}{author_line}\n**Закрыл:** {closer.mention}{note_line}"),
         disnake.ui.Separator(),
