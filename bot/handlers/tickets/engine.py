@@ -375,8 +375,11 @@ class TicketEngine(commands.Cog):
             await inter.response.send_message("Эти кнопки работают только в тредах багов и админ-тикетов.", ephemeral=True)
             return
 
-        # Право: admin / st_admin (по образцу honeypot — ручная проверка ролей)
-        allowed = {Roles.admin, Roles.st_admin}
+        # Право: admin / st_admin / moderator (по образцу honeypot — ручная
+        # проверка ролей). Модератора пингуют при создании и бага, и админ-тикета
+        # (bugs.py, admin_ticket.py) — он штатный участник треда. Слэши /done и
+        # /decline намеренно остались без него: ими никто не пользуется.
+        allowed = {Roles.admin, Roles.st_admin, Roles.moderator}
         if not any(r.id in allowed for r in getattr(inter.author, "roles", [])):
             await inter.response.send_message("Недостаточно прав для этого действия.", ephemeral=True)
             return

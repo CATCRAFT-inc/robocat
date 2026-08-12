@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import disnake
 import pytest
 
-from bot.discord_config import Channels
+from bot.discord_config import Channels, Roles
 from bot.handlers.tickets import engine as engine_module
 from bot.handlers.tickets.engine import TicketEngine
 from bot.utils import component_text
@@ -609,3 +609,43 @@ async def test_news_request_decision_log_escapes_the_request_name(monkeypatch):
     sent = _sent_texts(channel.send)
     assert r"\*\*жирный\*\*" in sent, sent
     assert r"\[клик]" in sent, sent
+
+
+def _button_interaction(thread, *role_ids: int, custom_id="TICKET_DONE"):
+    inter = MagicMock()
+    inter.component.custom_id = custom_id
+    inter.channel = thread
+    inter.author.roles = [MagicMock(id=role_id) for role_id in role_ids]
+    inter.response.send_message = AsyncMock()
+    inter.response.send_modal = AsyncMock()
+    return inter
+
+
+@pytest.mark.parametrize("role_id", [Roles.admin, Roles.st_admin, Roles.moderator])
+@pytest.mark.parametrize("parent_id", [Channels.bugs, Channels.support])
+@pytest.mark.parametrize("custom_id", ["TICKET_DONE", "TICKET_DECLINE"])
+async def test_ticket_buttons_open_the_modal_for_staff(role_id, parent_id, custom_id):
+    cog = TicketEngine.__new__(TicketEngine)
+    inter = _button_interaction(_thread(parent_id), role_id, custom_id=custom_id)
+
+    await cog.ticketButtons(inter)
+
+    assert inter.response.send_modal.await_count == 1
+    assert inter.response.send_message.await_count == 0
+
+
+@pytest.mark.parametrize("parent_id", [Channels.bugs, Channels.support])
+@pytest.mark.parametrize("custom_id", ["TICKET_DONE", "TICKET_DECLINE"])
+async def test_ticket_buttons_refuse_a_player_without_roles(parent_id, custom_id):
+    """Обратная половина: расширение списка ролей не должно пускать всех подряд.
+
+    `Roles.reporter` — роль без отношения к тикетам; вместе с пустым набором
+    ролей она ловит замену проверки на «есть хоть какая-нибудь роль».
+    """
+    cog = TicketEngine.__new__(TicketEngine)
+    inter = _button_interaction(_thread(parent_id), Roles.reporter, custom_id=custom_id)
+
+    await cog.ticketButtons(inter)
+
+    assert inter.response.send_modal.await_count == 0
+    assert inter.response.send_message.await_count == 1
