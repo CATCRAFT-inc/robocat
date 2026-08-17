@@ -156,6 +156,7 @@ bot = MainGuildBot(
     reload=True,
     command_sync_flags=commands.CommandSyncFlags.all(),
     strip_after_prefix=True,
+    case_insensitive=True,  # !Карта == !карта: casefold-матч имён и алиасов, кириллица включительно
     test_guilds=[Guilds.main],
     owner_id=Users.szarkan
 )

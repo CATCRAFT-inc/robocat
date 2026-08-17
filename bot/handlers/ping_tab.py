@@ -881,7 +881,7 @@ class PingTab(commands.Cog):
                 )
             return _snapshot
 
-    @commands.command(name="пинг", description="Кто сейчас на сервере", aliases=["ping", "gbyu", "зштп"])
+    @commands.command(name="пинг", description="Кто сейчас на сервере", aliases=["ping", "gbyu", "зштп", "пигн", "пниг", "пин", "пинн"])
     @commands.cooldown(SPAM_CALLS, SPAM_WINDOW, commands.BucketType.channel)
     async def pingPlayers(self, ctx: commands.Context, *, mode: str = ""):
         if not self.host or not self.password:

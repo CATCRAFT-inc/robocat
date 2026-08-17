@@ -36,7 +36,7 @@ class FAQ(commands.Cog):
         else:
             await ctx.channel.send(components=embed)
 
-    @commands.command(name='немогузайти', aliases=['проблемысовходом'], description='Частые причины проблем со входом')
+    @commands.command(name='немогузайти', aliases=['проблемысовходом', 'cantjoin'], description='Частые причины проблем со входом')
     async def getSockOptFAQ(self, ctx: commands.Context):
         embed = disnake.ui.Container(
                     disnake.ui.TextDisplay("## `getsockopt`"),
@@ -53,7 +53,7 @@ class FAQ(commands.Cog):
     #     )
     #     await self.send_faq(ctx,embed)
 
-    @commands.command(name='айпи', aliases=["ip"], description='Показать IP сервера')
+    @commands.command(name='айпи', aliases=["ip", "айип", "апйи", "аип", "fqgb"], description='Показать IP сервера')
     async def ip_faq(self, ctx: commands.Context):
         embed = disnake.ui.Container(
             disnake.ui.TextDisplay("## Наши IP"),
@@ -70,7 +70,7 @@ class FAQ(commands.Cog):
         )
         await self.send_faq(ctx,embed)
 
-    @commands.command(name='когдавайп', description="Информация по вайпу", aliases=['вайп'])
+    @commands.command(name='когдавайп', description="Информация по вайпу", aliases=['вайп', 'wipe', 'whenwipe', 'вапй', 'ваип', 'вйап', 'dfqg'])
     async def whenWipe_faq(self, ctx: commands.Context):
         embed = disnake.ui.Container(
             disnake.ui.TextDisplay("## Когда вайп?"),
@@ -79,33 +79,33 @@ class FAQ(commands.Cog):
         )
         await self.send_faq(ctx,embed)
 
-    @commands.command(name='гайд', description='Гайд для новичков', aliases=['guide'])
+    @commands.command(name='гайд', description='Гайд для новичков', aliases=['guide', 'гай', 'гвйд', 'гайдд', 'ufql'])
     async def guide(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay("### Гайд для новых игроков - <https://wiki.catcraft.ru/info/guide>")
         ))
 
-    @commands.command(name='донатик', description='Донат нашего проекта!^~^', aliases=['донат', 'donate', "котик+"])
+    @commands.command(name='донатик', description='Донат нашего проекта!^~^', aliases=['донат', 'donate', "котик+", 'донт', 'доант', 'донатт', 'ljyfn'])
     async def donate(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay("### Донатик сервера - <https://donate.catcraft.ru>")
         ))
 
-    @commands.command(name='законы', description='Законы сервера', aliases=['закон', 'laws', 'pfrjys'])
+    @commands.command(name='законы', description='Законы сервера', aliases=['закон', 'laws', 'pfrjys', 'закны', 'зкаоны', 'зконы'])
     async def laws(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay("### Законы Кошкоземья - <https://wiki.catcraftmc.ru/info/rules/laws/>"),
             disnake.ui.TextDisplay("-# Это законы мира, проще говоря - РП правила")
         ))
 
-    @commands.command(name='правила', description='Правила сервера', aliases=['заповеди', 'rules', 'ghfdbkf'])
+    @commands.command(name='правила', description='Правила сервера', aliases=['заповеди', 'rules', 'ghfdbkf', 'правла', 'правило', 'првила'])
     async def rules(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay("### Заповеди Кошкоземья - <https://wiki.catcraftmc.ru/info/rules/rules/>"),
             disnake.ui.TextDisplay("-# Это правила сервера, за ними смотрят Всекоты")
         ))
 
-    @commands.command(name='лаунчер', description='Информация про лаунчеры', aliases=['лаунчеры', 'какойлаунчервыбрать'])
+    @commands.command(name='лаунчер', description='Информация про лаунчеры', aliases=['лаунчеры', 'какойлаунчервыбрать', 'launcher', 'лаунчр', 'ланчер'])
     async def launcher(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay("### Помощь с выбором нормального лаунчера - <https://wiki.catcraft.ru/guides/other/launcher>"),
@@ -119,7 +119,7 @@ class FAQ(commands.Cog):
             disnake.ui.TextDisplay("### История с самого зарождения Кошкокрафта до текущих дней - <https://wiki.catcraft.ru/history/1season/1season>")
         ))
 
-    @commands.command(name='моды', description="Информация по модам для сервера")
+    @commands.command(name='моды', description="Информация по модам для сервера", aliases=['mods', 'моди', 'мды', 'vjls'])
     async def mods_faq(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay("### Все нужные моды для наиболее комфортной игры - <https://wiki.catcraft.ru/info/mods>")
@@ -132,7 +132,7 @@ class FAQ(commands.Cog):
     #         description='<https://wiki.catcraftmc.ru/guides/gameplay/rgb_nick>'
     #     ))
 
-    @commands.command(name='запретныемоды', description='Запрещённые моды', aliases=['запрещено', 'запрещённыемоды', 'запрещенныемоды'])
+    @commands.command(name='запретныемоды', description='Запрещённые моды', aliases=['запрещено', 'запрещённыемоды', 'запрещенныемоды', 'bannedmods'])
     async def badmods(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay(
@@ -157,25 +157,25 @@ class FAQ(commands.Cog):
             )
             ))
 
-    @commands.command(name='карта', aliases=['map', 'онлайнкарта', 'rfhnf'], description="Ссылка на онлайн-карту")
+    @commands.command(name='карта', aliases=['map', 'онлайнкарта', 'rfhnf', 'карат', 'каорта', 'крата', 'кара'], description="Ссылка на онлайн-карту")
     async def map_faq(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay('### Онлайн-карта сервера\n<https://map.catcraft.ru>')
         ))
 
-    @commands.command(name='вики', aliases=['wiki', 'dbrb'], description="Ссылка на Вики")
+    @commands.command(name='вики', aliases=['wiki', 'dbrb', 'вик', 'вико', 'викм', 'впки'], description="Ссылка на Вики")
     async def wiki_faq(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay('### Вики сервера - <https://wiki.catcraft.ru>')
         ))
 
-    @commands.command(name='тут', description="Проверить тут ли бот", aliases=["тут?"])
+    @commands.command(name='тут', description="Проверить тут ли бот", aliases=["тут?", "here"])
     async def ping_faq(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay('### Я тут =)')
         ))
 
-    @commands.command(name='помощь', description="Информация по помощи от админов.", aliases=["нужнапомощь", "helpme"])
+    @commands.command(name='помощь', description="Информация по помощи от админов.", aliases=["нужнапомощь", "helpme", "помошь", "помщь", "помагите", "gjvjom"])
     async def needhelp_faq(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay(
@@ -187,7 +187,7 @@ class FAQ(commands.Cog):
             )
         ))
 
-    @commands.command(name='репорты', aliases=['ксб', 'репорт'], description="Информация по репортам КСБ")
+    @commands.command(name='репорты', aliases=['ксб', 'репорт', 'report', 'reports'], description="Информация по репортам КСБ")
     async def report_faq(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay('## Тебя ограбили/убили/обворовали?'),

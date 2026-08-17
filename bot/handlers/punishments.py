@@ -75,7 +75,7 @@ class PunishmentsHanlder(commands.Cog):
             except disnake.HTTPException:
                 logger.warning("Не удалось доставить модератору %s ответ !мут", ctx.author.id)
 
-    @commands.command(name='мут')
+    @commands.command(name='мут', aliases=['mute'])
     @has_config_roles("admin", "st_admin", "moderator")
     async def prefixMute(self,
                         ctx: commands.Context,
