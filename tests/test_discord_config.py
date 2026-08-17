@@ -91,6 +91,24 @@ def test_reload_rejects_incomplete_or_non_integer_config(tmp_path, contents):
         discord_config.reload_config(path)
 
 
+def test_startup_backfills_missing_key_from_example(tmp_path):
+    """Путь старта (backfill=True): локальный конфиг без нового ключа не падает,
+    значение берётся из example.yml — иначе новый ключ ронял бы прод на рестарте."""
+    from bot import discord_config
+
+    data = yaml.safe_load(discord_config.EXAMPLE_PATH.read_text(encoding="utf-8"))
+    example_value = data["channels"].pop("bugs")  # операторский конфиг «отстал» на ключ
+    path = tmp_path / "discord.yml"
+    path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    snap = discord_config._validate(path, backfill=True)
+    assert snap.sections["channels"]["bugs"] == example_value
+
+    # тот же файл строгим путём (как /config-reload) обязан отклониться
+    with pytest.raises(discord_config.ConfigError, match="bugs"):
+        discord_config._validate(path)
+
+
 def test_python_sources_have_no_raw_discord_ids():
     root = Path(__file__).resolve().parents[1]
     sources = [root / "main.py", *(root / "bot").rglob("*.py")]

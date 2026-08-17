@@ -6,6 +6,7 @@ it and apply the complete candidate with `/config-reload`.
 
 from __future__ import annotations
 
+import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,8 @@ from typing import Mapping
 
 import yaml
 from disnake.ext import commands
+
+logger = logging.getLogger("robocat.discord_config")
 
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_PATH = ROOT / "data" / "discord.example.yml"
@@ -64,29 +67,46 @@ def _schema() -> dict[str, frozenset[str]]:
 
 
 _SCHEMA = _schema()
-_CANONICAL_MAIN_GUILD_ID = _read_yaml(EXAMPLE_PATH)["guilds"]["main"]
+_EXAMPLE = _read_yaml(EXAMPLE_PATH)
+_CANONICAL_MAIN_GUILD_ID = _EXAMPLE["guilds"]["main"]
 
 
-def _validate(path: Path) -> DiscordSnapshot:
+def _validate(path: Path, *, backfill: bool = False) -> DiscordSnapshot:
+    """Проверить конфиг. При `backfill=True` (путь СТАРТА) недостающие секции/ключи
+    добираются из example.yml с предупреждением — новый ключ в схеме не должен
+    ронять прод, где локальный конфиг ещё не обновлён. `reload_config` строг
+    (`backfill=False`): оператору, применяющему кандидат, ошибку надо показать."""
     data = _read_yaml(path)
     actual_sections = frozenset(data)
     expected_sections = frozenset(_SCHEMA)
-    if actual_sections != expected_sections:
-        missing = sorted(expected_sections - actual_sections)
-        unknown = sorted(actual_sections - expected_sections)
-        raise ConfigError(f"{path}: секции missing={missing}, unknown={unknown}")
+    unknown_sections = sorted(actual_sections - expected_sections)
+    if unknown_sections:
+        raise ConfigError(f"{path}: неизвестные секции {unknown_sections}")
+    missing_sections = sorted(expected_sections - actual_sections)
+    if missing_sections and not backfill:
+        raise ConfigError(f"{path}: отсутствуют секции {missing_sections}")
 
     frozen: dict[str, Mapping[str, int]] = {}
     for section, expected_keys in _SCHEMA.items():
-        values = data[section]
+        values = data.get(section)
+        if values is None and backfill:
+            values = {}
         if not isinstance(values, dict):
             raise ConfigError(f"{path}: секция {section!r} должна быть объектом")
         actual_keys = frozenset(values)
-        if actual_keys != expected_keys:
-            missing = sorted(expected_keys - actual_keys)
-            unknown = sorted(actual_keys - expected_keys)
-            raise ConfigError(
-                f"{path}: секция {section!r}: missing={missing}, unknown={unknown}"
+        unknown = sorted(actual_keys - expected_keys)
+        if unknown:
+            raise ConfigError(f"{path}: секция {section!r}: неизвестные ключи {unknown}")
+        missing = sorted(expected_keys - actual_keys)
+        if missing and not backfill:
+            raise ConfigError(f"{path}: секция {section!r}: отсутствуют ключи {missing}")
+        if missing:
+            values = dict(values)
+            for name in missing:
+                values[name] = _EXAMPLE[section][name]
+            logger.warning(
+                "%s: секция %r — ключи %s взяты из example.yml (локальный конфиг устарел)",
+                path, section, missing,
             )
         validated: dict[str, int] = {}
         for name, value in values.items():
@@ -112,7 +132,7 @@ def _initial_path() -> Path:
     return LOCAL_PATH
 
 
-_current = _validate(_initial_path())
+_current = _validate(_initial_path(), backfill=True)
 
 
 def snapshot() -> DiscordSnapshot:
