@@ -15,22 +15,21 @@ import re
 import struct
 import time
 import zlib
-from pathlib import Path
 
 import disnake
 from disnake.ext import commands
 from PIL import Image, ImageDraw, ImageFont
 
+from bot.assets import DATA_DIR, DEFAULT_FONT_PATH
 from bot.discord_config import Guilds
 from bot.handlers.rcon import rcon_exec_many
 from bot.utils import create_container
 
 logger = logging.getLogger("robocat.ping_tab")
 
-_DATA = Path(__file__).resolve().parent.parent.parent / "data"
-FONT_PATH = _DATA / "tab" / "Monocraft.ttf"
-LOGO_PATH = _DATA / "tab" / "logo.png"
-HEAD_CACHE_DIR = _DATA / "heads"
+FONT_PATH = DEFAULT_FONT_PATH
+LOGO_PATH = DATA_DIR / "tab" / "logo.png"
+HEAD_CACHE_DIR = DATA_DIR / "heads"
 
 # Ник в Minecraft — только латиница, цифры и подчёркивание, до 16 символов.
 # Всё, что не прошло эту проверку, не попадает НИ в URL головы, НИ в имя файла

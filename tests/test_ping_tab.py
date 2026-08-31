@@ -17,7 +17,9 @@ from unittest.mock import MagicMock
 import disnake
 import pytest
 from disnake.ext import commands
-from PIL import Image
+from PIL import Image, ImageFont
+
+from bot.assets import DEFAULT_FONT_PATH
 
 
 class _FakeHTTPResponse:
@@ -627,6 +629,13 @@ def test_render_tab_ignores_an_oversized_logo(tmp_path, monkeypatch):
 def test_render_tab_survives_a_missing_font(tmp_path, monkeypatch):
     monkeypatch.setattr("bot.handlers.ping_tab.FONT_PATH", tmp_path / "нет.ttf")
     assert _render(["vxpbuser"], heads={}).format == "PNG"
+
+
+def test_ping_uses_bundled_minecraft_rus_font():
+    font = ImageFont.truetype(str(ping_tab.FONT_PATH), ping_tab.FONT_SIZE)
+
+    assert ping_tab.FONT_PATH == DEFAULT_FONT_PATH
+    assert font.getname()[0] == "Minecraft Rus"
 
 
 def test_spam_filter_is_wired_with_the_intended_numbers():
@@ -1605,6 +1614,3 @@ async def test_rcon_exec_many_raises_on_wrong_password(unused_tcp_port):
     async with _serving(serve, unused_tcp_port):
         with pytest.raises(PermissionError):
             await rcon_exec_many("127.0.0.1", unused_tcp_port, "bad", ["a"], timeout=5.0)
-
-
-
