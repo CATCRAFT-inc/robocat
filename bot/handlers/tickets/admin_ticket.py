@@ -5,6 +5,7 @@ from disnake.ext import commands
 from disnake import TextInputStyle, GroupOption, RadioGroup
 from disnake.ui import TextDisplay, TextInput, Label, Container, Separator
 
+from bot import metrics as telemetry
 from bot.flag_system.flag_system import flags
 from bot.discord_config import Roles, Users
 from bot.storage import ColorStorage
@@ -86,6 +87,7 @@ class AdminTicket(commands.Cog):
             await bug_thread.send(components=[bug_container])
             await inter.edit_original_response(f"Репорт админам создан! Перейди в него: <#{bug_thread.id}>")
             await flags.setFlag(bug_thread,"created_by",inter.author.id)
+            telemetry.record_later("ticket", "created")
             try:
                 await inter.author.send(
                     components=create_container(

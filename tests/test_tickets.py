@@ -9,6 +9,8 @@
   ИМЯ тикета — иначе игрок с пачкой репортов не понимает, какой закрыли.
 """
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import disnake
@@ -336,6 +338,50 @@ async def test_empty_summary_is_not_read_as_a_failed_archive(closing):
     thread.delete.assert_awaited_once()
 
 
+async def test_done_closes_thread_and_saves_transcript_before_ai_finishes(monkeypatch):
+    """Медленная выжимка не держит тикет открытым после решения админа."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_summary(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return "Починили ворота."
+
+    monkeypatch.setattr(engine_module, "llm", SimpleNamespace(ask=slow_summary))
+    monkeypatch.setattr(engine_module.flags, "getFlag", AsyncMock(return_value=None))
+    monkeypatch.setattr(engine_module.flags, "removeFlag", AsyncMock())
+    monkeypatch.setattr(engine_module, "remove_bug_from_index", AsyncMock())
+    metric = MagicMock()
+    monkeypatch.setattr(engine_module.telemetry, "record_later", metric)
+
+    log_message = MagicMock()
+    log_message.edit = AsyncMock()
+    log_channel = MagicMock()
+    log_channel.send = AsyncMock(return_value=log_message)
+    bot = MagicMock()
+    bot.get_channel.return_value = log_channel
+    cog = TicketEngine(bot)
+    thread = _thread(Channels.bugs)
+    thread.history = MagicMock(return_value=_aiter([]))
+    inter = _interaction(thread)
+    inter.text_values = {"comment": "поправили"}
+
+    task = asyncio.create_task(
+        TicketEngine.TicketDoneModal(cog, required=False).callback(inter)
+    )
+    await started.wait()
+    logged_while_thinking = log_channel.send.await_count
+    deleted_while_thinking = thread.delete.await_count
+    release.set()
+    await task
+
+    assert logged_while_thinking == 1
+    assert deleted_while_thinking == 1
+    log_message.edit.assert_awaited_once()
+    metric.assert_called_once_with("ticket", "closed")
+
+
 @pytest.mark.parametrize("parent_id", [Channels.bugs, Channels.support])
 async def test_reject_ticket_dm_names_the_ticket(closing, parent_id):
     cog = TicketEngine(MagicMock())
@@ -534,6 +580,9 @@ async def test_archive_log_also_escapes_the_ticket_name(monkeypatch):
     channel.send = AsyncMock()
     bot = MagicMock()
     bot.get_channel.return_value = channel
+    # Этот тест проверяет Discord-архив, а не LLM. Реальная сеть здесь не нужна
+    # и делала точечный прогон зависимым от доступности внешнего вендора.
+    monkeypatch.setattr(engine_module, "llm", None)
     monkeypatch.setattr(engine_module.flags, "getFlag", AsyncMock(return_value=None))
 
     thread = _thread(Channels.bugs, name="**жирный** [клик](http://evil.example)")

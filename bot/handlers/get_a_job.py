@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 import disnake
 from disnake.ext import commands
 
+from bot import metrics as telemetry
 from bot.discord_config import Channels, Roles, has_config_roles
 from bot.flag_system.flag_system import flags
 from bot.storage import Buttons, ColorStorage
@@ -199,6 +200,75 @@ class VacancyModal(AnsweringModal):
             await inter.response.send_message(components=components, ephemeral=True)
 
 
+class JobApplicationModal(AnsweringModal):
+    def __init__(self, cog: "GetAJob", vacancy_message):
+        self.cog = cog
+        self.vacancy_message = vacancy_message
+        super().__init__(
+            title="Отклик на вакансию",
+            custom_id=f"vacancy_apply:{vacancy_message.id}",
+            components=[
+                disnake.ui.Label(
+                    text="Расскажи о себе",
+                    description="Опыт, мотивация и всё, что поможет принять решение",
+                    component=disnake.ui.TextInput(
+                        custom_id="about",
+                        style=disnake.TextInputStyle.paragraph,
+                        min_length=20,
+                        max_length=1500,
+                        placeholder="Расскажи, почему эта вакансия тебе подходит",
+                    ),
+                )
+            ],
+        )
+
+    async def callback(self, inter: disnake.ModalInteraction):
+        about = inter.text_values["about"].strip()
+        if len(about) < 20:
+            await inter.response.send_message(
+                "Расскажи о себе чуть подробнее — нужно хотя бы 20 непробельных символов.",
+                ephemeral=True,
+            )
+            return
+        await self.cog._apply(
+            inter,
+            vacancy_message=self.vacancy_message,
+            about=about,
+        )
+
+
+class JobDecisionModal(AnsweringModal):
+    def __init__(self, cog: "GetAJob", applicant_id: int, *, accepted: bool):
+        self.cog = cog
+        self.applicant_id = applicant_id
+        self.accepted = accepted
+        action = "Принять" if accepted else "Отклонить"
+        super().__init__(
+            title=f"{action} отклик",
+            custom_id=f"vacancy_decision:{'accept' if accepted else 'decline'}:{applicant_id}",
+            components=[
+                disnake.ui.Label(
+                    text="Комментарий кандидату",
+                    component=disnake.ui.TextInput(
+                        custom_id="note",
+                        style=disnake.TextInputStyle.paragraph,
+                        required=False,
+                        max_length=1000,
+                    ),
+                )
+            ],
+        )
+
+    async def callback(self, inter: disnake.ModalInteraction):
+        await inter.response.defer(ephemeral=True)
+        await self.cog._decide_application(
+            inter,
+            applicant_id=self.applicant_id,
+            accepted=self.accepted,
+            note=(inter.text_values.get("note") or "").strip() or None,
+        )
+
+
 class GetAJob(commands.Cog):
     JOB_EMBED = disnake.ui.Container(
         disnake.ui.TextDisplay("# Работа!"),
@@ -218,6 +288,7 @@ class GetAJob(commands.Cog):
         self._seq = itertools.count(int(time.time()))
         self._cache_lock = asyncio.Lock()
         self._applying: set[tuple[int, int]] = set()
+        self._deciding: set[int] = set()
 
     def _preview(self, draft: _Draft, draft_id: int) -> list:
         return [
@@ -361,7 +432,7 @@ class GetAJob(commands.Cog):
     async def vacancyButtons(self, inter: disnake.MessageInteraction):
         custom_id = inter.component.custom_id or ""
         if custom_id == _APPLY_ID:
-            await self._apply(inter)
+            await inter.response.send_modal(JobApplicationModal(self, inter.message))
             return
         if not custom_id.startswith("VACANCY_"):
             return
@@ -370,6 +441,29 @@ class GetAJob(commands.Cog):
             return
 
         action, _, raw_id = custom_id.partition(":")
+        if action in {"VACANCY_ACCEPT", "VACANCY_DECLINE"}:
+            if (
+                not isinstance(inter.channel, disnake.Thread)
+                or inter.channel.parent_id != Channels.jobs
+            ):
+                await inter.response.send_message(
+                    "Эти кнопки работают только в тредах откликов.", ephemeral=True
+                )
+                return
+            applicant_id = int(raw_id) if raw_id.isascii() and raw_id.isdigit() else 0
+            if not applicant_id:
+                await inter.response.send_message(
+                    "Не удалось определить кандидата.", ephemeral=True
+                )
+                return
+            await inter.response.send_modal(
+                JobDecisionModal(
+                    self,
+                    applicant_id,
+                    accepted=action == "VACANCY_ACCEPT",
+                )
+            )
+            return
         draft_id = int(raw_id) if raw_id.isascii() and raw_id.isdigit() else -1
         draft = self.drafts.get(draft_id)
         if draft is None:
@@ -456,12 +550,19 @@ class GetAJob(commands.Cog):
         await inter.edit_original_response(
             components=[disnake.ui.TextDisplay(f"✅ Опубликовано: {message.jump_url}")]
         )
+        telemetry.record_later("job", "vacancy_published")
 
-    async def _apply(self, inter: disnake.MessageInteraction) -> None:
-        key = (inter.message.id, inter.author.id)
+    async def _apply(
+        self,
+        inter: disnake.ModalInteraction,
+        *,
+        vacancy_message,
+        about: str,
+    ) -> None:
+        key = (vacancy_message.id, inter.author.id)
         if key in self._applying:
             await inter.response.send_message(
-                "Отклик уже создаётся — подожди пару секунд.", ephemeral=True
+                    "Отклик уже создаётся — подожди пару секунд.", ephemeral=True
             )
             return
         self._applying.add(key)
@@ -479,7 +580,7 @@ class GetAJob(commands.Cog):
                         "Не удалось найти канал вакансий. Сообщи администрации."
                     )
                     return
-                title = _message_vacancy_title(inter.message)
+                title = _message_vacancy_title(vacancy_message)
                 thread = await channel.create_thread(
                     name=f"{title} — {inter.author.display_name}"[:100],
                     type=disnake.ChannelType.private_thread,
@@ -490,9 +591,24 @@ class GetAJob(commands.Cog):
                     disnake.ui.TextDisplay(f"# Отклик на вакансию «{title}»"),
                     disnake.ui.Separator(),
                     disnake.ui.TextDisplay(f"Кандидат: {inter.author.mention}"),
-                    disnake.ui.TextDisplay(f"Вакансия: {inter.message.jump_url}"),
+                    disnake.ui.TextDisplay(f"Вакансия: {vacancy_message.jump_url}"),
+                    disnake.ui.TextDisplay(
+                        f"## О себе\n{disnake.utils.escape_markdown(about)}"
+                    ),
                     disnake.ui.TextDisplay(
                         f"-# ||{inter.author.mention} <@&{Roles.admin}> <@&{Roles.st_admin}>||"
+                    ),
+                    disnake.ui.ActionRow(
+                        disnake.ui.Button(
+                            style=disnake.ButtonStyle.green,
+                            label="✅ Принять",
+                            custom_id=f"VACANCY_ACCEPT:{inter.author.id}",
+                        ),
+                        disnake.ui.Button(
+                            style=disnake.ButtonStyle.danger,
+                            label="⛔ Отклонить",
+                            custom_id=f"VACANCY_DECLINE:{inter.author.id}",
+                        ),
                     ),
                     accent_colour=disnake.Color.from_hex(ColorStorage.main),
                 )
@@ -507,8 +623,9 @@ class GetAJob(commands.Cog):
                         ],
                     ),
                 )
+                telemetry.record_later("job", "application_created")
             except disnake.HTTPException:
-                logger.exception("Не удалось создать отклик на вакансию %s", inter.message.id)
+                logger.exception("Не удалось создать отклик на вакансию %s", vacancy_message.id)
                 if thread is not None:
                     try:
                         await thread.delete(reason="Карточка отклика не отправилась")
@@ -519,7 +636,7 @@ class GetAJob(commands.Cog):
                         "Не удалось создать отклик. Попробуй позже или сообщи администрации."
                     )
                 except disnake.HTTPException:
-                    logger.warning("Не удалось сообщить об ошибке отклика %s", inter.message.id)
+                    logger.warning("Не удалось сообщить об ошибке отклика %s", vacancy_message.id)
                 return
 
             try:
@@ -527,11 +644,94 @@ class GetAJob(commands.Cog):
             except disnake.HTTPException:
                 logger.warning(
                     "Отклик %s создан в треде %s, но ephemeral-ответ не доставлен",
-                    inter.message.id,
+                    vacancy_message.id,
                     thread.id,
                 )
         finally:
             self._applying.discard(key)
+
+    async def _decide_application(
+        self,
+        inter: disnake.ModalInteraction,
+        *,
+        applicant_id: int,
+        accepted: bool,
+        note: str | None,
+    ) -> None:
+        thread = inter.channel
+        if thread.id in self._deciding:
+            await inter.edit_original_response("Этот отклик уже обрабатывает другой админ.")
+            return
+        self._deciding.add(thread.id)
+        try:
+            candidate = inter.guild.get_member(applicant_id)
+            if candidate is None:
+                try:
+                    candidate = await inter.guild.fetch_member(applicant_id)
+                except disnake.NotFound:
+                    candidate = None
+                except disnake.HTTPException:
+                    logger.exception("Не удалось найти кандидата %s", applicant_id)
+                    candidate = None
+
+            result = "принят" if accepted else "отклонён"
+            emoji = "✅" if accepted else "⛔"
+            note_text = (
+                f"\n\n**Комментарий:**\n{disnake.utils.escape_markdown(note)}"
+                if note
+                else ""
+            )
+            dm_delivered = False
+            if candidate is not None:
+                try:
+                    await candidate.send(
+                        components=disnake.ui.Container(
+                            disnake.ui.TextDisplay(
+                                f"## {emoji} Твой отклик на вакансию {result}"
+                            ),
+                            disnake.ui.Separator(),
+                            disnake.ui.TextDisplay(
+                                f"Вакансия: **{disnake.utils.escape_markdown(thread.name)}**"
+                                f"{note_text}"
+                            ),
+                            accent_colour=disnake.Color.from_hex(ColorStorage.main),
+                        )
+                    )
+                    dm_delivered = True
+                except disnake.HTTPException:
+                    logger.info(
+                        "Не удалось отправить решение по вакансии кандидату %s",
+                        applicant_id,
+                    )
+
+            if not dm_delivered:
+                await inter.edit_original_response(
+                    "ЛС кандидату не доставлено — решение не применено, тред не удалён. "
+                    "Свяжись с кандидатом и попробуй кнопку ещё раз."
+                )
+                return
+
+            try:
+                await thread.delete(
+                    reason=f"Отклик {result} администратором {inter.author.id}"
+                )
+                telemetry.record_later("job", "accepted" if accepted else "declined")
+            except disnake.HTTPException:
+                logger.exception("Не удалось удалить тред отклика %s", thread.id)
+                raise
+            try:
+                await inter.edit_original_response(
+                    f"Отклик {result}. Кандидат уведомлён, тред удалён."
+                )
+            except disnake.HTTPException:
+                # Решение уже доставлено, тред удалён; ephemeral-подтверждение
+                # косметическое и не должно оставлять активные кнопки.
+                logger.info(
+                    "Решение по отклику %s применено, но подтверждение админу не доставлено",
+                    thread.id,
+                )
+        finally:
+            self._deciding.discard(thread.id)
 
 
 def setup(bot: commands.Bot):

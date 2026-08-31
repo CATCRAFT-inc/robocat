@@ -1,12 +1,45 @@
+import io
 import logging
+from collections import defaultdict, deque
 from datetime import timedelta
+from time import monotonic
 
 import disnake
 from disnake.ext import commands
 
+from bot import metrics as telemetry
 from bot.discord_config import Channels, Roles
 
 logger = logging.getLogger("robocat.honeypot")
+
+_MENTION_RAID_WINDOW = 20.0
+_MENTION_RAID_THRESHOLD = 3
+_HONEYPOT_MUTE = timedelta(days=28)
+
+
+def _staff_roles() -> list[int]:
+    return [Roles.moderator, Roles.admin, Roles.st_admin]
+
+
+def _staff_ping() -> str:
+    return " ".join(f"<@&{role_id}>" for role_id in _staff_roles())
+
+
+def _message_evidence(message: disnake.Message) -> str:
+    text = (message.content or "").strip()
+    attachments = " ".join(attachment.url for attachment in message.attachments)
+    evidence = " ".join(part for part in (text, attachments) if part)
+    # Полный оригинал уходит отдельным .txt. Превью режем ПОСЛЕ экранирования,
+    # чтобы три TextDisplay вместе гарантированно помещались в общий лимит V2.
+    escaped = disnake.utils.escape_markdown(evidence or "*(пусто/вложение)*")
+    return escaped[:700]
+
+
+def _raw_message_evidence(message: disnake.Message) -> str:
+    attachments = " ".join(attachment.url for attachment in message.attachments)
+    return " ".join(
+        part for part in ((message.content or "").strip(), attachments) if part
+    ) or "(пусто/вложение)"
 
 
 class Honeypot(commands.Cog):
@@ -14,6 +47,7 @@ class Honeypot(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._mention_hits: dict[int, deque[tuple[float, disnake.Message]]] = defaultdict(deque)
 
     @commands.Cog.listener("on_message")
     async def honeypotTrap(self, message: disnake.Message):
@@ -21,6 +55,8 @@ class Honeypot(commands.Cog):
             return
         if message.author.bot:
             return
+
+        telemetry.record_later("security", "honeypot")
 
         author = message.author
         text = (message.content or "").strip()
@@ -36,7 +72,7 @@ class Honeypot(commands.Cog):
         # Мутим на максимум (28 дней)
         try:
             await author.timeout(
-                duration=timedelta(days=28),
+                duration=_HONEYPOT_MUTE,
                 reason="Ловушка: сообщение в канале-приманке",
             )
             logger.info("Ловушка: %s (%s) замьючен на 28 дней", author, author.id)
@@ -52,7 +88,7 @@ class Honeypot(commands.Cog):
             return
 
         container = disnake.ui.Container(
-            disnake.ui.TextDisplay(f"<@&{Roles.moderator}>"),
+            disnake.ui.TextDisplay(_staff_ping()),
             disnake.ui.TextDisplay("## 🍯 Сработала ловушка для ботов"),
             disnake.ui.Separator(),
             disnake.ui.TextDisplay(
@@ -79,11 +115,136 @@ class Honeypot(commands.Cog):
             await log_channel.send(
                 components=[container, buttons],
                 allowed_mentions=disnake.AllowedMentions(
-                    everyone=False, users=False, roles=[disnake.Object(id=Roles.moderator)]
+                    everyone=False,
+                    users=False,
+                    roles=[disnake.Object(id=role_id) for role_id in _staff_roles()],
                 ),
             )
         except disnake.HTTPException:
             logger.exception("Не удалось отправить лог-пост ловушки")
+
+    @commands.Cog.listener("on_message")
+    async def mentionRaidTrap(self, message: disnake.Message):
+        """Три сообщения с пингами за 20 секунд → удалить, замутить, сохранить текст."""
+        if message.guild is None or message.channel.id == Channels.honeypot:
+            return
+        if message.author.bot:
+            return
+
+        if not (message.mention_everyone or message.mentions or message.role_mentions):
+            return
+
+        now = monotonic()
+        hits = self._mention_hits[message.author.id]
+        cutoff = now - _MENTION_RAID_WINDOW
+        while hits and hits[0][0] < cutoff:
+            hits.popleft()
+        hits.append((now, message))
+        if len(hits) < _MENTION_RAID_THRESHOLD:
+            return
+
+        evidence_messages = [stored for _seen_at, stored in hits]
+        raw_evidence = "\n".join(
+            f"{index}. channel={stored.channel.id}: {_raw_message_evidence(stored)}"
+            for index, stored in enumerate(evidence_messages, start=1)
+        )
+        evidence_filename = f"mention-raid-{message.id}.txt"
+        # Сбрасываем ДО первого await: параллельно приехавшее четвёртое сообщение
+        # начинает новое окно, а не запускает второй мут и второй лог той же тройки.
+        hits.clear()
+        telemetry.record_later("security", "mention_raid")
+
+        for stored in evidence_messages:
+            try:
+                await stored.delete()
+            except disnake.NotFound:
+                pass
+            except (disnake.Forbidden, disnake.HTTPException):
+                logger.warning(
+                    "Анти-рейд: не удалось удалить сообщение %s от %s",
+                    stored.id,
+                    message.author.id,
+                )
+
+        mute_ok = True
+        try:
+            await message.author.timeout(
+                duration=_HONEYPOT_MUTE,
+                reason="Анти-рейд: три сообщения с упоминаниями за 20 секунд",
+            )
+        except disnake.Forbidden:
+            mute_ok = False
+            logger.warning(
+                "Анти-рейд: не удалось замутить %s — недостаточно прав",
+                message.author.id,
+            )
+        except disnake.HTTPException:
+            mute_ok = False
+            logger.exception("Анти-рейд: ошибка при мьюте %s", message.author.id)
+
+        log_channel = self.bot.get_channel(Channels.discord_logs)
+        if log_channel is None:
+            logger.error(
+                "Канал логов %s не найден — Discord-уведомление анти-рейда для %s "
+                "не отправлено. Доказательства:\n%s",
+                Channels.discord_logs,
+                message.author.id,
+                raw_evidence,
+            )
+            return
+
+        outcome = "Замучен на 28 дней." if mute_ok else "⚠️ Автоматический мут не удался."
+        container = disnake.ui.Container(
+            disnake.ui.TextDisplay(_staff_ping()),
+            disnake.ui.TextDisplay("## 🚨 Рейд упоминаниями"),
+            disnake.ui.Separator(),
+            disnake.ui.TextDisplay(
+                f"**Кто:** {message.author.mention} (`{message.author.id}`)\n"
+                f"**Окно:** {_MENTION_RAID_THRESHOLD} сообщения за "
+                f"{int(_MENTION_RAID_WINDOW)} секунд\n"
+                "**Полные тексты — в приложенном файле.**"
+            ),
+            *(
+                disnake.ui.TextDisplay(
+                    f"**{index}.** {stored.channel.mention}\n{_message_evidence(stored)}"
+                )
+                for index, stored in enumerate(evidence_messages, start=1)
+            ),
+            disnake.ui.File(file=f"attachment://{evidence_filename}"),
+            disnake.ui.TextDisplay(f"-# {outcome} Забанить или помиловать?"),
+            accent_colour=disnake.Color.from_hex("#b32020"),
+        )
+        buttons = disnake.ui.ActionRow(
+            disnake.ui.Button(
+                style=disnake.ButtonStyle.danger,
+                label="🔨 Забанить",
+                custom_id=f"HONEYPOT_BAN:{message.author.id}",
+            ),
+            disnake.ui.Button(
+                style=disnake.ButtonStyle.green,
+                label="😇 Помиловать",
+                custom_id=f"HONEYPOT_PARDON:{message.author.id}",
+            ),
+        )
+        try:
+            await log_channel.send(
+                components=[container, buttons],
+                file=disnake.File(
+                    io.BytesIO(raw_evidence.encode("utf-8")),
+                    filename=evidence_filename,
+                ),
+                allowed_mentions=disnake.AllowedMentions(
+                    everyone=False,
+                    users=False,
+                    roles=[disnake.Object(id=role_id) for role_id in _staff_roles()],
+                ),
+            )
+        except disnake.HTTPException:
+            logger.error(
+                "Не удалось отправить Discord-лог анти-рейда. Доказательства:\n%s",
+                raw_evidence,
+                exc_info=True,
+            )
 
     @commands.Cog.listener("on_button_click")
     async def honeypotButtons(self, inter: disnake.MessageInteraction):

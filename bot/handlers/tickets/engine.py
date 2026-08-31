@@ -1,10 +1,12 @@
 import datetime
 import io
 import logging
+from collections.abc import Awaitable, Callable
 
 import disnake
 from disnake.ext import commands, tasks
 
+from bot import metrics as telemetry
 from bot.flag_system.flag_system import flags
 from bot.discord_config import Channels, Roles, has_config_roles
 from bot.storage import ColorStorage
@@ -68,10 +70,25 @@ class TicketEngine(commands.Cog):
     async def _finishTicketInner(self, inter, thread: disnake.Thread, comment: str | None):
         is_support = thread.parent_id == Channels.support
         ticket_type = "Админ-тикет" if is_support else "Баг-репорт"
-        summary = await archive_ticket(self.bot, thread, ticket_type=ticket_type, closer=inter.author, note=comment)
+        deleted_before_summary = False
+
+        async def close_visible_ticket():
+            nonlocal deleted_before_summary
+            await thread.delete(reason=f"Тикет закрыт {inter.author.id}")
+            deleted_before_summary = True
+
+        summary = await archive_ticket(
+            self.bot,
+            thread,
+            ticket_type=ticket_type,
+            closer=inter.author,
+            note=comment,
+            before_summary=close_visible_ticket,
+        )
         if summary is None:
             await inter.edit_original_response("⚠️ Не удалось сохранить лог тикета — тред НЕ удалён. Проверь канал логов и повтори.")
             return
+        telemetry.record_later("ticket", "closed")
 
         # Имя тикета в ЛС обязательно: тред удаляется, и без него игрок с
         # несколькими репортами не понимает, какой именно закрыли (issue #46).
@@ -112,11 +129,15 @@ class TicketEngine(commands.Cog):
         await flags.removeFlag(thread, "created_by")
         if not is_support:
             await remove_bug_from_index(thread.id)
-        try:
-            await thread.delete(reason=f"Тикет закрыт {inter.author.id}")
-        except disnake.HTTPException:
-            logger.exception("Не удалось удалить тред тикета %s после закрытия", thread.id)
-            raise
+        # Тесты и сторонние вызовы могут подменить ``archive_ticket`` старым
+        # контрактом без before_summary. В проде эта ветка не нужна: реальный
+        # архив вызывает callback сразу после надёжной записи транскрипта.
+        if not deleted_before_summary:
+            try:
+                await thread.delete(reason=f"Тикет закрыт {inter.author.id}")
+            except disnake.HTTPException:
+                logger.exception("Не удалось удалить тред тикета %s после закрытия", thread.id)
+                raise
 
     async def _rejectTicket(self, inter, thread: disnake.Thread, reason: str | None):
         """Отклонение бага/админ-тикета. Интеракция ДОЛЖНА быть уже defer'нута снаружи."""
@@ -132,9 +153,24 @@ class TicketEngine(commands.Cog):
     async def _rejectTicketInner(self, inter, thread: disnake.Thread, reason: str | None):
         is_support = thread.parent_id == Channels.support
         ticket_type = "Админ-тикет (отклонён)" if is_support else "Баг-репорт (отклонён)"
-        if await archive_ticket(self.bot, thread, ticket_type=ticket_type, closer=inter.author, note=reason) is None:
+        deleted_before_summary = False
+
+        async def close_visible_ticket():
+            nonlocal deleted_before_summary
+            await thread.delete(reason=f"Тикет отклонён {inter.author.id}")
+            deleted_before_summary = True
+
+        if await archive_ticket(
+            self.bot,
+            thread,
+            ticket_type=ticket_type,
+            closer=inter.author,
+            note=reason,
+            before_summary=close_visible_ticket,
+        ) is None:
             await inter.edit_original_response("⚠️ Не удалось сохранить лог тикета — тред НЕ удалён. Проверь канал логов и повтори.")
             return
+        telemetry.record_later("ticket", "declined")
 
         # Имя тикета — см. комментарий в _finishTicketInner (issue #46).
         if is_support:
@@ -159,11 +195,12 @@ class TicketEngine(commands.Cog):
         await flags.removeFlag(thread, "created_by")
         if not is_support:
             await remove_bug_from_index(thread.id)
-        try:
-            await thread.delete(reason=f"Тикет отклонён {inter.author.id}")
-        except disnake.HTTPException:
-            logger.exception("Не удалось удалить тред тикета %s после отклонения", thread.id)
-            raise
+        if not deleted_before_summary:
+            try:
+                await thread.delete(reason=f"Тикет отклонён {inter.author.id}")
+            except disnake.HTTPException:
+                logger.exception("Не удалось удалить тред тикета %s после отклонения", thread.id)
+                raise
 
     @tasks.loop(time=datetime.time(hour=12, tzinfo=_MSK))  # 12:00 МСК
     async def staleTicketReminder(self):
@@ -436,7 +473,15 @@ class TicketEngine(commands.Cog):
             await self.cog._rejectTicket(inter, inter.channel, reason)
 
 
-async def archive_ticket(bot: commands.Bot, thread: disnake.Thread, *, ticket_type: str, closer, note: str | None) -> str | None:
+async def archive_ticket(
+    bot: commands.Bot,
+    thread: disnake.Thread,
+    *,
+    ticket_type: str,
+    closer,
+    note: str | None,
+    before_summary: Callable[[], Awaitable[None]] | None = None,
+) -> str | None:
     """Собирает транскрипт треда, делает AI-выжимку и постит всё в Channels.ticket_log.
 
     Возвращает `None`, если архив не удался — вызывающий ОБЯЗАН не удалять тред,
@@ -462,6 +507,48 @@ async def archive_ticket(bot: commands.Bot, thread: disnake.Thread, *, ticket_ty
         return None
     transcript = "\n".join(lines) if lines else "(пусто)"
 
+    creator_flag = await flags.getFlag(thread, "created_by")
+    author_line = f"\n**Автор:** <@{creator_flag.value}>" if creator_flag else "\n**Автор:** неизвестен"
+
+    note_line = f"\n**Комментарий/причина:** {note}" if note else ""
+
+    def archive_container(summary_text: str) -> disnake.ui.Container:
+        return disnake.ui.Container(
+            disnake.ui.TextDisplay(f"## 📁 Тикет закрыт: {_safe_name(thread)}"),
+            disnake.ui.Separator(),
+            disnake.ui.TextDisplay(
+                f"**Тип:** {ticket_type}{author_line}\n"
+                f"**Закрыл:** {closer.mention}{note_line}"
+            ),
+            disnake.ui.Separator(),
+            disnake.ui.TextDisplay(f"### Выжимка\n{summary_text}"),
+            # V2-сообщения прячут вложения без явной ссылки на них — иначе файл не виден
+            disnake.ui.File(file=f"attachment://ticket-{thread.id}.txt"),
+            accent_colour=disnake.Color.from_hex(ColorStorage.main),
+        )
+
+    log_channel = bot.get_channel(Channels.ticket_log)
+    if log_channel is None:
+        logger.error("Канал логов тикетов %s не найден", Channels.ticket_log)
+        return None
+    buf = io.BytesIO(transcript.encode("utf-8"))
+    transcript_file = disnake.File(buf, filename=f"ticket-{thread.id}.txt")
+    try:
+        # Сначала надёжно сохраняем сырой транскрипт. Только после успешного send
+        # вызывающий может удалить тред; медленная AI-выжимка больше не держит его
+        # видимым пользователю.
+        log_message = await log_channel.send(
+            components=[archive_container("⏳ Готовится…")],
+            file=transcript_file,
+            allowed_mentions=disnake.AllowedMentions.none(),
+        )
+    except disnake.HTTPException:
+        logger.exception("Не удалось запостить лог тикета %s", thread.id)
+        return None
+
+    if before_summary is not None:
+        await before_summary()
+
     summary = ""
     if llm is not None:
         try:
@@ -482,33 +569,14 @@ async def archive_ticket(bot: commands.Bot, thread: disnake.Thread, *, ticket_ty
         except Exception:
             logger.exception("Ошибка AI-выжимки тикета %s", thread.id)
 
-    creator_flag = await flags.getFlag(thread, "created_by")
-    author_line = f"\n**Автор:** <@{creator_flag.value}>" if creator_flag else "\n**Автор:** неизвестен"
-
-    buf = io.BytesIO(transcript.encode("utf-8"))
-    transcript_file = disnake.File(buf, filename=f"ticket-{thread.id}.txt")
-    note_line = f"\n**Комментарий/причина:** {note}" if note else ""
-    container = disnake.ui.Container(
-        disnake.ui.TextDisplay(f"## 📁 Тикет закрыт: {_safe_name(thread)}"),
-        disnake.ui.Separator(),
-        disnake.ui.TextDisplay(f"**Тип:** {ticket_type}{author_line}\n**Закрыл:** {closer.mention}{note_line}"),
-        disnake.ui.Separator(),
-        disnake.ui.TextDisplay(f"### Выжимка\n{summary or '⚠️ Выжимка недоступна'}"),
-        # V2-сообщения прячут вложения без явной ссылки на них — иначе файл не виден
-        disnake.ui.File(file=f"attachment://ticket-{thread.id}.txt"),
-        accent_colour=disnake.Color.from_hex(ColorStorage.main),
-    )
-    log_channel = bot.get_channel(Channels.ticket_log)
-    if log_channel is None:
-        logger.error("Канал логов тикетов %s не найден", Channels.ticket_log)
-        return None
     try:
-        # упоминания автора и закрывшего — только текстом, без уведомления
-        await log_channel.send(components=[container], file=transcript_file,
-                               allowed_mentions=disnake.AllowedMentions.none())
+        await log_message.edit(
+            components=[archive_container(summary or "⚠️ Выжимка недоступна")]
+        )
     except disnake.HTTPException:
-        logger.exception("Не удалось запостить лог тикета %s", thread.id)
-        return None
+        # Сырой транскрипт уже сохранён — сбой косметического edit не превращает
+        # успешное закрытие в потерю тикета.
+        logger.exception("Не удалось обновить AI-выжимку тикета %s в логе", thread.id)
     return summary
 
 

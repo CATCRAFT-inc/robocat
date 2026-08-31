@@ -82,6 +82,14 @@ def _interaction(custom_id: str, *, admin: bool = True):
     return inter
 
 
+def _published_vacancy_message():
+    message = MagicMock()
+    message.id = 555
+    message.jump_url = "https://discord.test/vacancy/555"
+    message.components = [jobs._vacancy_container(_vacancy(), apply_enabled=True)]
+    return message
+
+
 def test_vacancy_cache_roundtrip_and_corruption_is_not_empty_cache():
     encoded = jobs._encode_vacancies([_vacancy()])
 
@@ -236,7 +244,27 @@ async def test_failed_publish_restores_draft_and_does_not_touch_cache():
     )
 
 
-async def test_apply_creates_private_channel_thread_and_sends_ping_container():
+async def test_apply_button_opens_about_modal_before_creating_thread():
+    cog = _cog()
+    inter = _interaction("VACANCY_APPLY", admin=False)
+    inter.message.id = 555
+
+    await cog.vacancyButtons(inter)
+
+    inter.response.send_modal.assert_awaited_once()
+    modal = inter.response.send_modal.await_args.args[0]
+    assert isinstance(modal, jobs.JobApplicationModal)
+    assert any(
+        component.component.custom_id == "about"
+        for component in modal.components
+        if isinstance(component, disnake.ui.Label)
+    )
+    cog.bot.get_channel.assert_not_called()
+
+
+async def test_application_modal_creates_private_thread_with_about_and_decision_buttons(monkeypatch):
+    metric = MagicMock()
+    monkeypatch.setattr(jobs.telemetry, "record_later", metric)
     cog = _cog()
     thread = MagicMock()
     thread.id = 777
@@ -245,12 +273,14 @@ async def test_apply_creates_private_channel_thread_and_sends_ping_container():
     channel = MagicMock()
     channel.create_thread = AsyncMock(return_value=thread)
     cog.bot.get_channel.return_value = channel
-    inter = _interaction("VACANCY_APPLY", admin=False)
-    inter.message.id = 555
-    inter.message.jump_url = "https://discord.test/vacancy/555"
-    inter.message.components = [jobs._vacancy_container(_vacancy(), apply_enabled=True)]
+    vacancy_message = MagicMock()
+    vacancy_message.id = 555
+    vacancy_message.jump_url = "https://discord.test/vacancy/555"
+    vacancy_message.components = [jobs._vacancy_container(_vacancy(), apply_enabled=True)]
+    inter = _interaction("", admin=False)
+    inter.text_values = {"about": "Я варю напитки уже два сезона."}
 
-    await cog.vacancyButtons(inter)
+    await jobs.JobApplicationModal(cog, vacancy_message).callback(inter)
 
     inter.response.defer.assert_awaited_once_with(ephemeral=True)
     kwargs = channel.create_thread.await_args.kwargs
@@ -263,19 +293,131 @@ async def test_apply_creates_private_channel_thread_and_sends_ping_container():
     assert "<@1>" in text
     assert f"<@&{Roles.admin}>" in text
     assert f"<@&{Roles.st_admin}>" in text
-    assert inter.message.jump_url in text
+    assert vacancy_message.jump_url in text
+    assert "Я варю напитки уже два сезона." in text
+    buttons = sent["components"][0].children[-1].children
+    assert [button.label for button in buttons] == ["✅ Принять", "⛔ Отклонить"]
+    assert buttons[0].custom_id == "VACANCY_ACCEPT:1"
+    assert buttons[1].custom_id == "VACANCY_DECLINE:1"
     assert [role.id for role in sent["allowed_mentions"].roles] == [Roles.admin, Roles.st_admin]
     thread.add_user.assert_not_awaited()
     assert "<#777>" in inter.edit_original_response.await_args.args[0]
+    metric.assert_called_once_with("job", "application_created")
+
+
+async def test_application_modal_rejects_whitespace_only_about():
+    cog = _cog()
+    inter = _interaction("", admin=False)
+    inter.text_values = {"about": " " * 20}
+
+    await jobs.JobApplicationModal(cog, _published_vacancy_message()).callback(inter)
+
+    inter.response.send_message.assert_awaited_once()
+    cog.bot.get_channel.assert_not_called()
+
+
+async def test_admin_application_decision_button_opens_matching_modal():
+    cog = _cog()
+    inter = _interaction("VACANCY_ACCEPT:42")
+    inter.channel = MagicMock(spec=disnake.Thread)
+    inter.channel.parent_id = Channels.jobs
+
+    await cog.vacancyButtons(inter)
+
+    inter.response.send_modal.assert_awaited_once()
+    modal = inter.response.send_modal.await_args.args[0]
+    assert isinstance(modal, jobs.JobDecisionModal)
+    assert modal.applicant_id == 42
+    assert modal.accepted is True
+
+
+async def test_application_decision_notifies_candidate_then_deletes_thread(monkeypatch):
+    metric = MagicMock()
+    monkeypatch.setattr(jobs.telemetry, "record_later", metric)
+    cog = _cog()
+    candidate = MagicMock()
+    candidate.send = AsyncMock()
+    thread = MagicMock(spec=disnake.Thread)
+    thread.id = 777
+    thread.name = "Пивовар — Барсик"
+    thread.delete = AsyncMock()
+    inter = _interaction("", admin=True)
+    inter.channel = thread
+    inter.guild.get_member.return_value = candidate
+    inter.text_values = {"note": "Приходи завтра на собеседование."}
+
+    await jobs.JobDecisionModal(cog, 42, accepted=True).callback(inter)
+
+    inter.response.defer.assert_awaited_once_with(ephemeral=True)
+    candidate.send.assert_awaited_once()
+    dm_text = "\n".join(
+        child.content
+        for child in candidate.send.await_args.kwargs["components"].children
+        if hasattr(child, "content")
+    )
+    assert "принят" in dm_text.lower()
+    assert "Приходи завтра" in dm_text
+    inter.edit_original_response.assert_awaited_once()
+    thread.delete.assert_awaited_once()
+    metric.assert_called_once_with("job", "accepted")
+
+
+async def test_application_decision_keeps_thread_when_candidate_cannot_be_notified(monkeypatch):
+    cog = _cog()
+    candidate = MagicMock()
+    candidate.send = AsyncMock(
+        side_effect=disnake.HTTPException(MagicMock(status=403), "closed dms")
+    )
+    thread = MagicMock(spec=disnake.Thread)
+    thread.id = 777
+    thread.name = "Пивовар — Барсик"
+    thread.delete = AsyncMock()
+    inter = _interaction("", admin=True)
+    inter.channel = thread
+    inter.guild.get_member.return_value = candidate
+    inter.text_values = {"note": "Напиши администрации."}
+    metric = MagicMock()
+    monkeypatch.setattr(jobs.telemetry, "record_later", metric)
+
+    await jobs.JobDecisionModal(cog, 42, accepted=True).callback(inter)
+
+    thread.delete.assert_not_awaited()
+    metric.assert_not_called()
+    assert "не доставлено" in inter.edit_original_response.await_args.args[0]
+    assert "не удалён" in inter.edit_original_response.await_args.args[0]
+
+
+async def test_application_decision_deletes_thread_even_if_confirmation_edit_fails(monkeypatch):
+    cog = _cog()
+    candidate = MagicMock()
+    candidate.send = AsyncMock()
+    thread = MagicMock(spec=disnake.Thread)
+    thread.id = 777
+    thread.name = "Пивовар — Барсик"
+    thread.delete = AsyncMock()
+    inter = _interaction("", admin=True)
+    inter.channel = thread
+    inter.guild.get_member.return_value = candidate
+    inter.text_values = {"note": ""}
+    inter.edit_original_response.side_effect = disnake.HTTPException(
+        MagicMock(status=404), "unknown interaction"
+    )
+    metric = MagicMock()
+    monkeypatch.setattr(jobs.telemetry, "record_later", metric)
+
+    await jobs.JobDecisionModal(cog, 42, accepted=False).callback(inter)
+
+    thread.delete.assert_awaited_once()
+    metric.assert_called_once_with("job", "declined")
 
 
 async def test_apply_guard_rejects_parallel_double_click():
     cog = _cog()
     cog._applying.add((555, 1))
-    inter = _interaction("VACANCY_APPLY", admin=False)
-    inter.message.id = 555
+    inter = _interaction("", admin=False)
+    inter.text_values = {"about": "Я варю напитки уже два сезона."}
 
-    await cog.vacancyButtons(inter)
+    await jobs.JobApplicationModal(cog, _published_vacancy_message()).callback(inter)
 
     inter.response.send_message.assert_awaited_once()
     cog.bot.get_channel.assert_not_called()
@@ -289,16 +431,14 @@ async def test_apply_success_is_not_rolled_back_when_final_ephemeral_ack_fails()
     channel = MagicMock()
     channel.create_thread = AsyncMock(return_value=thread)
     cog.bot.get_channel.return_value = channel
-    inter = _interaction("VACANCY_APPLY", admin=False)
-    inter.message.id = 555
-    inter.message.jump_url = "https://discord.test/vacancy/555"
-    inter.message.components = [jobs._vacancy_container(_vacancy(), apply_enabled=True)]
+    inter = _interaction("", admin=False)
+    inter.text_values = {"about": "Я варю напитки уже два сезона."}
     inter.edit_original_response.side_effect = [
         disnake.HTTPException(MagicMock(status=404), "Unknown interaction"),
         None,
     ]
 
-    await cog.vacancyButtons(inter)
+    await jobs.JobApplicationModal(cog, _published_vacancy_message()).callback(inter)
 
     thread.send.assert_awaited_once()
     thread.delete.assert_not_awaited()
@@ -306,14 +446,14 @@ async def test_apply_success_is_not_rolled_back_when_final_ephemeral_ack_fails()
 
 async def test_failed_apply_defer_releases_double_click_guard():
     cog = _cog()
-    inter = _interaction("VACANCY_APPLY", admin=False)
-    inter.message.id = 555
+    inter = _interaction("", admin=False)
+    inter.text_values = {"about": "Я варю напитки уже два сезона."}
     inter.response.defer.side_effect = disnake.HTTPException(
         MagicMock(status=404), "Unknown interaction"
     )
 
     with pytest.raises(disnake.HTTPException):
-        await cog.vacancyButtons(inter)
+        await jobs.JobApplicationModal(cog, _published_vacancy_message()).callback(inter)
 
     assert (555, 1) not in cog._applying
 

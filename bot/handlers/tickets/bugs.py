@@ -8,6 +8,8 @@ import aiosqlite
 import disnake
 from disnake import TextInputStyle, TextInput, StringSelectMenu, SelectOption
 from disnake.ext import commands
+
+from bot import metrics as telemetry
 from bot.discord_config import Channels, Roles, Users, has_config_roles
 from bot.storage import Buttons, ColorStorage, FAQStorage
 from bot.utils import AnsweringModal, create_container, create_embed
@@ -210,6 +212,7 @@ class BugHandler(commands.Cog):
                 # created_by (архив «Автор: неизвестен») и вся дедупликация ниже.
                 logger.warning("Не удалось отправить ЛС автору баг-репорта %s (закрытые ЛС?)", inter.author.id)
             await flags.setFlag(bug_thread,"created_by",inter.author.id)
+            telemetry.record_later("ticket", "created")
 
             # Дедупликация: ищем похожие баги по эмбеддингу описания
             if embed is not None and cosine is not None:

@@ -187,12 +187,15 @@ class FAQ(commands.Cog):
             )
         ))
 
-    @commands.command(name='репорты', aliases=['ксб', 'репорт', 'report', 'reports'], description="Информация по репортам КСБ")
+    @commands.command(name='репорты', aliases=['репорт', 'report', 'reports'], description="Как пожаловаться администрации")
     async def report_faq(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
-            disnake.ui.TextDisplay('## Тебя ограбили/убили/обворовали?'),
+            disnake.ui.TextDisplay('## Нужно пожаловаться на игрока?'),
             disnake.ui.Separator(),
-            disnake.ui.TextDisplay(f'Заходи в канал <#{Channels.support}> и отправляй жалобу на нарушителя!')
+            disnake.ui.TextDisplay(
+                f'Открой канал <#{Channels.support}> и создай **админ-тикет** — '
+                'там можно спокойно описать ситуацию и приложить доказательства.'
+            )
         ))
 
     @commands.command(name='читайвики', aliases=['readwiki'], description="Прочитай Вики!")

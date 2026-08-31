@@ -53,3 +53,18 @@ async def test_faq_reply_does_not_ping_the_quoted_author():
     home.channel.fetch_message = AsyncMock(return_value=ref_message)
     await cog.send_faq(home, MagicMock())
     assert ref_message.reply.await_args.kwargs["mention_author"] is True
+
+
+async def test_reports_points_to_admin_ticket_without_old_ksb_wording():
+    cog = FAQ(SimpleNamespace())
+    cog.send_faq = AsyncMock()
+
+    await FAQ.report_faq.callback(cog, SimpleNamespace())
+
+    container = cog.send_faq.await_args.kwargs["embed"]
+    text = "\n".join(
+        child.content for child in container.children if hasattr(child, "content")
+    )
+    assert "админ-тикет" in text.lower()
+    assert "ксб" not in text.lower()
+    assert "опк" not in text.lower()

@@ -60,6 +60,7 @@ def load_extension():
         "handlers.rcon",          # RCON команды
         "handlers.ping_tab",      # !пинг — список игроков картинкой в стиле TAB
         "handlers.honeypot",      # Ловушка для ботов
+        "handlers.metrics",       # агрегированные продуктовые события + /metrics
         "handlers.private_voice",  # «Создать приват» — join-to-create голосовые
         "handlers.get_a_job",     # кнопка «Посмотреть доступные вакансии»
         "handlers.digest",        # /digest — выжимка новостей
