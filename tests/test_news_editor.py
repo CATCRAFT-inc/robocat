@@ -6,6 +6,8 @@ children/content/items — парсер принимает оба).
 """
 
 import asyncio
+import datetime
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import disnake
@@ -20,7 +22,9 @@ from bot.handlers.news_editor import (
     _Draft,
     _news_container,
     _parse_container,
+    _parse_publish_at,
 )
+from bot.news_schedule import ScheduledNews
 from bot.storage import Channels, Roles
 
 
@@ -36,9 +40,49 @@ def _cog():
     inst.bot = MagicMock()
     inst.logger = MagicMock()
     inst.drafts = {}
+    inst.schedule_store = MagicMock()
+    inst.schedule_store.add = AsyncMock(return_value=17)
+    inst.schedule_store.claim_due = AsyncMock(return_value=None)
+    inst.schedule_store.complete = AsyncMock()
+    inst._schedule_retry_at = 0.0
+    inst._schedule_retry_delay = 60.0
     import itertools
     inst._seq = itertools.count(1)
     return inst
+
+
+# --- время отложенной публикации ---
+
+def test_parse_publish_at_treats_input_as_moscow_time():
+    now = datetime.datetime(2026, 8, 31, 12, 0, tzinfo=datetime.UTC)
+
+    timestamp = _parse_publish_at("31.08.2026 16:30", now=now)
+
+    assert datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC) == datetime.datetime(
+        2026, 8, 31, 13, 30, tzinfo=datetime.UTC
+    )
+
+
+@pytest.mark.parametrize("raw", ["2026-08-31 18:30", "31.08.26 18:30", "завтра"])
+def test_parse_publish_at_rejects_ambiguous_format(raw):
+    now = datetime.datetime(
+        2026, 8, 31, 12, 0,
+        tzinfo=datetime.timezone(datetime.timedelta(hours=3)),
+    )
+
+    with pytest.raises(ValueError, match="31.08.2026 18:30"):
+        _parse_publish_at(raw, now=now)
+
+
+def test_parse_publish_at_rejects_past_moscow_time():
+    now = datetime.datetime(2026, 8, 31, 18, 31, tzinfo=datetime.UTC)
+
+    with pytest.raises(ValueError, match="уже прошло"):
+        _parse_publish_at("31.08.2026 18:30", now=now)
+
+
+def test_news_has_no_schedule_slash_option():
+    assert [option.name for option in NewsEditor.news.body.options] == ["channel"]
 
 
 # --- контейнер ---
@@ -225,6 +269,14 @@ def test_modal_constructs_with_prefill():
     cog.drafts[1] = _draft(ping_role_id=Roles.events)
     modal = NewsModal(cog, 1)
     assert modal.custom_id == "news_modal:1"
+    schedule = next(
+        component.component
+        for component in modal.components
+        if isinstance(component, disnake.ui.Label)
+        and component.component.custom_id == "news_publish_at"
+    )
+    assert schedule.required is False
+    assert schedule.placeholder == "15.09.2026 18:30"
 
 
 async def _run_modal(cog, text: str, *, fail_preview: bool = False):
@@ -310,8 +362,97 @@ async def test_modal_callback_updates_draft_and_sends_preview():
     draft = cog.drafts[1]
     assert draft.title == "Обнова"
     assert draft.ping_role_id == Roles.events
+    assert draft.publish_at is None
     inter.response.send_message.assert_awaited_once()
     assert inter.response.send_message.await_args.kwargs.get("ephemeral") is True
+
+
+async def test_modal_callback_sets_future_moscow_schedule():
+    cog = _cog()
+    cog.drafts[1] = _draft()
+    modal = NewsModal(cog, 1)
+    inter = MagicMock()
+    inter.message = None
+    inter.text_values = {
+        "news_title": "Обнова",
+        "news_text": "Текст",
+        "news_publish_at": "31.12.2099 23:45",
+    }
+    inter.resolved_values = {}
+    inter.response.send_message = AsyncMock()
+
+    await modal.callback(inter)
+
+    draft = cog.drafts[1]
+    assert draft.publish_at == int(
+        datetime.datetime(
+            2099, 12, 31, 23, 45,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=3)),
+        ).timestamp()
+    )
+    preview = inter.response.send_message.await_args.kwargs["components"]
+    assert "31.12.2099 в 23:45 МСК" in preview[0].content
+
+
+async def test_modal_callback_rejects_bad_schedule_and_keeps_input():
+    cog = _cog()
+    cog.drafts[1] = _draft()
+    modal = NewsModal(cog, 1)
+    inter = MagicMock()
+    inter.message = None
+    inter.text_values = {
+        "news_title": "Обнова",
+        "news_text": "Текст",
+        "news_publish_at": "завтра вечером",
+    }
+    inter.resolved_values = {}
+    inter.response.send_message = AsyncMock()
+
+    await modal.callback(inter)
+
+    draft = cog.drafts[1]
+    assert draft.publish_at is None
+    assert draft.publish_at_text == "завтра вечером"
+    refusal = inter.response.send_message.await_args.kwargs["components"]
+    assert "31.08.2026 18:30" in refusal[0].content
+
+    reopened = NewsModal(cog, 1)
+    schedule = next(
+        component.component
+        for component in reopened.components
+        if isinstance(component, disnake.ui.Label)
+        and component.component.custom_id == "news_publish_at"
+    )
+    assert schedule.value == "завтра вечером"
+
+
+async def test_news_opens_modal_without_schedule_argument():
+    cog = _cog()
+    inter = MagicMock()
+    inter.author.id = 42
+    inter.response.send_modal = AsyncMock()
+
+    await NewsEditor.news.callback(cog, inter, channel="Газета")
+
+    draft = next(iter(cog.drafts.values()))
+    assert draft.publish_at is None
+    assert draft.channel_id == Channels.newspaper
+    inter.response.send_modal.assert_awaited_once()
+
+
+def test_scheduled_preview_names_moscow_time_and_action():
+    cog = _cog()
+    publish_at = int(
+        datetime.datetime(
+            2026, 9, 1, 18, 30,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=3)),
+        ).timestamp()
+    )
+
+    components = cog._preview(_draft(publish_at=publish_at), 1)
+
+    assert "01.09.2026 в 18:30 МСК" in components[0].content
+    assert components[2].children[0].label == "Запланировать"
 
 
 # --- кнопки и публикация ---
@@ -427,6 +568,102 @@ async def test_second_publish_click_does_not_double_post(monkeypatch):
 
     channel.send.assert_awaited_once()  # не два раза
     assert 1 not in cog.drafts
+
+
+async def test_scheduled_publish_is_saved_without_sending_to_discord():
+    cog = _cog()
+    publish_at = int(
+        datetime.datetime(
+            2026, 9, 1, 18, 30,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=3)),
+        ).timestamp()
+    )
+    cog.drafts[1] = _draft(publish_at=publish_at, ping_role_id=Roles.events)
+    inter = _button_inter("NEWS_PUB:1")
+
+    await cog.newsButtons(inter)
+
+    cog.schedule_store.add.assert_awaited_once_with(
+        channel_id=Channels.announcements,
+        author_id=1,
+        title="Обнова",
+        body="Завезли контент",
+        ping_role_id=Roles.events,
+        publish_at=publish_at,
+    )
+    cog.bot.get_channel.assert_not_called()
+    assert 1 not in cog.drafts
+    result = inter.edit_original_response.await_args.kwargs["components"][0].content
+    assert "01.09.2026 в 18:30 МСК" in result
+
+
+async def test_scheduled_publish_storage_failure_restores_draft():
+    cog = _cog()
+    src = _draft(publish_at=1_800_000_000)
+    cog.drafts[1] = src
+    cog.schedule_store.add.side_effect = RuntimeError("db")
+    inter = _button_inter("NEWS_PUB:1")
+
+    await cog.newsButtons(inter)
+
+    assert cog.drafts[1] is src
+    components = inter.edit_original_response.await_args.kwargs["components"]
+    assert any(isinstance(c, disnake.ui.ActionRow) for c in components)
+
+
+async def test_scheduled_publisher_delivers_and_completes_row():
+    cog = _cog()
+    scheduled = ScheduledNews(
+        id=7,
+        channel_id=Channels.informator,
+        author_id=42,
+        title="По расписанию",
+        body="Текст",
+        ping_role_id=None,
+        publish_at=1_800_000_000,
+    )
+    cog.schedule_store.claim_due.side_effect = [scheduled, None]
+    msg = MagicMock(id=555)
+    cog._deliver_news = AsyncMock(return_value=(msg, False))
+
+    await NewsEditor.scheduledNewsPublisher.coro(cog)
+
+    delivered = cog._deliver_news.await_args.args[0]
+    assert delivered.title == "По расписанию"
+    assert delivered.publish_at == scheduled.publish_at
+    cog.schedule_store.complete.assert_awaited_once_with(7)
+
+
+async def test_scheduled_publisher_keeps_failed_row_for_lease_retry():
+    cog = _cog()
+    scheduled = ScheduledNews(
+        id=7,
+        channel_id=Channels.informator,
+        author_id=42,
+        title="По расписанию",
+        body="Текст",
+        ping_role_id=None,
+        publish_at=1_800_000_000,
+    )
+    cog.schedule_store.claim_due.side_effect = [scheduled, None]
+    cog._deliver_news = AsyncMock(side_effect=RuntimeError("discord"))
+
+    await NewsEditor.scheduledNewsPublisher.coro(cog)
+
+    cog.schedule_store.complete.assert_not_awaited()
+    assert cog.schedule_store.claim_due.await_count == 2
+
+
+async def test_scheduled_publisher_backs_off_after_storage_failure():
+    cog = _cog()
+    cog.schedule_store.claim_due.side_effect = RuntimeError("db")
+
+    await NewsEditor.scheduledNewsPublisher.coro(cog)
+    await NewsEditor.scheduledNewsPublisher.coro(cog)
+
+    cog.schedule_store.claim_due.assert_awaited_once()
+    assert cog._schedule_retry_delay == 120
+    assert cog._schedule_retry_at > time.monotonic()
 
 
 async def test_publish_to_non_reaction_channel_skips_reactions(monkeypatch):

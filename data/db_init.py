@@ -51,6 +51,26 @@ async def dbInit(db_path: Path = DB_PATH):
                 PRIMARY KEY (day, kind, name)
             )
         """)
+        # Очередь /news хранится в БД, чтобы отложенные публикации переживали
+        # рестарт и деплой. publish_at/claimed_at — Unix-время (UTC), поэтому
+        # timezone хостинга не влияет на момент отправки.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_news (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id   INTEGER NOT NULL,
+                author_id    INTEGER NOT NULL,
+                title        TEXT NOT NULL,
+                body         TEXT NOT NULL,
+                ping_role_id INTEGER,
+                publish_at   INTEGER NOT NULL,
+                claimed_at   INTEGER,
+                created_at   INTEGER NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_scheduled_news_due
+            ON scheduled_news (publish_at, claimed_at)
+        """)
         # Легаси-зачистка таймеров квоты. Факты памяти (fact:%) отсюда убраны:
         # это данные юзеров, dbInit не должен их стирать (issue #6, возврат 25.07).
         await db.execute("DELETE FROM flags WHERE flag = 'ai_locked'")

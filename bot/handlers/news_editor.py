@@ -3,7 +3,8 @@
 Новости уходят V2-контейнерами в новостные каналы. Черновики живут в памяти
 процесса до публикации; рестарт бота их теряет — превью живёт минуты, тащить
 их в БД незачем. /news_edit разбирает опубликованный контейнер обратно в поля
-и открывает ту же модалку.
+и открывает ту же модалку. Подтверждённые отложенные публикации, в отличие от
+черновиков, сохраняются в SQLite и переживают рестарт.
 
 Тело новости — размеченный текст: строка-ссылка становится галереей картинок,
 строка из трёх дефисов — разделителем, остальное уходит в TextDisplay как есть
@@ -12,6 +13,7 @@
 """
 
 import asyncio
+import datetime
 import itertools
 import logging
 import re
@@ -19,9 +21,10 @@ import time
 from dataclasses import dataclass
 
 import disnake
-from disnake.ext import commands
+from disnake.ext import commands, tasks
 
 from bot.discord_config import Channels, Roles, has_config_roles
+from bot.news_schedule import ScheduledNewsStore
 from bot.storage import ColorStorage
 from bot.utils import AnsweringModal, decorate_news
 
@@ -47,6 +50,8 @@ _MAX_TEXT = 4000 - 200  # запас на подпись превью и заг�
 # единственный способ отличить наш пинг от строки-упоминания, набранной руками
 _PING_TEXT_ID = 99
 _PING_SEPARATOR_ID = 98
+_MSK = datetime.timezone(datetime.timedelta(hours=3))
+_SCHEDULE_FORMAT = "%d.%m.%Y %H:%M"
 
 # message.components отдаёт read-side классы, в тестах контейнер собран из ui-классов —
 # атрибуты (children/content/items) совпадают, парсер принимает оба
@@ -88,6 +93,32 @@ class _Draft:
     text: str = ""
     ping_role_id: int | None = None
     edit_message_id: int | None = None  # /news_edit: правим существующий пост
+    publish_at: int | None = None  # Unix-время; ввод модалки всегда трактуется как МСК
+    publish_at_text: str = ""  # сохраняем и кривой ввод, чтобы «Править» его не теряло
+
+
+def _parse_publish_at(raw: str, *, now: datetime.datetime | None = None) -> int:
+    """`ДД.ММ.ГГГГ ЧЧ:ММ` в МСК → Unix timestamp, независимо от TZ хоста."""
+    try:
+        local = datetime.datetime.strptime(raw.strip(), _SCHEDULE_FORMAT).replace(tzinfo=_MSK)
+    except ValueError as exc:
+        raise ValueError("Укажи дату и время так: `31.08.2026 18:30` (МСК).") from exc
+    current = now or datetime.datetime.now(tz=_MSK)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=_MSK)
+    if local <= current.astimezone(_MSK):
+        raise ValueError("Время публикации уже прошло. Укажи будущее время по МСК.")
+    return int(local.timestamp())
+
+
+def _format_publish_at(timestamp: int) -> str:
+    local = datetime.datetime.fromtimestamp(timestamp, tz=_MSK)
+    return local.strftime("%d.%m.%Y в %H:%M МСК")
+
+
+def _format_publish_input(timestamp: int) -> str:
+    local = datetime.datetime.fromtimestamp(timestamp, tz=_MSK)
+    return local.strftime(_SCHEDULE_FORMAT)
 
 
 def _body_blocks(text: str) -> list:
@@ -245,6 +276,20 @@ class NewsModal(AnsweringModal):
                 text="Кого пинговать",
                 component=disnake.ui.StringSelect(custom_id="news_ping", options=ping_options),
             ),
+            disnake.ui.Label(
+                text="Когда опубликовать",
+                description="Необязательно; дата и время по МСК",
+                component=disnake.ui.TextInput(
+                    custom_id="news_publish_at",
+                    value=(
+                        draft.publish_at_text
+                        or (_format_publish_input(draft.publish_at) if draft.publish_at else None)
+                    ),
+                    placeholder="15.09.2026 18:30",
+                    required=False,
+                    max_length=16,
+                ),
+            ),
         ]
         super().__init__(title="Новость", custom_id=f"news_modal:{draft_id}", components=components)
 
@@ -258,10 +303,19 @@ class NewsModal(AnsweringModal):
         picked = inter.resolved_values.get("news_ping")
         value = picked[0] if isinstance(picked, (list, tuple)) else picked
         draft.ping_role_id = int(value) if value and value != _NO_PING else None
+        draft.publish_at_text = inter.text_values.get("news_publish_at", "").strip()
+        draft.publish_at = None
+
+        problem = ""
+        if draft.publish_at_text:
+            try:
+                draft.publish_at = _parse_publish_at(draft.publish_at_text)
+            except ValueError as exc:
+                problem = str(exc)
 
         # ловим здесь, а не на публикации: там отказ Discord читается как
         # «сбой, попробуй ещё раз», и человек не понимает, что именно чинить
-        problem = _too_big(draft)
+        problem = problem or _too_big(draft)
         if problem:
             components = self._refuse(problem)
         else:
@@ -300,19 +354,33 @@ class NewsEditor(commands.Cog):
         self.bot = bot
         self.logger = logging.getLogger("robocat.news")
         self.drafts: dict[int, _Draft] = {}
+        self.schedule_store = ScheduledNewsStore()
+        self._schedule_retry_at = 0.0
+        self._schedule_retry_delay = 60.0
         # Сид временем: после рестарта счётчик с 1 позволил бы старой ephemeral-кнопке
         # NEWS_PUB:1 захватить чужой новый черновик с тем же id
         self._seq = itertools.count(int(time.time()))
+        self.scheduledNewsPublisher.start()
+
+    def cog_unload(self):
+        self.scheduledNewsPublisher.cancel()
 
     def _preview(self, draft: _Draft, draft_id: int) -> list:
-        verb = "обновится" if draft.edit_message_id else "будет опубликована"
+        if draft.publish_at is not None:
+            verb = f"будет опубликована {_format_publish_at(draft.publish_at)}"
+        else:
+            verb = "обновится" if draft.edit_message_id else "будет опубликована"
+        publish_label = (
+            "Запланировать" if draft.publish_at is not None
+            else ("Сохранить" if draft.edit_message_id else "Опубликовать")
+        )
         return [
             disnake.ui.TextDisplay(f"-# Превью: так новость {verb} в <#{draft.channel_id}>"),
             _news_container(draft),
             disnake.ui.ActionRow(
                 disnake.ui.Button(
                     style=disnake.ButtonStyle.success,
-                    label="Сохранить" if draft.edit_message_id else "Опубликовать",
+                    label=publish_label,
                     custom_id=f"NEWS_PUB:{draft_id}",
                 ),
                 disnake.ui.Button(
@@ -337,7 +405,8 @@ class NewsEditor(commands.Cog):
     ):
         draft_id = next(self._seq)
         self.drafts[draft_id] = _Draft(
-            author_id=inter.author.id, channel_id=_news_channels()[channel]
+            author_id=inter.author.id,
+            channel_id=_news_channels()[channel],
         )
         await inter.response.send_modal(NewsModal(self, draft_id))
 
@@ -430,7 +499,75 @@ class NewsEditor(commands.Cog):
                     components=[disnake.ui.TextDisplay("Уже публикуется или опубликовано.")]
                 )
                 return
-            await self._publish(inter, draft_id, claimed)
+            if claimed.publish_at is not None:
+                await self._schedule(inter, draft_id, claimed)
+            else:
+                await self._publish(inter, draft_id, claimed)
+
+    async def _schedule(
+        self,
+        inter: disnake.MessageInteraction,
+        draft_id: int,
+        draft: _Draft,
+    ) -> None:
+        try:
+            await inter.response.edit_message(
+                components=[disnake.ui.TextDisplay("⏳ Сохраняю отложенную публикацию...")]
+            )
+        except disnake.HTTPException:
+            self.drafts[draft_id] = draft
+            raise
+        try:
+            scheduled_id = await self.schedule_store.add(
+                channel_id=draft.channel_id,
+                author_id=draft.author_id,
+                title=draft.title,
+                body=draft.text,
+                ping_role_id=draft.ping_role_id,
+                publish_at=draft.publish_at,
+            )
+        except Exception:
+            self.logger.exception("Не удалось сохранить отложенную новость")
+            self.drafts[draft_id] = draft
+            await inter.edit_original_response(
+                components=[
+                    disnake.ui.TextDisplay(
+                        "😞 Не получилось сохранить отложенную публикацию — попробуй ещё раз."
+                    ),
+                    *self._preview(draft, draft_id),
+                ]
+            )
+            return
+        await inter.edit_original_response(
+            components=[
+                disnake.ui.TextDisplay(
+                    f"🕒 Новость №{scheduled_id} запланирована: "
+                    f"{_format_publish_at(draft.publish_at)}."
+                )
+            ]
+        )
+
+    async def _deliver_news(self, draft: _Draft, channel=None):
+        channel = channel or self.bot.get_channel(draft.channel_id)
+        if channel is None:
+            raise RuntimeError(f"Канал новостей {draft.channel_id} не найден в кэше")
+        container = _news_container(draft)
+        mentions = disnake.AllowedMentions(
+            everyone=False,
+            users=False,
+            roles=[disnake.Object(id=draft.ping_role_id)] if draft.ping_role_id else False,
+        )
+        if draft.edit_message_id:
+            msg = await channel.fetch_message(draft.edit_message_id)
+            # allowed_mentions и на edit: без него Discord перепарсит упоминания
+            # с дефолтными разрешениями (риск повторного пинга роли)
+            await msg.edit(components=[container], allowed_mentions=mentions)
+            return msg, True
+        msg = await channel.send(components=[container], allowed_mentions=mentions)
+        # автореакции + тред — как у новостей от людей (on_message посты ботов игнорирует).
+        if draft.channel_id in Channels.news_reaction_channels:
+            await decorate_news(msg, self.logger)
+        return msg, False
 
     async def _publish(self, inter: disnake.MessageInteraction, draft_id: int, draft: _Draft):
         channel = self.bot.get_channel(draft.channel_id)
@@ -452,26 +589,12 @@ class NewsEditor(commands.Cog):
             # без возврата он терялся безвозвратно
             self.drafts[draft_id] = draft
             raise
-        container = _news_container(draft)
-        mentions = disnake.AllowedMentions(
-            everyone=False, users=False,
-            roles=[disnake.Object(id=draft.ping_role_id)] if draft.ping_role_id else False,
-        )
         try:
-            if draft.edit_message_id:
-                msg = await channel.fetch_message(draft.edit_message_id)
-                # allowed_mentions и на edit: без него Discord перепарсит упоминания
-                # с дефолтными разрешениями (риск повторного пинга роли)
-                await msg.edit(components=[container], allowed_mentions=mentions)
-                note = f"✏️ Новость обновлена: {msg.jump_url}"
-            else:
-                msg = await channel.send(components=[container], allowed_mentions=mentions)
-                note = f"✅ Опубликовано: {msg.jump_url}"
-                # автореакции + тред — как у новостей от людей (on_message посты ботов игнорирует).
-                # Новость уже опубликована: сбой «декора» не должен читаться как сбой публикации,
-                # а сбой реакций (нет ADD_REACTIONS) — блокировать создание треда
-                if draft.channel_id in Channels.news_reaction_channels:
-                    await decorate_news(msg, self.logger)
+            msg, edited = await self._deliver_news(draft, channel)
+            note = (
+                f"✏️ Новость обновлена: {msg.jump_url}"
+                if edited else f"✅ Опубликовано: {msg.jump_url}"
+            )
         except disnake.HTTPException:
             self.logger.exception("Не удалось опубликовать новость в канал %s", draft.channel_id)
             # публикация НЕ случилась — вернуть черновик и кнопки, текст не теряем
@@ -483,6 +606,67 @@ class NewsEditor(commands.Cog):
             return
         self.drafts.pop(draft_id, None)
         await inter.edit_original_response(components=[disnake.ui.TextDisplay(note)])
+
+    @tasks.loop(seconds=15)
+    async def scheduledNewsPublisher(self):
+        """Публикует все наступившие записи; ошибки оставляет на повтор через lease."""
+        if time.monotonic() < self._schedule_retry_at:
+            return
+        while True:
+            try:
+                scheduled = await self.schedule_store.claim_due()
+            except Exception:
+                # Исключение наружу навсегда остановило бы tasks.loop.
+                delay = self._schedule_retry_delay
+                self._schedule_retry_at = time.monotonic() + delay
+                self._schedule_retry_delay = min(delay * 2, 10 * 60)
+                self.logger.exception(
+                    "Не удалось прочитать очередь отложенных новостей — повтор через %.0f с",
+                    delay,
+                )
+                return
+            self._schedule_retry_at = 0.0
+            self._schedule_retry_delay = 60.0
+            if scheduled is None:
+                return
+            draft = _Draft(
+                author_id=scheduled.author_id,
+                channel_id=scheduled.channel_id,
+                title=scheduled.title,
+                text=scheduled.body,
+                ping_role_id=scheduled.ping_role_id,
+                publish_at=scheduled.publish_at,
+            )
+            try:
+                msg, _ = await self._deliver_news(draft)
+            except Exception:
+                # claimed_at не сбрасываем: иначе при постоянном сбое получили бы
+                # запрос каждые 15 секунд. Через десять минут lease даст повтор.
+                self.logger.exception(
+                    "Не удалось опубликовать отложенную новость %s", scheduled.id
+                )
+                continue
+            try:
+                await self.schedule_store.complete(scheduled.id)
+            except Exception:
+                # Пост уже ушёл. Это редкое окно потенциального дубля после lease,
+                # поэтому логируем отдельно и заметно.
+                self.logger.critical(
+                    "Новость %s опубликована (%s), но не удалена из очереди",
+                    scheduled.id,
+                    msg.id,
+                    exc_info=True,
+                )
+            else:
+                self.logger.info(
+                    "Отложенная новость %s опубликована в канал %s",
+                    scheduled.id,
+                    scheduled.channel_id,
+                )
+
+    @scheduledNewsPublisher.before_loop
+    async def beforeScheduledNewsPublisher(self):
+        await self.bot.wait_until_ready()
 
 
 def setup(bot: commands.Bot):
