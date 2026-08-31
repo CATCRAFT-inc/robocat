@@ -19,6 +19,22 @@ async def test_donate_uses_canonical_url():
     assert "donate.catcraftmc.ru" not in text
 
 
+@pytest.mark.asyncio
+async def test_ip_uses_current_server_addresses():
+    cog = FAQ(SimpleNamespace())
+    cog.send_faq = AsyncMock()
+
+    await FAQ.ip_faq.callback(cog, SimpleNamespace())
+
+    container = cog.send_faq.await_args.args[1]
+    text = "\n".join(
+        child.content for child in container.children if hasattr(child, "content")
+    )
+    assert "play.catcraft.ru" in text
+    assert "play.catcraft.org" in text
+    assert "play.catcraftmc.ru" not in text
+
+
 async def test_faq_reply_does_not_ping_the_quoted_author():
     """FAQ открыт гостевым серверам, где у нас нет модерации.
 
