@@ -1,7 +1,9 @@
 import asyncio
 import datetime
+import io
 import logging
 import re
+import time
 import traceback
 
 import disnake
@@ -12,8 +14,14 @@ from bot.flag_system.flag_system import flags
 
 from bot.utils import create_container, neutralize_markers, neutralize_sections
 
-from .engine import AIEngine, Status, FinalAnswer, AIError, strip_action_log
-from .llm import llm
+from .engine import (
+    AIEngine,
+    Status,
+    FinalAnswer,
+    AIError,
+    strip_action_log,
+)
+from .llm import llm, request_id_var
 from . import memory
 from . import usage
 
@@ -25,6 +33,7 @@ _THREAD_HISTORY_LIMIT = 40
 # Глубина цепочки реплаев вне тредов: текущее сообщение + предки. Ходит только
 # по реплаям — два обращения подряд без реплая бот по-прежнему видит порознь.
 _MENTION_CHAIN_LIMIT = 10
+DISCORD_DELIVERY_TIMEOUT = 20
 
 _MSK = datetime.timezone(datetime.timedelta(hours=3))
 
@@ -32,6 +41,32 @@ _MSK = datetime.timezone(datetime.timedelta(hours=3))
 def _tokens(row: tuple | None) -> int:
     """(requests, prompt, completion) → сумма токенов; None — источник молчал."""
     return (row[1] + row[2]) if row else 0
+
+
+def _snapshotFiles(files: list[disnake.File]) -> list[tuple[bytes, str | None, bool, str | None]]:
+    """Сохранить одноразовые Discord-файлы до первой попытки отправки."""
+    snapshots = []
+    for file in files:
+        position = file.fp.tell()
+        file.fp.seek(0)
+        payload = file.fp.read()
+        file.fp.seek(position)
+        snapshots.append((payload, file.filename, file.spoiler, file.description))
+    return snapshots
+
+
+def _restoreFiles(
+    snapshots: list[tuple[bytes, str | None, bool, str | None]],
+) -> list[disnake.File]:
+    return [
+        disnake.File(
+            io.BytesIO(payload),
+            filename=filename,
+            spoiler=spoiler,
+            description=description,
+        )
+        for payload, filename, spoiler, description in snapshots
+    ]
 
 
 def _fmt_tokens(n: int) -> str:
@@ -51,6 +86,9 @@ _AICHAT_FLAGS = ("ai_summary", "ai_summary_upto", "created_by", "ai_delete_warn"
 
 
 class AIMessageHandler(commands.Cog):
+    # Класс-атрибут сохраняет логирование и в тестовых/аварийных экземплярах,
+    # созданных без __init__; штатный конструктор закрепляет тот же logger явно.
+    logger = logging.getLogger("robocat.ai")
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -154,15 +192,21 @@ class AIMessageHandler(commands.Cog):
             if channel is None:
                 return
             detail = (detail or "?").strip()
-            await channel.send(components=create_container(
-                "💥 Поломка ИИ-контура",
-                f"<@{Users.szarkan}> {message.author.mention} в {message.channel.mention}\n"
-                f"{message.jump_url}\n"
-                # хвост трейсбека информативнее начала
-                f"```\n{detail[-900:]}\n```",
-            ))
+            await asyncio.wait_for(
+                channel.send(components=create_container(
+                    "💥 Поломка ИИ-контура",
+                    f"<@{Users.szarkan}> {message.author.mention} в {message.channel.mention}\n"
+                    f"{message.jump_url}\n"
+                    # хвост трейсбека информативнее начала
+                    f"```\n{detail[-900:]}\n```",
+                )),
+                timeout=DISCORD_DELIVERY_TIMEOUT,
+            )
         except Exception:
-            self.logger.exception("Не удалось отправить репорт о поломке ИИ-контура")
+            self.logger.exception(
+                "request=%s stage=failure_report_failed",
+                getattr(message, "id", request_id_var.get()),
+            )
 
     async def _send(self, message: disnake.Message, ping: bool, content: str | None = None, **kwargs):
         """Ответить на сообщение (с пингом) либо отправить в канал без пинга."""
@@ -175,71 +219,263 @@ class AIMessageHandler(commands.Cog):
             return await message.channel.send(content, allowed_mentions=mentions, **kwargs)
         return await message.channel.send(allowed_mentions=mentions, **kwargs)
 
+    async def _timedSend(
+        self,
+        message: disnake.Message,
+        ping: bool,
+        request_id: str,
+        action: str,
+        content: str | None = None,
+        **kwargs,
+    ):
+        started = time.monotonic()
+        try:
+            result = await asyncio.wait_for(
+                self._send(message, ping, content=content, **kwargs),
+                timeout=DISCORD_DELIVERY_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.exception(
+                "request=%s stage=discord_send_failed action=%s elapsed=%.2fs",
+                request_id,
+                action,
+                time.monotonic() - started,
+            )
+            raise
+        self.logger.info(
+            "request=%s stage=discord_send_done action=%s elapsed=%.2fs",
+            request_id,
+            action,
+            time.monotonic() - started,
+        )
+        return result
+
+    async def _timedEdit(self, target, request_id: str, action: str, content: str, **kwargs):
+        started = time.monotonic()
+        try:
+            result = await asyncio.wait_for(
+                target.edit(content, **kwargs),
+                timeout=DISCORD_DELIVERY_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.exception(
+                "request=%s stage=discord_edit_failed action=%s elapsed=%.2fs",
+                request_id,
+                action,
+                time.monotonic() - started,
+            )
+            raise
+        self.logger.info(
+            "request=%s stage=discord_edit_done action=%s elapsed=%.2fs",
+            request_id,
+            action,
+            time.monotonic() - started,
+        )
+        return result
+
     async def _streamAnswer(self, message: disnake.Message, conversation: list, *, ping: bool):
+        request_id = str(getattr(message, "id", "?"))
+        request_started = time.monotonic()
+        channel_id = getattr(message.channel, "id", "?")
+        user_id = getattr(message.author, "id", "?")
+        self.logger.info(
+            "request=%s stage=received channel=%s user=%s",
+            request_id,
+            channel_id,
+            user_id,
+        )
+
+        trace_token = request_id_var.set(request_id)
+        try:
+            await self._streamAnswerInner(
+                message,
+                conversation,
+                ping=ping,
+                request_id=request_id,
+                request_started=request_started,
+            )
+        except asyncio.CancelledError:
+            self.logger.warning(
+                "request=%s stage=cancelled elapsed=%.2fs",
+                request_id,
+                time.monotonic() - request_started,
+            )
+            raise
+        finally:
+            request_id_var.reset(trace_token)
+
+    async def _streamAnswerInner(
+        self,
+        message: disnake.Message,
+        conversation: list,
+        *,
+        ping: bool,
+        request_id: str,
+        request_started: float,
+    ):
+
         # Мини-память (issue #6): факты о собеседнике — системной вставкой сразу
         # после system prompt'а. Память лежит в flags, падение БД ответ не блокирует.
         try:
             facts = await memory.facts_block(message.author, message.author.display_name)
         except Exception:
-            self.logger.exception("Не удалось прочитать память о юзере %s", message.author.id)
+            self.logger.exception(
+                "request=%s stage=memory_read_failed user=%s",
+                request_id,
+                message.author.id,
+            )
             facts = None
         if facts:
             conversation.insert(1, {"role": "system", "content": facts})
-        async with message.channel.typing():
+
+        # Async-вариант сам ждёт HTTP send_typing до входа в блок. Синхронный
+        # context manager запускает индикатор фоном и не блокирует ответ.
+        with message.channel.typing():
             thinking_message = None
             # История вызовов тулов (issue #2): прошлые статусы остаются в сообщении
             # мелкими -#-строками, текущий — обычным текстом. buildConverstaion
             # срезает этот лог при чтении истории, чтобы модель не ела его как свой ответ.
             status_log: list[str] = []
-            async for event in self.ai_engine.generateAnswer(conversation, message.author):
-                if isinstance(event, FinalAnswer):
-                    log = "\n".join(f"-# {s}" for s in status_log)
-                    combined = f"{log}\n\n{event.content}" if log else event.content
-                    if len(combined) > 1999:
-                        chunks = await self._buildLongMessage(event.content)
-                        if thinking_message:
-                            if log:
-                                # лог остаётся отдельным сообщением над нарезкой
-                                await thinking_message.edit(log)
-                            else:
-                                await thinking_message.delete()
-                            thinking_message = None
-                        for mes in chunks:
-                            # V2-контейнер несовместим с content= (ValueError в disnake) —
-                            # маркер "-# cut" живёт первым TextDisplay внутри контейнера
-                            await self._send(message, ping, components=disnake.ui.Container(
-                                disnake.ui.TextDisplay("-# cut"),
-                                disnake.ui.TextDisplay(mes),
-                            ))
-                        if event.attachments:
-                            await self._send(message, ping, files=event.attachments)
-                    else:
-                        if thinking_message:
+            trace_token = request_id_var.set(request_id)
+            try:
+                async for event in self.ai_engine.generateAnswer(conversation, message.author):
+                    if isinstance(event, FinalAnswer):
+                        log = "\n".join(f"-# {s}" for s in status_log)
+                        combined = f"{log}\n\n{event.content}" if log else event.content
+                        if len(combined) > 1999:
+                            chunks = await self._buildLongMessage(event.content)
+                            if thinking_message:
+                                try:
+                                    if log:
+                                        # лог остаётся отдельным сообщением над нарезкой
+                                        await self._timedEdit(
+                                            thinking_message, request_id, "final_log", log
+                                        )
+                                    else:
+                                        await asyncio.wait_for(
+                                            thinking_message.delete(),
+                                            timeout=DISCORD_DELIVERY_TIMEOUT,
+                                        )
+                                except Exception:
+                                    self.logger.exception(
+                                        "request=%s stage=discord_cleanup_failed action=long_answer",
+                                        request_id,
+                                    )
+                                thinking_message = None
+                            for mes in chunks:
+                                # V2-контейнер несовместим с content= (ValueError в disnake) —
+                                # маркер "-# cut" живёт первым TextDisplay внутри контейнера
+                                await self._timedSend(
+                                    message,
+                                    ping,
+                                    request_id,
+                                    "final_chunk",
+                                    components=disnake.ui.Container(
+                                        disnake.ui.TextDisplay("-# cut"),
+                                        disnake.ui.TextDisplay(mes),
+                                    ),
+                                )
                             if event.attachments:
-                                await thinking_message.edit(combined, files=event.attachments)
-                            else:
-                                await thinking_message.edit(combined)
+                                await self._timedSend(
+                                    message,
+                                    ping,
+                                    request_id,
+                                    "final_attachments",
+                                    files=event.attachments,
+                                )
                         else:
-                            if event.attachments:
-                                await self._send(message, ping, content=combined, files=event.attachments)
+                            fallback_files = (
+                                _snapshotFiles(event.attachments)
+                                if thinking_message and event.attachments
+                                else []
+                            )
+                            kwargs = {"files": event.attachments} if event.attachments else {}
+                            if thinking_message:
+                                try:
+                                    await self._timedEdit(
+                                        thinking_message,
+                                        request_id,
+                                        "final",
+                                        combined,
+                                        **kwargs,
+                                    )
+                                except Exception:
+                                    # Редактирование статуса может застрять отдельно от
+                                    # отправки нового сообщения. Лучше возможный дубль,
+                                    # чем навсегда оставить игроку «Ищу по вики».
+                                    fallback_kwargs = (
+                                        {"files": _restoreFiles(fallback_files)}
+                                        if fallback_files
+                                        else {}
+                                    )
+                                    await self._timedSend(
+                                        message,
+                                        ping,
+                                        request_id,
+                                        "final_fallback",
+                                        content=combined,
+                                        **fallback_kwargs,
+                                    )
                             else:
-                                await self._send(message, ping, content=combined)
-                elif isinstance(event, Status):
-                    text = self._withLog(status_log, event.content)
-                    if not event.ephemeral:
-                        status_log.append(event.content)
-                    if thinking_message:
-                        await thinking_message.edit(text)
-                    else:
-                        thinking_message = await self._send(message, ping, content=text)
-                elif isinstance(event, AIError):
-                    text = self._withLog(status_log, event.content)
-                    if thinking_message:
-                        await thinking_message.edit(text)
-                    else:
-                        await self._send(message, ping, content=text)
-                    await self._reportFailure(message, event.detail or event.content)
-                    return
+                                await self._timedSend(
+                                    message,
+                                    ping,
+                                    request_id,
+                                    "final",
+                                    content=combined,
+                                    **kwargs,
+                                )
+                        self.logger.info(
+                            "request=%s stage=completed elapsed=%.2fs",
+                            request_id,
+                            time.monotonic() - request_started,
+                        )
+
+                    elif isinstance(event, Status):
+                        text = self._withLog(status_log, event.content)
+                        if not event.ephemeral:
+                            status_log.append(event.content)
+                        if thinking_message:
+                            try:
+                                await self._timedEdit(
+                                    thinking_message, request_id, "status", text
+                                )
+                            except Exception:
+                                thinking_message = None
+                        if thinking_message is None:
+                            try:
+                                thinking_message = await self._timedSend(
+                                    message, ping, request_id, "status", content=text
+                                )
+                            except Exception:
+                                # Статус — украшение. Его сбой не должен отменять
+                                # генерацию и лишать игрока уже готового финала.
+                                thinking_message = None
+
+                    elif isinstance(event, AIError):
+                        text = self._withLog(status_log, event.content)
+                        if thinking_message:
+                            try:
+                                await self._timedEdit(
+                                    thinking_message, request_id, "error", text
+                                )
+                            except Exception:
+                                thinking_message = None
+                        if thinking_message is None:
+                            try:
+                                await self._timedSend(
+                                    message, ping, request_id, "error", content=text
+                                )
+                            except Exception:
+                                pass
+                        await self._reportFailure(message, event.detail or event.content)
+                        return
+            finally:
+                request_id_var.reset(trace_token)
 
     @commands.Cog.listener("on_message")
     async def robocatAI(self, message: disnake.Message):
@@ -261,7 +497,11 @@ class AIMessageHandler(commands.Cog):
                 try:
                     await self._handleThreadMessage(message)
                 except Exception:
-                    self.logger.exception("ИИ-контур упал в треде %s", message.channel.id)
+                    self.logger.exception(
+                        "request=%s stage=handler_failed mode=thread channel=%s",
+                        getattr(message, "id", "?"),
+                        message.channel.id,
+                    )
                     await self._reportFailure(message, traceback.format_exc())
                 return
 
@@ -273,7 +513,11 @@ class AIMessageHandler(commands.Cog):
             try:
                 await self._handleMention(message)
             except Exception:
-                self.logger.exception("ИИ-контур упал на упоминании в %s", message.channel.id)
+                self.logger.exception(
+                    "request=%s stage=handler_failed mode=mention channel=%s",
+                    getattr(message, "id", "?"),
+                    message.channel.id,
+                )
                 await self._reportFailure(message, traceback.format_exc())
 
     async def _handleMention(self, message: disnake.Message):

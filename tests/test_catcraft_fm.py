@@ -19,6 +19,16 @@ import pytest
 from bot.handlers.catcraft_fm import CatcraftFM, _MusicNavigator
 
 
+@pytest.fixture(autouse=True)
+def _run_to_thread_inline(monkeypatch):
+    """Тестам UI не нужен настоящий executor, который медленно гасится в WSL."""
+
+    async def inline(function, /, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", inline)
+
+
 @pytest.fixture
 def cog():
     bot = MagicMock()

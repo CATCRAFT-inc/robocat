@@ -55,6 +55,14 @@ jobs:
             # set -e: упавший шаг валит деплой (прецедент 12.07.2026: ddgs)
             set -e
             cd /opt/robocat
+            # Wiki-workflow обновляет tracked JSON прямо на проде.
+            # Сохраняем runtime-версию, иначе любой deploy откатит её к индексу
+            # из git до следующего запуска обновления.
+            runtime_index=/tmp/robocat-wiki-index-runtime.json
+            restore_index=data/wiki_index.restore.json
+            cp data/wiki_index.json "$runtime_index"
+            rm -f "$restore_index"
+            trap 'rm -f "$runtime_index" "$restore_index"' EXIT
             # Деплоим ровно тот SHA, что прошёл тесты, а не движущийся master:
             # пуш B во время деплоя A иначе обходит тест-гейт полностью
             git fetch origin master
@@ -63,6 +71,13 @@ jobs:
             git show ${{ github.sha }}:requirements.txt > /tmp/robocat-req.txt
             .venv/bin/pip install -r /tmp/robocat-req.txt -q
             git reset --hard ${{ github.sha }}
+            # Старый runtime-индекс можно вернуть только если его векторы
+            # совместимы с моделью нового кода. При смене embedding-модели
+            # остаётся индекс из коммита, а ближайший schedule пересоберёт свежий.
+            if .venv/bin/python -c 'import json, sys; from bot.ai.embeddings import MODEL, DIMENSIONS; rows=json.load(open(sys.argv[1], encoding="utf-8")); assert rows and all(r.get("model") == MODEL and len(r.get("vector") or ()) == DIMENSIONS for r in rows)' "$runtime_index"; then
+              cp "$runtime_index" "$restore_index"
+              mv "$restore_index" data/wiki_index.json
+            fi
             # Идемпотентная миграция схемы: новая таблица не ждёт ручного db_init
             .venv/bin/python data/db_init.py
             sudo -n systemctl restart robocat

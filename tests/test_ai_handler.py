@@ -125,6 +125,12 @@ async def test_user_lock_slash_and_reply_commands_target_selected_user(monkeypat
 
 
 class _Typing:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
     async def __aenter__(self):
         return self
 

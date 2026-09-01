@@ -6,6 +6,7 @@
 друг с другом.
 """
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,7 +15,14 @@ import openai
 import pytest
 from pydantic import BaseModel
 
-from bot.ai.llm import LLM, RATE_LIMIT_COOLDOWN, AIUnavailable, _Vendor, strip_thoughts
+from bot.ai.llm import (
+    AIUnavailable,
+    LLM,
+    RATE_LIMIT_COOLDOWN,
+    _Vendor,
+    request_id_var,
+    strip_thoughts,
+)
 
 
 def _rate_limit_error() -> openai.RateLimitError:
@@ -148,6 +156,29 @@ async def test_no_vendors_available_raises_ai_unavailable(llm_instance):
     llm_instance.vendors = []
     with pytest.raises(AIUnavailable):
         await llm_instance.ask("привет")
+
+
+@pytest.mark.asyncio
+async def test_hung_vendor_times_out_and_falls_back(llm_instance, monkeypatch, caplog):
+    never = asyncio.Event()
+    vendor1 = make_vendor("V1")
+    vendor2 = make_vendor("V2")
+
+    async def hung_create(**_kwargs):
+        await never.wait()
+
+    vendor1._client.chat.completions.create.side_effect = hung_create
+    vendor2._client.chat.completions.create.return_value = _fake_completion("ответ")
+    llm_instance.vendors = [vendor1, vendor2]
+    monkeypatch.setattr("bot.ai.llm.LLM_REQUEST_TIMEOUT", 0.01)
+
+    token = request_id_var.set("message-42")
+    try:
+        assert await llm_instance.ask("привет") == "ответ"
+    finally:
+        request_id_var.reset(token)
+    assert vendor1._client.chat.completions.create.await_count == 2
+    assert "request=message-42 stage=vendor_timeout vendor=V1" in caplog.text
 
 
 class _FakeSchema(BaseModel):

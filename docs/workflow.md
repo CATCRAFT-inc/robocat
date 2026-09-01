@@ -15,8 +15,8 @@ SQLite, LLM-слой с ротацией вендоров. Прод — VDS `/op
 - Правка shared-кода (`utils`, `llm`, `flags`) → полный прогон, не точечный файл.
 - Живой прогон на dev-боте (`BOT_ENV=dev python main.py`) — по запросу Серёжи,
   не дефолтный гейт; сценарии обычно гоняет сам Серёжа.
-- Codex полный pytest не гоняет (FM-тесты с `asyncio.to_thread` зависают в его
-  sandbox) — прогонять самому.
+- FM-тесты подменяют `asyncio.to_thread` синхронным async-хелпером: UI-тестам
+  настоящий executor не нужен, а его shutdown зависал в WSL/sandbox.
 - После деплоя: workflow сам делает health-check; логи — `/opt/robocat/logs/bot.log`
   (у Серёжи `rclogs [N]`, `rcrestart`); в journalctl попадают только print'ы.
 
@@ -45,11 +45,20 @@ SQLite, LLM-слой с ротацией вендоров. Прод — VDS `/op
 - Хуки/rtk: guard блокирует литералы «.env» и «reset --hard» в bash; rtk
   ломает `case`/`;;` и `VAR=$(git ...)` (тихо пусто).
 
-- **Обновление вики-индекса** (`scripts/build_wiki_index.py`) гоняется НА VDS:
+- **Обновление вики-индекса** автоматически гоняет
+  `.github/workflows/wiki-index.yml` каждые 30 минут. Workflow обновляет sparse
+  checkout публичного репозитория Вики в `/opt/robocat/.wiki-source`, а сборщик
+  читает Markdown и `srcExclude` напрямую. Неизменившиеся чанки переиспользуют
+  векторы по `hash+model`, поэтому обычный прогон не расходует embedding-квоту;
+  Google вызывается только для нового или изменившегося текста. Сборка идёт в
+  `data/wiki_index.next.json`, успешный файл атомарно заменяет рабочий, а бот
+  перечитывает его по mtime без рестарта. Неудачный/неполный прогон оставляет
+  текущий индекс и partial для следующего запуска. Ручной запуск тоже делается НА VDS:
   ключ `GEMINI` привязан к стране биллинга, с машины Серёжи — `403
   PERMISSION_DENIED`. Системный `python3` там без `openai`, интерпретатор —
   `/opt/robocat/.venv/bin/python`, сервис от юзера `bots`:
-  `sudo -u bots .venv/bin/python scripts/build_wiki_index.py --out /tmp/idx.json`.
+  `sudo -u bots .venv/bin/python scripts/build_wiki_index.py --wiki-dir
+  /opt/robocat/.wiki-source --out /tmp/idx.json`.
   `--out` обязателен (иначе бот подхватит непроверенный индекс сразу), а файл
   назначения создавать СРАЗУ от `bots` — иначе запись упадёт на правах уже
   после оплаченных запросов (прецедент 02.08.2026, 48 эмбеддингов в трубу).

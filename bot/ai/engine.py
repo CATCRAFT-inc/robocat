@@ -24,7 +24,7 @@ from .wiki_search import wiki
 from .web_search import web
 from . import media
 from . import memory
-from .llm import llm, AIUnavailable, strip_thoughts
+from .llm import llm, AIUnavailable, request_id_var, strip_thoughts
 
 from dataclasses import dataclass, field
 
@@ -57,6 +57,7 @@ IMAGE_DAILY_LIMIT = 3  # картинок на юзера в сутки
 MIN_REASONING_LEN = 20
 VIDEO_MAX_BYTES = 40 * 1024 * 1024
 IMAGE_MAX_BYTES = 12 * 1024 * 1024  # base64 раздувает ~×1.33; крупные картинки жрут память
+WIKI_SEARCH_TIMEOUT = 20
 
 # codex-подпроцесс НЕ должен наследовать секреты бота (load_dotenv кладёт токены и
 # ключи в os.environ). Иначе инъекция в промпт картинки может выманить их в PNG —
@@ -99,6 +100,7 @@ class AIError:
 @dataclass
 class Context:
     user: disnake.Member = None
+    request_id: str = "-"
 
 class Idiot(BaseModel):
     isIdiot: bool
@@ -286,12 +288,20 @@ class AIEngine(commands.Cog):
         ролик как равномерно выбранные кадры своим зрением (бесплатно и нативно).
         Аудиодорожка не обрабатывается — платных/внешних транскрибаторов не держим."""
         if attach.size > VIDEO_MAX_BYTES:
-            self.logger.warning("Видео-аттачмент слишком большой: %d байт", attach.size)
+            self.logger.warning(
+                "request=%s stage=video_too_large bytes=%s",
+                request_id_var.get(),
+                attach.size,
+            )
             return "[[ User sent a video, but it's too large for you to watch. Tell them politely. ]]", []
         try:
             data = await attach.read()
         except Exception:
-            self.logger.exception("Не удалось скачать видео-аттачмент %s", attach.id)
+            self.logger.exception(
+                "request=%s stage=video_download_failed attachment=%s",
+                request_id_var.get(),
+                attach.id,
+            )
             return "[[ User sent a video, but you couldn't watch it (processing failed). Tell them politely. ]]", []
         frames, duration = await media.extract_frames(data)
         if not frames:
@@ -318,7 +328,11 @@ class AIEngine(commands.Cog):
                 n=1
             )
         except Exception as e:
-            self.logger.exception("Слетел какой-то API: %s", e)
+            self.logger.exception(
+                "request=%s stage=image_api_failed error=%s",
+                request_id_var.get(),
+                type(e).__name__,
+            )
             return None
         else:
             files = []
@@ -354,7 +368,10 @@ class AIEngine(commands.Cog):
         except Exception:
             # fail-closed: модерация — граница безопасности перед codex-подпроцессом
             # с чтением ФС; без гейта запрос не пускаем (лимит юзера не тратится)
-            self.logger.exception("Модерация промпта картинки недоступна — отказываю без гейта")
+            self.logger.exception(
+                "request=%s stage=image_moderation_failed",
+                request_id_var.get(),
+            )
             return False
         return "DENY" not in reply.upper()
 
@@ -366,7 +383,12 @@ class AIEngine(commands.Cog):
         )
         started = time.monotonic()
         codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-        self.logger.info("Codex image-gen старт: %s", prompt)
+        # Сам prompt не логируем: он пользовательский и может содержать личные данные.
+        self.logger.info(
+            "request=%s stage=image_start backend=codex prompt_chars=%s",
+            request_id_var.get(),
+            len(prompt),
+        )
         for attempt in (1, 2):
             workdir = tempfile.mkdtemp(prefix="robocat_img_")
             sid = None
@@ -383,7 +405,10 @@ class AIEngine(commands.Cog):
                         env=_codex_safe_env(),  # без секретов бота (стоп-правило №1)
                     )
                 except FileNotFoundError:
-                    self.logger.exception("Codex-бинарь не найден: %s", CODEX_BIN)
+                    self.logger.exception(
+                        "request=%s stage=image_binary_missing backend=codex",
+                        request_id_var.get(),
+                    )
                     return None
 
                 try:
@@ -391,7 +416,11 @@ class AIEngine(commands.Cog):
                 except asyncio.TimeoutError:
                     proc.kill()
                     await proc.wait()
-                    self.logger.error("Codex image-gen превысил таймаут (%ss)", CODEX_IMAGE_TIMEOUT)
+                    self.logger.error(
+                        "request=%s stage=image_timeout backend=codex timeout=%ss",
+                        request_id_var.get(),
+                        CODEX_IMAGE_TIMEOUT,
+                    )
                     return None
 
                 stdout_text = (stdout or b"").decode(errors="replace")
@@ -408,13 +437,17 @@ class AIEngine(commands.Cog):
                 if not found:
                     if attempt == 1:
                         self.logger.warning(
-                            "Codex image-gen: картинка не найдена (rc=%s), пробую ещё раз. Хвост stdout: %s",
-                            proc.returncode, stdout_text[-500:],
+                            "request=%s stage=image_missing backend=codex rc=%s attempt=%s",
+                            request_id_var.get(),
+                            proc.returncode,
+                            attempt,
                         )
                         continue
                     self.logger.error(
-                        "Codex image-gen: картинка не найдена (rc=%s). Хвост stdout: %s",
-                        proc.returncode, stdout_text[-500:],
+                        "request=%s stage=image_missing backend=codex rc=%s attempt=%s",
+                        request_id_var.get(),
+                        proc.returncode,
+                        attempt,
                     )
                     return None
 
@@ -424,8 +457,11 @@ class AIEngine(commands.Cog):
                     buf.seek(0)
                     files.append(disnake.File(buf, filename=f"image_{i}.png"))
                 self.logger.info(
-                    "Codex image-gen готово за %.1fs (файлов: %d, попытка %d)",
-                    time.monotonic() - started, len(files), attempt,
+                    "request=%s stage=image_done backend=codex elapsed=%.1fs files=%s attempt=%s",
+                    request_id_var.get(),
+                    time.monotonic() - started,
+                    len(files),
+                    attempt,
                 )
                 return files
             finally:
@@ -545,8 +581,21 @@ class AIEngine(commands.Cog):
             case "search_wiki":
                 yield Status(":book: Ищу по вики...")
                 try:
-                    results = await wiki.search(args.get("query"))
+                    async with asyncio.timeout(WIKI_SEARCH_TIMEOUT):
+                        results = await wiki.search(args.get("query"))
+                except TimeoutError:
+                    self.logger.warning(
+                        "request=%s stage=tool_timeout tool=search_wiki timeout=%ss",
+                        ctx.request_id,
+                        WIKI_SEARCH_TIMEOUT,
+                    )
+                    yield Status("😞 Поиск не удался...")
+                    yield _ToolDone(content="[[ Wiki search timed out. Tell user that something went wrong and they should try again later. ]]")
                 except Exception:
+                    self.logger.exception(
+                        "request=%s stage=tool_failed tool=search_wiki",
+                        ctx.request_id,
+                    )
                     yield Status("😞 Поиск не удался...")
                     yield _ToolDone(content="[[ Wiki search failed. Tell user that something went wrong and they should try again later. ]]")
                 else:
@@ -558,7 +607,10 @@ class AIEngine(commands.Cog):
                 try:
                     results = await web.search(args.get("query"))
                 except Exception:
-                    self.logger.exception("Веб-поиск упал на запросе тулзы")
+                    self.logger.exception(
+                        "request=%s stage=tool_failed tool=web_search",
+                        ctx.request_id,
+                    )
                     results = []
                 if results:
                     yield _ToolDone(content=web.build_context(results))
@@ -598,7 +650,11 @@ class AIEngine(commands.Cog):
                             else:
                                 await self.flags.setFlag(ctx.user, "image_gen", value="1", expires_at="1д")
                         except Exception:
-                            self.logger.exception("Не удалось учесть лимит картинки для %s", getattr(ctx.user, "id", "?"))
+                            self.logger.exception(
+                                "request=%s stage=image_limit_write_failed user=%s",
+                                ctx.request_id,
+                                getattr(ctx.user, "id", "?"),
+                            )
                         yield FinalAnswer(content="Твоя картиночка готова!", attachments=attachment)
                     else:
                         yield _ToolDone(content="[[ Image generation failed. Tell user that something went wrong and they should try again later. ]]")
@@ -658,11 +714,20 @@ class AIEngine(commands.Cog):
                     yield Status("🔇 Выдаю тебе мут...")
                     try:
                         await ctx.user.timeout(duration=duration, reason=reason)
-                    except disnake.Forbidden as e:
-                        print(e)
+                    except disnake.Forbidden:
+                        self.logger.warning(
+                            "request=%s stage=tool_forbidden tool=mute_user user=%s",
+                            ctx.request_id,
+                            getattr(ctx.user, "id", "?"),
+                        )
                         yield _ToolDone("[[ You can't mute this user - they are admin or have mute bypass ]]")
                     except Exception as e:
-                        yield _ToolDone(f"[[ You can't mute this user - {e}. Don't tell user this error, play it cool. ]]")
+                        self.logger.exception(
+                            "request=%s stage=tool_failed tool=mute_user error=%s",
+                            ctx.request_id,
+                            type(e).__name__,
+                        )
+                        yield _ToolDone("[[ You can't mute this user because the tool failed. Don't tell user the internal error, play it cool. ]]")
                     else:
                         yield _ToolDone("[[ User is muted succesfully ]]")
             case _:
@@ -670,7 +735,9 @@ class AIEngine(commands.Cog):
         
     async def generateAnswer(self,
             conversation: list,
-            user: disnake.Member):
+            user: disnake.Member,
+            request_id: str | None = None):
+        trace_id = request_id or request_id_var.get()
         tool_rounds = 0
         attachment = None
         # Лимит тул-раундов исчерпан → последний вызов идёт БЕЗ тулов: модель обязана
@@ -679,6 +746,13 @@ class AIEngine(commands.Cog):
         # выжигали оба раунда поисками по вики).
         force_final = False
         while True:
+            llm_started = time.monotonic()
+            self.logger.info(
+                "request=%s stage=llm_start round=%s force_final=%s",
+                trace_id,
+                tool_rounds + 1,
+                force_final,
+            )
             try:
                 # Ротация вендоров, кулдауны и учёт токенов — всё внутри llm.complete
                 # В диалоге есть картинка → ротация только по vision-вендорам
@@ -692,23 +766,38 @@ class AIEngine(commands.Cog):
                     require_vision=needs_vision,
                 )
             except AIUnavailable as e:
+                self.logger.warning(
+                    "request=%s stage=llm_unavailable elapsed=%.2fs error=%s",
+                    trace_id,
+                    time.monotonic() - llm_started,
+                    type(e).__name__,
+                )
                 yield AIError(
                     f"*Пш-ш-ш-ш... Процессор робокотика перегрелся! Все линии заняты — попробуй поговорить с ним через <t:{int(datetime.now(timezone.utc).timestamp() + 60)}:R>*",
                     detail=f"AIUnavailable: {e}",
                 )
                 return
             except Exception as e:
-                self.logger.exception("Ошибка нейросети: %s", e)
+                self.logger.exception(
+                    "request=%s stage=llm_failed elapsed=%.2fs error=%s",
+                    trace_id,
+                    time.monotonic() - llm_started,
+                    type(e).__name__,
+                )
                 yield AIError(
                     "😞 *У Робокотика полетели гайки...*",
-                    detail=f"{type(e).__name__}: {e}",
+                    detail=type(e).__name__,
                 )
                 return
 
             # Пустой choices (напр. сработал safety-фильтр вендора) — не роняем ответ
             # необработанным IndexError, а отдаём честную ошибку.
             if not response.choices:
-                self.logger.warning("LLM вернул пустой choices — вероятно, safety-фильтр вендора")
+                self.logger.warning(
+                    "request=%s stage=llm_empty_choices elapsed=%.2fs",
+                    trace_id,
+                    time.monotonic() - llm_started,
+                )
                 yield AIError(
                     "😞 *У Робокотика полетели гайки...*",
                     detail="LLM вернул пустой choices (вероятно, safety-фильтр вендора)",
@@ -716,15 +805,28 @@ class AIEngine(commands.Cog):
                 return
 
             answer = response.choices[0].message
+            self.logger.info(
+                "request=%s stage=llm_done elapsed=%.2fs tool_calls=%s",
+                trace_id,
+                time.monotonic() - llm_started,
+                len(answer.tool_calls or ()),
+            )
             conversation.append(answer.model_dump(exclude_none=True))
             if answer.tool_calls and not force_final:
                 for tc in answer.tool_calls:
                     result = None
+                    tool_name = getattr(tc.function, "name", "?")
+                    tool_started = time.monotonic()
+                    self.logger.info(
+                        "request=%s stage=tool_start tool=%s",
+                        trace_id,
+                        tool_name,
+                    )
                     # Падение тула (битые args модели, ошибка API, не-Member)
                     # не должно молча убивать весь ответ — превращаем в tool-result,
                     # чтобы модель дответила по собранному.
                     try:
-                        async for event in self._executeTool(tc, Context(user)):
+                        async for event in self._executeTool(tc, Context(user, trace_id)):
                             if isinstance(event, _ToolDone):
                                 result = event
                             elif isinstance(event, FinalAnswer):
@@ -733,7 +835,12 @@ class AIEngine(commands.Cog):
                             else:
                                 yield event
                     except Exception:
-                        self.logger.exception("Тул %s упал", getattr(tc.function, "name", "?"))
+                        self.logger.exception(
+                            "request=%s stage=tool_crashed tool=%s elapsed=%.2fs",
+                            trace_id,
+                            tool_name,
+                            time.monotonic() - tool_started,
+                        )
                         result = _ToolDone("[[ The tool crashed. Tell the user something went wrong; answer from your own knowledge if you can. ]]")
                     if result is None:
                         result = _ToolDone("[[ Tool returned nothing ]]")
@@ -745,6 +852,12 @@ class AIEngine(commands.Cog):
                         "name": tc.function.name,
                         "content": str(result.content)
                     })
+                    self.logger.info(
+                        "request=%s stage=tool_done tool=%s elapsed=%.2fs",
+                        trace_id,
+                        tool_name,
+                        time.monotonic() - tool_started,
+                    )
                 yield Status("🤤 Ещё чуть-чуть думаю...", ephemeral=True)
                 tool_rounds += 1
                 if tool_rounds >= 2:
@@ -753,6 +866,7 @@ class AIEngine(commands.Cog):
 
             final_answer = answer.content or " "
             final_answer = self.sanitize_answer(final_answer)
+            self.logger.info("request=%s stage=final_ready", trace_id)
             yield FinalAnswer(final_answer, [attachment] if attachment else [])
             return
             

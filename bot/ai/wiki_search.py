@@ -1,6 +1,8 @@
 import asyncio
 import json
+import logging
 from pathlib import Path
+import threading
 
 from .embeddings import embed, cosine
 
@@ -8,18 +10,37 @@ from .embeddings import embed, cosine
 class WikiSearcher:
     def __init__(self):
         self._index = None
+        self._index_mtime_ns = None
+        self._index_lock = threading.Lock()
         self._index_file = Path(__file__).resolve().parents[2] / "data" / "wiki_index.json"
+        self.logger = logging.getLogger("robocat.ai")
 
     @property
     def index(self):
-        # Грузим один раз при первом обращении, держим в памяти
-        if self._index is None:
-            self._index = json.loads(self._index_file.read_text(encoding="utf-8"))
+        mtime_ns = self._index_file.stat().st_mtime_ns
+        if self._index is not None and self._index_mtime_ns == mtime_ns:
+            return self._index
+
+        # Поиск выполняется через asyncio.to_thread; два одновременных запроса
+        # не должны оба парсить 10 МБ после атомарной замены индекса.
+        with self._index_lock:
+            mtime_ns = self._index_file.stat().st_mtime_ns
+            if self._index is not None and self._index_mtime_ns == mtime_ns:
+                return self._index
+            fresh = json.loads(self._index_file.read_text(encoding="utf-8"))
+            self._index = fresh
+            self._index_mtime_ns = mtime_ns
+            self.logger.info(
+                "stage=wiki_index_loaded chunks=%s mtime_ns=%s",
+                len(fresh),
+                mtime_ns,
+            )
         return self._index
 
     def _rank(self, query_vec: list[float], top_k: int) -> list[dict]:
+        index = self.index
         return sorted(
-            self.index,
+            index,
             key=lambda c: cosine(query_vec, c["vector"]),
             reverse=True,
         )[:top_k]

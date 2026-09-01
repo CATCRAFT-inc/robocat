@@ -373,6 +373,12 @@ async def test_execute_tool_forget_fact_no_match(monkeypatch):
 
 
 class _FakeTyping:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
     async def __aenter__(self):
         return self
 

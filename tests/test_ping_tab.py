@@ -1460,13 +1460,19 @@ async def test_rcon_exec_many_never_sends_two_packets_in_one_read(unused_tcp_por
     assert result == ["имена", "список", "тпс"]
 
 
-async def test_rcon_exec_many_returns_empty_for_a_silent_command(unused_tcp_port):
+async def test_rcon_exec_many_returns_empty_for_a_silent_command(
+    unused_tcp_port, monkeypatch,
+):
     """Команда без вывода обязана отдать пустую строку, а не повиснуть.
 
     Регрессия из ревью: маркер стали слать только ПОСЛЕ первого пакета, и
     команда, на которую сервер молчит, начала падать по таймауту. Бьёт по
     админской `/rcon`, а не только по `!пинг`.
     """
+    # Боевые две секунды защищают медленный сервер, но сам протокол маркера
+    # проверяется и с коротким ожиданием; бюджеты времени покрыты отдельно.
+    monkeypatch.setattr("bot.handlers.rcon.FIRST_PACKET_WAIT", 0.01)
+
     async def serve(reader, writer):
         while True:
             header = await reader.readexactly(4)

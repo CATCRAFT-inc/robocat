@@ -6,6 +6,9 @@ _streamAnswer копит статусы: прошлые — мелкими -#-с
 Discord и engine мокаются целиком — сети нет.
 """
 
+import asyncio
+import io
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -18,8 +21,14 @@ from bot.utils import component_text
 
 
 class _FakeTyping:
-    async def __aenter__(self):
+    def __enter__(self):
         return self
+
+    def __exit__(self, *args):
+        return False
+
+    async def __aenter__(self):
+        raise AssertionError("_streamAnswer не должен ждать Discord HTTP в __aenter__")
 
     async def __aexit__(self, *args):
         return False
@@ -42,9 +51,13 @@ class _FakeMessage:
 
 
 @pytest.fixture
-def handler():
+def handler(monkeypatch):
     inst = object.__new__(AIMessageHandler)
+    inst.logger = logging.getLogger("robocat.ai")
     inst.sent = []  # (content, kwargs) каждого _send
+    monkeypatch.setattr(
+        "bot.ai.handler.memory.facts_block", AsyncMock(return_value=None)
+    )
 
     async def fake_send(message, ping, content=None, **kwargs):
         fake = _FakeMessage(content)
@@ -58,6 +71,7 @@ def handler():
 
 def _user_message():
     message = MagicMock()
+    message.id = 42
     message.channel.typing = lambda: _FakeTyping()
     message.author = MagicMock()
     return message
@@ -100,6 +114,112 @@ async def test_stream_answer_without_tools_has_no_log(handler):
 
     assert len(handler.sent) == 1
     assert handler.sent[0][0] == "Просто ответ"
+
+
+async def test_stream_answer_falls_back_to_new_message_when_final_edit_hangs(
+    handler, monkeypatch, caplog,
+):
+    never = asyncio.Event()
+    handler.ai_engine = _engine_with([
+        Status("📖 Ищу по вики..."),
+        FinalAnswer("Готовый ответ"),
+    ])
+
+    async def hung_edit(*_args, **_kwargs):
+        await never.wait()
+
+    original_send = handler._send
+
+    async def send_with_hung_first_edit(*args, **kwargs):
+        sent = await original_send(*args, **kwargs)
+        if len(handler.sent) == 1:
+            sent.edit = hung_edit
+        return sent
+
+    handler._send = send_with_hung_first_edit
+    monkeypatch.setattr("bot.ai.handler.DISCORD_DELIVERY_TIMEOUT", 0.01)
+
+    with caplog.at_level(logging.WARNING, logger="robocat.ai"):
+        await handler._streamAnswer(_user_message(), [], ping=False)
+
+    assert len(handler.sent) == 2
+    assert handler.sent[1][0] == "-# 📖 Ищу по вики...\n\nГотовый ответ"
+    assert "request=42 stage=discord_edit_failed action=final" in caplog.text
+
+
+async def test_stream_answer_recreates_file_for_final_fallback(
+    handler, monkeypatch,
+):
+    never = asyncio.Event()
+    original = disnake.File(io.BytesIO(b"image"), filename="answer.png")
+    handler.ai_engine = _engine_with([
+        Status("🎨 Рисую..."),
+        FinalAnswer("Готово", [original]),
+    ])
+
+    async def hung_edit(*_args, files=None, **_kwargs):
+        try:
+            await never.wait()
+        finally:
+            for file in files or ():
+                file.close()
+                file.fp.close()
+
+    original_send = handler._send
+
+    async def send_with_hung_first_edit(*args, **kwargs):
+        sent = await original_send(*args, **kwargs)
+        if len(handler.sent) == 1:
+            sent.edit = hung_edit
+        return sent
+
+    handler._send = send_with_hung_first_edit
+    monkeypatch.setattr("bot.ai.handler.DISCORD_DELIVERY_TIMEOUT", 0.01)
+
+    await handler._streamAnswer(_user_message(), [], ping=False)
+
+    fallback = handler.sent[1][1]["files"][0]
+    assert fallback is not original
+    assert fallback.fp.read() == b"image"
+
+
+async def test_stream_answer_logs_cancellation(handler, caplog):
+    never = asyncio.Event()
+
+    async def gen(*_args, **_kwargs):
+        yield Status("📖 Ищу по вики...")
+        await never.wait()
+
+    handler.ai_engine = MagicMock()
+    handler.ai_engine.generateAnswer = gen
+
+    task = asyncio.create_task(handler._streamAnswer(_user_message(), [], ping=False))
+    await asyncio.sleep(0)
+    task.cancel()
+    with caplog.at_level(logging.WARNING, logger="robocat.ai"):
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert "request=42 stage=cancelled" in caplog.text
+
+
+async def test_stream_answer_logs_cancellation_during_memory(handler, monkeypatch, caplog):
+    never = asyncio.Event()
+
+    async def hung_memory(*_args):
+        await never.wait()
+
+    monkeypatch.setattr(
+        "bot.ai.handler.memory.facts_block",
+        hung_memory,
+    )
+
+    task = asyncio.create_task(handler._streamAnswer(_user_message(), [], ping=False))
+    await asyncio.sleep(0)
+    task.cancel()
+    with caplog.at_level(logging.WARNING, logger="robocat.ai"):
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert "request=42 stage=cancelled" in caplog.text
 
 
 async def test_stream_answer_long_answer_keeps_log_as_separate_message(handler):

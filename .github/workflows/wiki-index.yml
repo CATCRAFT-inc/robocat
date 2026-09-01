@@ -1,0 +1,61 @@
+name: Update Wiki Index
+
+on:
+  schedule:
+    # Частый запуск безопасен: неизменившиеся чанки переиспользуют векторы по
+    # hash+model и не расходуют квоту Gemini. Максимальная задержка — полчаса.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+# Не пересобирать индекс одновременно с переключением кода на проде.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Build and atomically install index on production
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262
+        with:
+          host: ${{ secrets.VDS_IP }}
+          username: ${{ secrets.VDS_USER }}
+          key: ${{ secrets.VDS_SSH_KEY }}
+          port: ${{ secrets.VDS_PORT }}
+          command_timeout: 25m
+          script: |
+            set -e
+            cd /opt/robocat
+            wiki_dir=/opt/robocat/.wiki-source
+            next=data/wiki_index.next.json
+
+            # Репозиторий публичный. Sparse checkout не тянет сотни мегабайт
+            # картинок и видео: сборщику нужны только Markdown и srcExclude.
+            if [ ! -d "$wiki_dir/.git" ]; then
+              sudo -u bots git clone --filter=blob:none --no-checkout --depth=1 \
+                https://github.com/CATCRAFT-inc/szarkans.github.io.git "$wiki_dir"
+              sudo -u bots git -C "$wiki_dir" sparse-checkout init --no-cone
+              sudo -u bots git -C "$wiki_dir" sparse-checkout set '*.md' '/.vitepress/config.mjs'
+            fi
+            sudo -u bots git -C "$wiki_dir" fetch --depth=1 origin main
+            sudo -u bots git -C "$wiki_dir" checkout --detach FETCH_HEAD
+            sudo -u bots git -C "$wiki_dir" status --short
+            sudo -u bots git -C "$wiki_dir" rev-parse --short HEAD
+
+            sudo -u bots rm -f "$next"
+            # Если прошлый прогон выбрал дневной бюджет или оборвался, builder
+            # оставит partial и завершится ошибкой: рабочий индекс не трогаем.
+            # Обычно API получает только новые/изменившиеся чанки; если текст
+            # не поменялся, все векторы берутся из рабочего индекса.
+            sudo -u bots flock -n /tmp/robocat-wiki-index.lock \
+              .venv/bin/python scripts/build_wiki_index.py \
+                --wiki-dir "$wiki_dir" --out "$next"
+            # Builder гарантирует наличие векторов, а cutover защищаем от
+            # обрезанного checkout и несовместимой модели/размерности.
+            sudo -u bots .venv/bin/python -c 'import json, sys; from bot.ai.embeddings import MODEL, DIMENSIONS; new=json.load(open(sys.argv[1], encoding="utf-8")); old=json.load(open(sys.argv[2], encoding="utf-8")); assert len(new) >= max(100, int(len(old) * 0.8)); assert all(r.get("model") == MODEL and len(r.get("vector") or ()) == DIMENSIONS for r in new)' "$next" data/wiki_index.json
+            # Оба файла в одном каталоге: rename атомарен, бот увидит либо старый
+            # валидный JSON, либо целиком новый.
+            sudo -u bots mv "$next" data/wiki_index.json

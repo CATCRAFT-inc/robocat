@@ -14,6 +14,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from .llm import request_id_var
+
 logger = logging.getLogger("robocat.media")
 
 FFMPEG_BIN = "ffmpeg"
@@ -31,19 +33,31 @@ async def _run(args: list[str], timeout: int = FFMPEG_TIMEOUT) -> bytes | None:
             stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError:
-        logger.warning("%s не найден — обработка медиа недоступна", args[0])
+        logger.warning(
+            "request=%s stage=media_binary_missing binary=%s",
+            request_id_var.get(),
+            args[0],
+        )
         return None
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        logger.error("%s превысил таймаут %dс", args[0], timeout)
+        logger.error(
+            "request=%s stage=media_timeout binary=%s timeout=%ss",
+            request_id_var.get(),
+            args[0],
+            timeout,
+        )
         return None
     if proc.returncode != 0:
         logger.warning(
-            "%s rc=%s: %s", args[0], proc.returncode,
-            (stderr or b"")[-300:].decode(errors="replace"),
+            "request=%s stage=media_failed binary=%s rc=%s stderr_bytes=%s",
+            request_id_var.get(),
+            args[0],
+            proc.returncode,
+            len(stderr or b""),
         )
         return None
     return stdout or b""

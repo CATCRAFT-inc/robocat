@@ -2,32 +2,26 @@
 
 Запуск из корня репозитория:
 
-    python scripts/build_wiki_index.py                 # инкрементально
-    python scripts/build_wiki_index.py --chunks-only   # только текст, для глаз
-    python scripts/build_wiki_index.py --full          # переэмбеддить всё
+    python scripts/build_wiki_index.py --wiki-dir ../szarkans.github.io
+    python scripts/build_wiki_index.py --wiki-dir ../szarkans.github.io --chunks-only
+    python scripts/build_wiki_index.py --wiki-dir ../szarkans.github.io --full
 
-Источник — `https://wiki.catcraft.ru/sitemap.xml`, и только он. Часть страниц
-вики намеренно скрыта через `srcExclude` в `.vitepress/config.mjs` (распущенный
-КСБ, непере­несённая гардеробная): в сборку сайта они не попадают, значит нет их
-и в сайтмапе. Брать список страниц из markdown-исходников нельзя — вернём боту
-знание, которое сервер удалил специально.
-
-Текст берём из отрендеренного HTML, а не из markdown: в исходниках вики контент
-живёт внутри Vue-компонентов (`<ItemCard>`, `<CraftingGrid>`, `<script setup>`),
-и эмбеддинг такого файла описывает разметку, а не механику сервера.
-
-Зависимостей сверх `requirements.txt` нет: `urllib` + `html.parser` + уже
-существующий `bot.ai.embeddings`.
+Источник — checkout публичного VitePress-репозитория Вики. Список скрытых
+страниц читается прямо из `srcExclude` в `.vitepress/config.mjs`, поэтому бот
+видит тот же набор страниц, что сайт, без обхода sitemap и скачивания каждого
+HTML. Markdown очищается только от служебной разметки; пользовательский текст и
+имена предметов из Vue-рецептов остаются в корпусе.
 
 🛑 Ключ `GEMINI` привязан к стране биллинга: с машины в РФ endpoint отвечает
 403 PERMISSION_DENIED. Полный прогон гонять на VDS — там ключ рабочий:
 
-    sudo -u bots .venv/bin/python scripts/build_wiki_index.py --out /tmp/idx.json
+    sudo -u bots .venv/bin/python scripts/build_wiki_index.py \
+        --wiki-dir /opt/robocat/.wiki-source --out /tmp/idx.json
 
 `--out` на проде обязателен: без него бот подхватит непроверенный индекс сразу.
 `--chunks-only` считает те же чанки без единого запроса к эмбеддингам и кладёт
 их в `data/wiki_chunks.json` — это материал ДЛЯ ГЛАЗ (посмотреть, что вообще
-вытащилось из вёрстки), обратно в сборку он не подаётся: векторы всё равно
+вытащилось из Markdown), обратно в сборку он не подаётся: векторы всё равно
 переиспользуются по `hash` из готового индекса.
 """
 
@@ -35,13 +29,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fnmatch
 import hashlib
+import html
 import json
 import re
 import sys
-import urllib.error
-import urllib.request
-from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,7 +42,7 @@ sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv  # noqa: E402
 
-SITEMAP_URL = "https://wiki.catcraft.ru/sitemap.xml"
+WIKI_URL = "https://wiki.catcraft.ru"
 INDEX_PATH = ROOT / "data" / "wiki_index.json"
 CHUNKS_PATH = ROOT / "data" / "wiki_chunks.json"
 
@@ -62,9 +55,8 @@ MAX_CHUNK = 2000
 # индекса целиком, и бот перестаёт про неё знать.
 MIN_CONTENT = 20
 
-FETCH_RETRIES = 3
 EMBED_CONCURRENCY = 4
-# Free-tier gemini-embedding-001 — ~100 RPM и 1000 RPD. Полная пересборка это
+# Free-tier gemini-embedding-2 — ~100 RPM и 1000 RPD. Полная пересборка это
 # ~700 запросов: без троттлинга четыре корутины выдают под 800 RPM и ловят 429
 # на середине, спалив дневную квоту впустую.
 EMBED_RPM = 55
@@ -80,93 +72,85 @@ EMBED_DAILY_BUDGET = 850
 PARTIAL_EVERY = 50  # как часто ронять прогресс на диск
 PARTIAL_PATH = ROOT / "data" / "wiki_index.partial.json"
 
-_SKIP_TAGS = {"script", "style", "noscript", "svg"}
-# Перечисляем СТРОЧНЫЕ теги, а блочным считаем всё остальное. Обратный список
-# («вот эти теги блочные») здесь не работает: вики собрана из Vue-компонентов,
-# которые рендерят что угодно — ячейки таблиц, PrimeVue-табы на <button>,
-# карточки. Каждый неучтённый тег склеивал соседний текст в одно слово:
-# `<th>Иконка</th><th>Что обозначает?</th>` → «ИконкаЧто обозначает?»,
-# `<button>Запрещено</button><button>Разрешено</button>` → «ЗапрещеноРазрешено».
-# Список строчных тегов конечен и стабилен, список компонентов — нет.
+_HUMAN_ATTRS = {"alt", "description", "label", "name", "text", "title"}
 _INLINE_TAGS = {
     "a", "abbr", "b", "bdi", "bdo", "cite", "code", "data", "dfn", "em", "i",
     "kbd", "mark", "q", "rp", "rt", "ruby", "s", "samp", "small", "span",
     "strong", "sub", "sup", "time", "u", "var", "wbr", "font",
 }
-_HEADINGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 
 
-class _MainTextParser(HTMLParser):
-    """Текст из <main> отрендеренной страницы VitePress, с разметкой заголовков.
-
-    Заголовки восстанавливаем как `#`-строки, чтобы дальше резать по `##` —
-    той же границей, по которой резался индекс от 07.05.
-    """
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self._depth = 0          # глубина вложенности внутри <main>
-        self._skip_depth = 0     # >0 — мы внутри script/style
-        self._anchor = False     # <a class="header-anchor"> — «¶» рядом с заголовком
-        self.parts: list[str] = []
-
-    @property
-    def _inside(self) -> bool:
-        return self._depth > 0 and self._skip_depth == 0
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "main":
-            self._depth = max(self._depth, 1)
-            return
-        if self._depth == 0:
-            return
-        self._depth += 1
-        if tag in _SKIP_TAGS:
-            self._skip_depth += 1
-            return
-        if self._skip_depth:
-            return
-        if tag == "a" and any(k == "class" and "header-anchor" in (v or "") for k, v in attrs):
-            self._anchor = True
-            return
-        level = _HEADINGS.get(tag)
-        if level:
-            self.parts.append(f"\n\n{'#' * level} ")
-        elif tag not in _INLINE_TAGS:
-            self.parts.append("\n")
-
-    def handle_startendtag(self, tag, attrs):
-        if self._inside and tag not in _INLINE_TAGS:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag):
-        if self._depth == 0:
-            return
-        if tag in _SKIP_TAGS and self._skip_depth:
-            self._skip_depth -= 1
-        elif tag == "a" and self._anchor:
-            self._anchor = False
-        elif self._skip_depth == 0 and tag not in _INLINE_TAGS:
-            self.parts.append("\n")
-        self._depth -= 1
-        if tag == "main":
-            self._depth = 0
-
-    def handle_data(self, data):
-        if self._inside and not self._anchor:
-            self.parts.append(data)
+def _script_content(match: re.Match) -> str:
+    """Оставляет данные рецептов, убирая импорты и бесполезные URL ассетов."""
+    body = re.sub(r"^\s*import\b.*$", "", match.group(1), flags=re.MULTILINE)
+    body = re.sub(
+        r"\b(?:image|link)\s*:\s*(['\"])(.*?)\1\s*,?",
+        "",
+        body,
+        flags=re.DOTALL,
+    )
+    body = re.sub(r"//.*$", "", body, flags=re.MULTILINE)
+    return f"\n{body.strip()}\n"
 
 
-def html_to_text(html: str) -> str:
-    parser = _MainTextParser()
-    parser.feed(html)
-    text = "".join(parser.parts)
-    text = text.replace("​", "").replace("\xa0", " ")
-    # Схлопываем пробелы внутри строк и пустые строки между блоками: голый
-    # strip_tags оставляет от вёрстки простыни отступов (видно в индексе 07.05).
-    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
-    text = "\n".join(lines)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+def _tag_content(match: re.Match) -> str:
+    tag = match.group(0)
+    values = re.findall(r"\b([\w:-]+)\s*=\s*(['\"])(.*?)\2", tag, flags=re.DOTALL)
+    human = [value.strip() for name, _, value in values if name.lower() in _HUMAN_ATTRS]
+    human = [value for value in human if value]
+    if human:
+        return "\n" + "\n".join(human) + "\n"
+    tag_name = re.match(r"</?\s*([A-Za-z][\w-]*)", tag).group(1).lower()
+    return "" if tag_name in _INLINE_TAGS else "\n"
+
+
+def markdown_to_text(markdown: str) -> str:
+    """Убирает VitePress/Vue-разметку, не теряя факты из компонентов."""
+    text = re.sub(r"\A---\s*\n.*?\n---\s*(?:\n|\Z)", "", markdown, flags=re.DOTALL)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(
+        r"<script\s+setup\b[^>]*>(.*?)</script>",
+        _script_content,
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    text = re.sub(r"^\s*import\b.*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"!\[([^]]*)]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\[([^]]+)]\([^)]*\)", r"\1", text)
+    text = re.sub(r"</?[A-Za-z][^>]*>", _tag_content, text)
+    text = re.sub(r"^\s*:::\s*\w*\s*", "", text, flags=re.MULTILINE)
+    text = html.unescape(text).replace("​", "").replace("\xa0", " ")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def load_src_excludes(wiki_dir: Path) -> list[str]:
+    """Читает строковые шаблоны `srcExclude` из VitePress-конфига."""
+    config_path = wiki_dir / ".vitepress" / "config.mjs"
+    try:
+        config = config_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"не прочитать {config_path}: {exc}") from exc
+    match = re.search(r"\bsrcExclude\s*:\s*\[(.*?)]\s*,", config, flags=re.DOTALL)
+    if not match:
+        raise RuntimeError(f"в {config_path} не найден srcExclude")
+    block = re.sub(r"//.*$", "", match.group(1), flags=re.MULTILINE)
+    return [value for _, value in re.findall(r"(['\"])(.*?)\1", block)]
+
+
+def _is_excluded(relative: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatchcase(relative, pattern) for pattern in patterns)
+
+
+def _page_identity(relative: Path) -> tuple[str, str]:
+    path = relative.with_suffix("").as_posix()
+    if path == "index":
+        return "index", f"{WIKI_URL}/"
+    if path.endswith("/index"):
+        source = path.removesuffix("/index")
+        return source, f"{WIKI_URL}/{source}/"
+    return path, f"{WIKI_URL}/{path}"
 
 
 def _split_long(section: str) -> list[str]:
@@ -263,48 +247,36 @@ def chunk_page(text: str, source: str, url: str) -> list[dict]:
     return chunks
 
 
-def fetch(url: str) -> str:
-    last: Exception | None = None
-    for attempt in range(FETCH_RETRIES):
-        try:
-            request = urllib.request.Request(
-                url, headers={"User-Agent": "robocat-wiki-indexer/1.0"}
-            )
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return response.read().decode("utf-8", errors="replace")
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            last = exc
-            if attempt + 1 < FETCH_RETRIES:
-                import time
+def build_chunks(wiki_dir: Path) -> list[dict]:
+    wiki_dir = wiki_dir.resolve()
+    excludes = load_src_excludes(wiki_dir)
+    pages = []
+    for path in wiki_dir.rglob("*.md"):
+        relative = path.relative_to(wiki_dir)
+        relative_text = relative.as_posix()
+        if any(part.startswith(".") or part == "node_modules" for part in relative.parts):
+            continue
+        if _is_excluded(relative_text, excludes):
+            continue
+        pages.append((relative_text, path, relative))
+    pages.sort(key=lambda page: page[0])
+    print(f"Markdown: {len(pages)} опубликованных страниц")
 
-                time.sleep(2 * (attempt + 1))
-    raise RuntimeError(f"не удалось скачать {url}: {last}")
-
-
-def sitemap_urls() -> list[str]:
-    xml = fetch(SITEMAP_URL)
-    urls = re.findall(r"<loc>(.*?)</loc>", xml)
-    # Корень — лендинг из Vue-компонентов, текста в HTML нет: индексировать нечего
-    return [u for u in urls if u.rstrip("/") != "https://wiki.catcraft.ru"]
-
-
-def build_chunks() -> list[dict]:
-    urls = sitemap_urls()
-    print(f"Сайтмап: {len(urls)} страниц")
     chunks: list[dict] = []
     failed: list[str] = []
-    for i, url in enumerate(urls, 1):
-        source = url.replace("https://wiki.catcraft.ru/", "").strip("/")
+    for i, (relative_text, path, relative) in enumerate(pages, 1):
+        source, url = _page_identity(relative)
         try:
-            page = chunk_page(html_to_text(fetch(url)), source, url)
+            markdown = path.read_text(encoding="utf-8")
+            page = chunk_page(markdown_to_text(markdown), source, url)
         except Exception as exc:
             failed.append(f"{source}: {exc}")
-            print(f"[{i}/{len(urls)}] ✗ {source} — {exc}")
+            print(f"[{i}/{len(pages)}] ✗ {relative_text} — {exc}")
             continue
         chunks.extend(page)
-        print(f"[{i}/{len(urls)}] {source}: {len(page)} чанк(ов)")
+        print(f"[{i}/{len(pages)}] {relative_text}: {len(page)} чанк(ов)")
     if failed:
-        raise RuntimeError("страницы не скачались:\n  " + "\n  ".join(failed))
+        raise RuntimeError("страницы не прочитались:\n  " + "\n  ".join(failed))
     return chunks
 
 
@@ -333,6 +305,9 @@ async def embed_chunks(
     for chunk in chunks:
         if chunk["hash"] in reuse:
             chunk["vector"] = reuse[chunk["hash"]]
+            # model — часть контракта индекса. Без неё следующий инкрементальный
+            # запуск отвергнет собственный reuse и заново сожжёт дневную квоту.
+            chunk["model"] = MODEL
     todo = [c for c in chunks if not c.get("vector")]
     print(f"Векторов взято из прошлых сборок: {len(chunks) - len(todo)}, считать: {len(todo)}")
     if not todo:
@@ -393,8 +368,8 @@ async def embed_chunks(
         _dump_partial(chunks)
         raise RuntimeError(
             f"Бюджет прогона ({budget} запросов) исчерпан — посчитано не всё. "
-            f"Прогресс в {PARTIAL_PATH.name}, запусти скрипт снова (лучше завтра: "
-            "суточная квота эмбеддингов общая с живым ботом)."
+            f"Прогресс в {PARTIAL_PATH.name}; следующий запуск продолжит. Если "
+            "упёрлись в RPD, завершится после сброса суточной квоты."
         )
     return chunks
 
@@ -458,6 +433,12 @@ def load_reuse(full: bool, out: Path | None = None) -> dict[str, list[float]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--wiki-dir",
+        type=Path,
+        required=True,
+        help="checkout репозитория CATCRAFT-inc/szarkans.github.io",
+    )
     parser.add_argument("--full", action="store_true", help="переэмбеддить всё")
     parser.add_argument(
         "--out",
@@ -477,9 +458,9 @@ def main() -> int:
     # протекали бы в окружение тестового процесса мимо фейков из conftest.
     load_dotenv(ROOT / ".env")
 
-    chunks = build_chunks()
+    chunks = build_chunks(args.wiki_dir)
     if not chunks:
-        raise RuntimeError("сайт не отдал ни одного чанка — проверь вёрстку страниц")
+        raise RuntimeError("в исходниках Вики не найдено ни одного чанка")
     lengths = [len(c["text"]) for c in chunks]
     print(
         f"\nВсего чанков: {len(chunks)} со {len({c['source'] for c in chunks})} страниц; "

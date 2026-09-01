@@ -1,7 +1,7 @@
 """Тесты генератора вики-индекса (scripts/build_wiki_index.py).
 
-Сеть не трогаем: проверяем чистые функции — извлечение текста из HTML и резку
-страницы на чанки. Именно они решают, что попадёт в эмбеддинги.
+Сеть не трогаем: проверяем чистые функции — извлечение текста из Markdown и
+резку страницы на чанки. Именно они решают, что попадёт в эмбеддинги.
 """
 
 import asyncio
@@ -21,57 +21,149 @@ sys.modules["build_wiki_index"] = build
 _spec.loader.exec_module(build)
 
 
-PAGE = """<html><head><title>x</title><style>.a{color:red}</style></head>
-<body><nav>Меню сайта</nav>
-<main class="main"><div class="vp-doc">
-<h1 id="p">Пивоварение <a class="header-anchor" href="#p">​</a></h1>
-<p>Десятки новых рецептов.</p>
-<h2 id="v">Как варить?</h2>
-<p>Ставишь котёл,   наливаешь&nbsp;водички</p>
-<ul><li>раз</li><li>два</li></ul>
-<script>const x = {a: 1}; // это не текст страницы</script>
-<h2 id="b">Как бродить?</h2>
-<p>Нужна бочка.</p>
-</div></main>
-<footer>Подвал сайта</footer></body></html>"""
+PAGE_TEXT = """# Пивоварение
+
+Десятки новых рецептов.
+
+## Как варить?
+
+Ставишь котёл, наливаешь водички.
+
+- раз
+- два
+
+## Как бродить?
+
+Нужна бочка.
+"""
+
+MARKDOWN_PAGE = """---
+aside: false
+description: служебное описание
+---
+
+# Фотоаппарат
+
+<!-- Старый рецепт: алмаз -->
+<ItemCard>
+<Image alt="Фотоаппарат" src="/assets/camera.webp" />
+<template #content>
+Ослепляет цель во время вспышки.
+</template>
+</ItemCard>
+
+## Получение
+
+<CraftingGrid :ingredients="cameraRecipe" />
+
+<script setup>
+import CraftingGrid from './CraftingGrid.vue'
+const spyglass = { image: "https://example.com/a.png", name: "Подзорная труба" }
+const copper = { name: 'Медный слиток', count: 4 }
+const cameraRecipe = [
+  [null, spyglass, null],
+  [copper, copper, copper],
+]
+const cameraResult = { image: '/assets/camera.webp', name: 'Фотоаппарат', count: 1 }
+</script>
+"""
 
 
-def test_html_to_text_takes_main_only():
-    text = build.html_to_text(PAGE)
-    assert "Меню сайта" not in text
-    assert "Подвал сайта" not in text
-    assert "color:red" not in text
+def test_markdown_to_text_removes_service_markup_but_keeps_content():
+    text = build.markdown_to_text(MARKDOWN_PAGE)
+
+    assert "aside: false" not in text
+    assert "Старый рецепт" not in text
+    assert "<ItemCard>" not in text
+    assert "import CraftingGrid" not in text
+    assert "# Фотоаппарат" in text
+    assert "Ослепляет цель" in text
 
 
-def test_html_to_text_drops_script_body():
-    assert "это не текст страницы" not in build.html_to_text(PAGE)
-    assert "const x" not in build.html_to_text(PAGE)
+def test_markdown_to_text_keeps_component_alt_and_recipe_names():
+    text = build.markdown_to_text(MARKDOWN_PAGE)
+
+    assert "Подзорная труба" in text
+    assert "Медный слиток" in text
+    assert "Фотоаппарат" in text
+    assert "https://example.com" not in text
+    assert "/assets/camera.webp" not in text
 
 
-def test_html_to_text_restores_heading_levels():
-    text = build.html_to_text(PAGE)
-    assert "# Пивоварение" in text
-    assert "## Как варить?" in text
-    # Якорь-ссылка рядом с заголовком не должна попадать в текст
-    assert "​" not in text
+def test_markdown_to_text_keeps_recipe_layout_and_result_count():
+    text = build.markdown_to_text(MARKDOWN_PAGE)
+
+    assert "cameraRecipe" in text
+    assert "[copper, copper, copper]" in text
+    assert "const cameraResult" in text
+    assert "name: 'Фотоаппарат', count: 1" in text
+    assert "name: 'Медный слиток', count: 4" in text
 
 
-def test_html_to_text_collapses_whitespace():
-    text = build.html_to_text(PAGE)
-    assert "котёл, наливаешь водички" in text
-    assert "   " not in text
-    assert "\n\n\n" not in text
+def test_markdown_to_text_preserves_inline_sentences_and_splits_blocks():
+    text = build.markdown_to_text(
+        "Купи <b>меч</b> у <a href='#'>НПС</a>."
+        "<button>Запрещено</button><button>Разрешено</button>"
+    )
+
+    assert "Купи меч у НПС." in text
+    assert "ЗапрещеноРазрешено" not in text
+
+
+def test_load_src_excludes_reads_vitepress_config(tmp_path):
+    config = tmp_path / ".vitepress" / "config.mjs"
+    config.parent.mkdir()
+    config.write_text(
+        """export default defineConfig({
+          srcExclude: [
+            'docs/**', 'README.md',
+            // В тексте комментария 'не-паттерн.md'
+            'gameplay/hidden.md', // причина
+          ],
+        })""",
+        encoding="utf-8",
+    )
+
+    assert build.load_src_excludes(tmp_path) == [
+        "docs/**",
+        "README.md",
+        "gameplay/hidden.md",
+    ]
+
+
+def test_build_chunks_reads_only_published_markdown(tmp_path):
+    config = tmp_path / ".vitepress" / "config.mjs"
+    config.parent.mkdir()
+    config.write_text(
+        "srcExclude: ['docs/**', 'hidden.md'],",
+        encoding="utf-8",
+    )
+    (tmp_path / "guide.md").write_text(
+        "# Гайд\n\nДостаточно длинный полезный текст страницы.", encoding="utf-8"
+    )
+    (tmp_path / "hidden.md").write_text(
+        "# Скрыто\n\nЭтого знания в индексе быть не должно.", encoding="utf-8"
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "plan.md").write_text(
+        "# План\n\nВнутренний документ команды.", encoding="utf-8"
+    )
+
+    chunks = build.build_chunks(tmp_path)
+
+    assert {chunk["source"] for chunk in chunks} == {"guide"}
+    assert {chunk["url"] for chunk in chunks} == {"https://wiki.catcraft.ru/guide"}
 
 
 def test_chunk_page_splits_on_h2():
-    chunks = build.chunk_page(build.html_to_text(PAGE), "gameplay/unique/brewery", "u")
+    chunks = build.chunk_page(PAGE_TEXT, "gameplay/unique/brewery", "u")
     assert [c["heading"] for c in chunks] == ["Пивоварение", "Как варить?"]
 
 
 def test_chunk_page_merges_short_section_instead_of_dropping_it():
     # «## Как бродить? / Нужна бочка.» коротко для своего вектора, но это ответ
     # на вопрос игрока — он обязан остаться в индексе, приклеенным к соседу.
-    chunks = build.chunk_page(build.html_to_text(PAGE), "src", "u")
+    chunks = build.chunk_page(PAGE_TEXT, "src", "u")
     assert any("Нужна бочка." in c["text"] for c in chunks)
     assert any("Как бродить?" in c["text"] for c in chunks)
 
@@ -79,14 +171,13 @@ def test_chunk_page_merges_short_section_instead_of_dropping_it():
 def test_chunk_page_repeats_title_in_every_chunk():
     # Без титула чанк «## Как бродить?» эмбеддится без слова «пивоварение»
     # и не находится по запросу про алкоголь.
-    chunks = build.chunk_page(build.html_to_text(PAGE), "src", "u")
+    chunks = build.chunk_page(PAGE_TEXT, "src", "u")
     assert all(c["text"].startswith("# Пивоварение") for c in chunks)
 
 
 def test_chunk_page_hash_is_stable_and_unique():
-    text = build.html_to_text(PAGE)
-    first = build.chunk_page(text, "src", "u")
-    second = build.chunk_page(text, "src", "u")
+    first = build.chunk_page(PAGE_TEXT, "src", "u")
+    second = build.chunk_page(PAGE_TEXT, "src", "u")
     assert [c["hash"] for c in first] == [c["hash"] for c in second]
     assert len({c["hash"] for c in first}) == len(first)
 
@@ -116,35 +207,6 @@ def test_chunk_page_keeps_short_page_whole():
     chunks = build.chunk_page("# 8 сезон\n\nЭта история ещё не началась.", "s", "u")
     assert len(chunks) == 1
     assert "не началась" in chunks[0]["text"]
-
-
-def test_html_to_text_separates_table_cells():
-    # На живой вики `<th>Иконка</th><th>Что обозначает?</th>` склеивалось в
-    # «ИконкаЧто обозначает?» и доезжало до игрока слипшимся.
-    html = ("<main><table><tr><th>Иконка</th><th>Что обозначает?</th></tr>"
-            "<tr><td>Меч</td><td>100</td></tr></table></main>")
-    text = build.html_to_text(html)
-    assert "ИконкаЧто" not in text
-    assert "Меч100" not in text
-    assert "Меч" in text and "100" in text
-
-
-def test_html_to_text_separates_arbitrary_component_tags():
-    # Вики собрана из Vue-компонентов: PrimeVue рисует вкладки правил на
-    # <button>, и «Запрещено»/«Разрешено» слипались в «ЗапрещеноРазрешено».
-    # Правило инвертировано — блочным считается всё, кроме строчных тегов.
-    html = ("<main><button><span>Запрещено</span></button>"
-            "<button><span>Разрешено</span></button>"
-            "<custom-card>Столица</custom-card><custom-card>Спавн</custom-card></main>")
-    text = build.html_to_text(html)
-    assert "ЗапрещеноРазрешено" not in text
-    assert "СтолицаСпавн" not in text
-
-
-def test_html_to_text_keeps_inline_tags_inline():
-    # Обратная сторона инверсии: строчная разметка не должна рвать предложение
-    html = "<main><p>Купи <b>меч</b> у <a href='#'>НПС</a> за 10 мурок</p></main>"
-    assert "Купи меч у НПС за 10 мурок" in build.html_to_text(html)
 
 
 def test_split_long_does_not_cut_mid_word():
@@ -226,12 +288,52 @@ def test_module_import_does_not_read_dotenv():
     assert "load_dotenv(" not in body
 
 
+async def test_embed_reuse_keeps_model_marker():
+    from bot.ai.embeddings import MODEL
+
+    vector = [0.1] * 768
+    chunks = [{"hash": "unchanged", "text": "тот же текст"}]
+
+    result = await build.embed_chunks(chunks, {"unchanged": vector})
+
+    assert result[0]["vector"] is vector
+    assert result[0]["model"] == MODEL
+
+
+async def test_embed_only_calls_api_for_changed_chunks(monkeypatch):
+    calls: list[str] = []
+
+    async def fake_embed(text):
+        calls.append(text)
+        return [0.5] * 768
+
+    stub = type(sys)("bot.ai.embeddings")
+    stub.embed = fake_embed
+    stub.MODEL = "тестовая-модель"
+    monkeypatch.setitem(sys.modules, "bot.ai.embeddings", stub)
+    monkeypatch.setattr(build, "EMBED_RPM", 60_000)
+
+    old_vector = [0.1] * 768
+    chunks = [
+        {"hash": "same", "text": "не менялся", "source": "a"},
+        {"hash": "new", "text": "новый текст", "source": "b"},
+    ]
+    result = await build.embed_chunks(chunks, {"same": old_vector})
+
+    assert calls == ["новый текст"]
+    assert result[0]["vector"] is old_vector
+    assert result[1]["vector"] == [0.5] * 768
+
+
 def test_embed_stops_at_budget_and_saves_progress(tmp_path, monkeypatch):
     # 🛑 Суточная квота общая с живым ботом: 02.08.2026 пересборка выбрала её
     # до дна, и до конца суток вики-поиск отвечал «Поиск не удался».
     # Урезание обязано быть громким и сохранять прогресс, а не молчать.
     partial = tmp_path / "partial.json"
     monkeypatch.setattr(build, "PARTIAL_PATH", partial)
+    # Интервалы RPM отдельно проверяет test_rate_limiter_spaces_out_calls;
+    # здесь нужны бюджет и partial, а не две секунды настоящего троттлинга.
+    monkeypatch.setattr(build, "EMBED_RPM", 60_000)
 
     async def fake_embed(text):
         return [0.5] * 768

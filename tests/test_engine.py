@@ -6,12 +6,13 @@ llm и wiki мокаются целиком — сети нет. Прецеде�
 Теперь после исчерпания раундов идёт финальный вызов БЕЗ тулов.
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from bot.ai.engine import AIEngine, FinalAnswer, _codex_safe_env
+from bot.ai.engine import AIEngine, FinalAnswer, Status, _codex_safe_env
 
 
 def _tool_call(name: str, args: dict):
@@ -83,7 +84,7 @@ def test_codex_safe_env_strips_bot_secrets(monkeypatch):
     assert "PATH" in env  # нужное для запуска codex остаётся
 
 
-async def test_empty_choices_yields_error_not_indexerror(engine, monkeypatch):
+async def test_empty_choices_yields_error_not_indexerror(engine, monkeypatch, caplog):
     async def fake_complete(conversation, *, tools=None, **kwargs):
         response = MagicMock()
         response.choices = []  # safety-фильтр вендора вернул пустой список
@@ -93,10 +94,13 @@ async def test_empty_choices_yields_error_not_indexerror(engine, monkeypatch):
 
     from bot.ai.engine import AIError
     events = [e async for e in engine.generateAnswer(
-        [{"role": "user", "content": "(вася)привет"}], user=None,
+        [{"role": "user", "content": "(вася)привет"}],
+        user=None,
+        request_id="message-empty",
     )]
     assert any(isinstance(e, AIError) for e in events)
     assert not any(isinstance(e, FinalAnswer) for e in events)
+    assert "request=message-empty stage=llm_empty_choices" in caplog.text
 
 
 async def test_tool_crash_does_not_kill_answer(engine, monkeypatch):
@@ -161,3 +165,35 @@ async def test_plain_answer_returns_immediately(engine, monkeypatch):
     assert len(finals) == 1
     assert finals[0].content == "Привет-привет!"
     assert len(calls) == 1  # без тул-раундов — один вызов
+
+
+async def test_hung_wiki_search_times_out_and_answer_continues(engine, monkeypatch, caplog):
+    never = asyncio.Event()
+
+    async def hung_search(*_args, **_kwargs):
+        await never.wait()
+
+    calls = 0
+
+    async def fake_complete(conversation, *, tools=None, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _response(tool_calls=[_tool_call("search_wiki", {"query": "сливка"})])
+        return _response(content="Поиск завис, но я всё равно ответил.")
+
+    monkeypatch.setattr("bot.ai.engine.WIKI_SEARCH_TIMEOUT", 0.01)
+    monkeypatch.setattr("bot.ai.engine.wiki.search", hung_search)
+    monkeypatch.setattr("bot.ai.engine.llm.complete", fake_complete)
+
+    events = [event async for event in engine.generateAnswer(
+        [{"role": "user", "content": "(вася)кто такой сливка"}],
+        user=None,
+        request_id="message-42",
+    )]
+
+    statuses = [event.content for event in events if isinstance(event, Status)]
+    finals = [event for event in events if isinstance(event, FinalAnswer)]
+    assert "😞 Поиск не удался..." in statuses
+    assert [event.content for event in finals] == ["Поиск завис, но я всё равно ответил."]
+    assert "request=message-42 stage=tool_timeout tool=search_wiki" in caplog.text

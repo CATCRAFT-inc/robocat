@@ -14,6 +14,8 @@ import logging
 import os
 import time
 
+from .llm import request_id_var
+
 logger = logging.getLogger("robocat.websearch")
 
 SEARCH_TIMEOUT = 10          # секунд на весь поиск одним бэкендом
@@ -45,11 +47,19 @@ class WebSearcher:
             try:
                 results = await asyncio.wait_for(backend(query), timeout=SEARCH_TIMEOUT)
             except asyncio.TimeoutError:
-                logger.warning("Веб-поиск: таймаут бэкенда %s на запросе (len=%d)",
-                               backend.__name__, len(query))
+                logger.warning(
+                    "request=%s stage=web_backend_timeout backend=%s query_chars=%s",
+                    request_id_var.get(),
+                    backend.__name__,
+                    len(query),
+                )
                 continue
             except Exception:
-                logger.exception("Веб-поиск: бэкенд %s упал", backend.__name__)
+                logger.exception(
+                    "request=%s stage=web_backend_failed backend=%s",
+                    request_id_var.get(),
+                    backend.__name__,
+                )
                 continue
             if results:
                 break
@@ -101,7 +111,11 @@ class WebSearcher:
             async with session.get(f"{base}/search", params=params,
                                    timeout=aiohttp.ClientTimeout(total=SEARCH_TIMEOUT)) as resp:
                 if resp.status != 200:
-                    logger.warning("SearXNG ответил %s (json-формат включён в settings.yml?)", resp.status)
+                    logger.warning(
+                        "request=%s stage=web_backend_http backend=searxng status=%s",
+                        request_id_var.get(),
+                        resp.status,
+                    )
                     return []
                 data = await resp.json()
         return self._normalize(
@@ -115,7 +129,10 @@ class WebSearcher:
             from ddgs import DDGS
             from ddgs.exceptions import DDGSException, RatelimitException
         except ImportError:
-            logger.warning("Пакет ddgs не установлен — веб-поиск через ddgs недоступен")
+            logger.warning(
+                "request=%s stage=web_backend_missing backend=ddgs",
+                request_id_var.get(),
+            )
             return []
 
         def _run() -> list[dict]:
@@ -127,10 +144,18 @@ class WebSearcher:
             raw = await asyncio.to_thread(_run)
         except RatelimitException:
             self._ddgs_cooldown_until = time.time() + DDGS_RATELIMIT_COOLDOWN
-            logger.warning("ddgs словил рейтлимит — кулдаун %d минут", DDGS_RATELIMIT_COOLDOWN // 60)
+            logger.warning(
+                "request=%s stage=web_backend_rate_limit backend=ddgs cooldown=%sm",
+                request_id_var.get(),
+                DDGS_RATELIMIT_COOLDOWN // 60,
+            )
             return []
         except DDGSException:
-            logger.exception("ddgs упал на запросе (len=%d)", len(query))
+            logger.exception(
+                "request=%s stage=web_backend_failed backend=ddgs query_chars=%s",
+                request_id_var.get(),
+                len(query),
+            )
             return []
         return self._normalize(
             (r.get("title"), r.get("href"), r.get("body")) for r in raw or []

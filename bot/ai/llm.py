@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import contextvars
 import logging
 import os
 import re
@@ -21,6 +22,11 @@ _SETTINGS_PATH = Path(__file__).resolve().parents[2] / "data" / "ai_settings.yam
 
 RATE_LIMIT_COOLDOWN = 15 * 60      # 15 минут
 AUTH_COOLDOWN = 6 * 60 * 60        # 6 часов
+# SDK по умолчанию ждёт чтение ответа до 600 секунд и сам ретраит запрос.
+# Для чата это выглядит как вечное «думает», поэтому бюджетом владеем здесь —
+# в единственной точке выхода во все LLM-вендоры.
+LLM_REQUEST_TIMEOUT = 90
+request_id_var = contextvars.ContextVar("ai_request_id", default="-")
 
 
 def strip_thoughts(text: str) -> str:
@@ -162,7 +168,10 @@ class LLM:
                     getattr(usage, "completion_tokens", 0),
                 )
         except Exception:
-            self.logger.exception("Не удалось записать использованные токены")
+            self.logger.exception(
+                "request=%s stage=usage_track_failed",
+                request_id_var.get(),
+            )
 
     # -------- ядро ротации --------
 
@@ -178,12 +187,28 @@ class LLM:
             params = build_params(vendor)
             for attempt in range(2):  # 1 попытка + 1 ретрай на транзиентных ошибках
                 try:
-                    if parse:
-                        response = await vendor.client.chat.completions.parse(**params)
-                    else:
-                        response = await vendor.client.chat.completions.create(**params)
+                    async with asyncio.timeout(LLM_REQUEST_TIMEOUT):
+                        if parse:
+                            response = await vendor.client.chat.completions.parse(**params)
+                        else:
+                            response = await vendor.client.chat.completions.create(**params)
+                except TimeoutError:
+                    self.logger.warning(
+                        "request=%s stage=vendor_timeout vendor=%s timeout=%ss attempt=%s",
+                        request_id_var.get(),
+                        vendor.env,
+                        LLM_REQUEST_TIMEOUT,
+                        attempt + 1,
+                    )
+                    if attempt == 0:
+                        continue
+                    break
                 except openai.RateLimitError:
-                    self.logger.warning("RateLimit у %s — кулдаун 15м", vendor.env)
+                    self.logger.warning(
+                        "request=%s stage=vendor_rate_limit vendor=%s cooldown=15m",
+                        request_id_var.get(),
+                        vendor.env,
+                    )
                     vendor.cooldown(RATE_LIMIT_COOLDOWN)
                     break
                 except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
@@ -194,12 +219,23 @@ class LLM:
                     key_level = isinstance(e, openai.AuthenticationError) or "suspend" in str(e).lower()
                     seconds = AUTH_COOLDOWN if key_level else RATE_LIMIT_COOLDOWN
                     self.logger.warning(
-                        "%s у %s — кулдаун %sм", type(e).__name__, vendor.env, seconds // 60
+                        "request=%s stage=vendor_auth_failed vendor=%s error=%s cooldown=%sm",
+                        request_id_var.get(),
+                        vendor.env,
+                        type(e).__name__,
+                        seconds // 60,
                     )
                     vendor.cooldown(seconds)
                     break
                 except (openai.InternalServerError, openai.APIConnectionError) as e:
-                    self.logger.warning("Транзиентная ошибка у %s (попытка %s): %s", vendor.env, attempt + 1, e)
+                    # Не пишем str(e): некоторые SDK включают в него тело запроса.
+                    self.logger.warning(
+                        "request=%s stage=vendor_transient vendor=%s error=%s attempt=%s",
+                        request_id_var.get(),
+                        vendor.env,
+                        type(e).__name__,
+                        attempt + 1,
+                    )
                     if attempt == 0:
                         continue
                     break
