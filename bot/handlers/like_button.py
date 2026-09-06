@@ -1,7 +1,8 @@
 """«На X лайков нажимаю кнопку» — бесконечный пост-счётчик.
 
 Админ постит контейнер с картинкой командой `/like-button`. Каждый раз, когда
-под постом набирается X лайков (👍 без учёта реакции самого бота), заголовок
+под постом набирается X лайков (цифра у 👍, как её видят люди, вместе с
+реакцией бота), заголовок
 переписывается на X+1. Живёт вечно: состояние в флаге `like_button` на
 абстрактной сущности (`channel_id:message_id:threshold`), поэтому переживает
 рестарт. Одновременно активен один такой пост — новый `/like-button`
@@ -111,10 +112,9 @@ class LikeButton(commands.Cog):
             logger.info("Пост «нажимаю кнопку» %s удалён — слежение снято", message_id)
             self._state = None
             return
-        count = 0
-        for reaction in message.reactions:
-            if str(reaction.emoji) == LIKE:
-                count = reaction.count - (1 if reaction.me else 0)
+        # Считаем ровно ту цифру, что видна под постом, вместе с 👍 бота:
+        # иначе «2» на экране не совпадает с «на 2 лайка» в заголовке.
+        count = next((r.count for r in message.reactions if str(r.emoji) == LIKE), 0)
         if count < threshold:
             return
         # ponytail: два события одновременно дадут две одинаковые правки — безвредно.

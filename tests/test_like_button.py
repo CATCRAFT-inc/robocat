@@ -54,8 +54,8 @@ def _title(message):
 
 
 async def test_threshold_reached_bumps_title_and_flag(monkeypatch):
-    # Бот сам поставил 👍 — его не считаем: 3 в реакции = 2 от людей.
-    cog, message, fake_flags = _cog(monkeypatch, reactions=[_reaction(3)])
+    # Цифра под постом — вместе с 👍 бота: 2 на экране = порог 2 достигнут.
+    cog, message, fake_flags = _cog(monkeypatch, reactions=[_reaction(2)])
 
     await cog.on_like(_payload())
 
@@ -64,7 +64,7 @@ async def test_threshold_reached_bumps_title_and_flag(monkeypatch):
 
 
 async def test_below_threshold_does_nothing(monkeypatch):
-    cog, message, fake_flags = _cog(monkeypatch, reactions=[_reaction(2)])
+    cog, message, fake_flags = _cog(monkeypatch, reactions=[_reaction(1)])
 
     await cog.on_like(_payload())
 
@@ -74,7 +74,7 @@ async def test_below_threshold_does_nothing(monkeypatch):
 
 async def test_jump_past_threshold_goes_to_count_plus_one(monkeypatch):
     # Пока бот лежал, набрали 5 — следующая цель 6, а не 3.
-    cog, message, _ = _cog(monkeypatch, reactions=[_reaction(6)])
+    cog, message, _ = _cog(monkeypatch, reactions=[_reaction(5)])
 
     await cog.on_like(_payload())
 
