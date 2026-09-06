@@ -66,6 +66,7 @@ def load_extension():
         "handlers.digest",        # /digest — выжимка новостей
         "handlers.news_editor",   # /news — редактор новостей
         "handlers.vk_repost",     # ручной гейт перепоста новостей в ВК
+        "handlers.like_button",   # /like-button — «На X лайков нажимаю кнопку»
 
         ### AI
         "ai.handler",
