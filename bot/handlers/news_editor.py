@@ -30,10 +30,12 @@ from bot.utils import AnsweringModal, decorate_news
 
 _NEWS_CHANNEL_NAMES = ("Объявления", "Газета", "Медиа", "Информатор", "Секретный")
 _NO_PING = "Без пинга"
+# псевдо-id для @everyone: реальные id ролей — снежинки, с 1 не пересекаются
+_EVERYONE_ID = 1
 # placeholder модалки: у Discord на него 100 символов, поэтому пример короткий
 _TEXT_HINT = "Что нового.\nhttps://ссылка-на-картинку.png\n---\n**Дальше** ещё текст."
 
-_PING_LINE = re.compile(r"^<@&(\d+)>$")
+_PING_LINE = re.compile(r"^(?:<@&(\d+)>|@everyone)$")
 # только картинки: голая ссылка на discord.gg или сайт — обычный кликабельный
 # текст, в галерее она стала бы битой плиткой (или отказом Discord)
 _IMAGE_LINE = re.compile(r"^https?://\S+\.(?:png|jpe?g|gif|webp)(?:\?\S*)?$", re.IGNORECASE)
@@ -72,6 +74,7 @@ def _news_channels() -> dict[str, int]:
 
 def _ping_roles() -> dict[str, int]:
     return {
+        "@everyone": _EVERYONE_ID,
         "Обновления сервера": Roles.server_updates,
         "Ивенты": Roles.events,
         "РП": Roles.rp,
@@ -190,7 +193,8 @@ def _news_container(draft: _Draft) -> disnake.ui.Container:
     ]
     if draft.ping_role_id:
         children.append(disnake.ui.Separator(id=_PING_SEPARATOR_ID))
-        children.append(disnake.ui.TextDisplay(f"<@&{draft.ping_role_id}>", id=_PING_TEXT_ID))
+        mention = "@everyone" if draft.ping_role_id == _EVERYONE_ID else f"<@&{draft.ping_role_id}>"
+        children.append(disnake.ui.TextDisplay(mention, id=_PING_TEXT_ID))
     return disnake.ui.Container(*children, accent_colour=disnake.Colour.from_hex(ColorStorage.main))
 
 
@@ -220,7 +224,7 @@ def _parse_container(container) -> "_Draft | None":
     if body and getattr(body[-1], "id", 0) == _PING_TEXT_ID:
         m = _PING_LINE.match((body[-1].content or "").strip())
         if m:
-            draft.ping_role_id = int(m.group(1))
+            draft.ping_role_id = int(m.group(1)) if m.group(1) else _EVERYONE_ID
             body = body[:-1]
             if body and getattr(body[-1], "id", 0) == _PING_SEPARATOR_ID:
                 body = body[:-1]
@@ -552,10 +556,11 @@ class NewsEditor(commands.Cog):
         if channel is None:
             raise RuntimeError(f"Канал новостей {draft.channel_id} не найден в кэше")
         container = _news_container(draft)
+        ping_everyone = draft.ping_role_id == _EVERYONE_ID
         mentions = disnake.AllowedMentions(
-            everyone=False,
+            everyone=ping_everyone,
             users=False,
-            roles=[disnake.Object(id=draft.ping_role_id)] if draft.ping_role_id else False,
+            roles=[disnake.Object(id=draft.ping_role_id)] if draft.ping_role_id and not ping_everyone else False,
         )
         if draft.edit_message_id:
             msg = await channel.fetch_message(draft.edit_message_id)
