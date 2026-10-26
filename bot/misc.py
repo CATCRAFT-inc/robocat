@@ -4,6 +4,8 @@ import disnake
 from disnake.ext import commands
 
 from bot.discord_config import Channels, ForumTags, Users
+from bot.server_status import CLOSED_REPLY, SERVER_CLOSED
+from bot.storage import Buttons
 
 logger = logging.getLogger("robocat.misc")
 
@@ -28,6 +30,20 @@ class Tests(commands.Cog):
                     if isinstance(e, disnake.Forbidden):
                         logger.warning("Не удалось удалить сообщение %s ограниченного пользователя в канале %s", message.id, message.channel.id)
 
+    @commands.Cog.listener("on_button_click")
+    async def closedVacancyButtons(self, inter: disnake.MessageInteraction):
+        """Старые посты вакансий остались в истории — их кнопки теперь молчат.
+
+        Ког вакансий выключен вместе с сервером, поэтому отвечаем здесь, а не
+        оставляем человеку «interaction failed». Когда сервер вернут и ког
+        включат, флаг `SERVER_CLOSED` снимут, и этот перехватчик отключится.
+        """
+        if not SERVER_CLOSED:
+            return
+        custom_id = getattr(inter.component, "custom_id", "") or ""
+        if custom_id == Buttons.GET_A_JOB.id or custom_id.startswith("VACANCY_"):
+            await inter.response.send_message(CLOSED_REPLY, ephemeral=True)
+
     @commands.command("mess")
     @commands.is_owner()
     @commands.guild_only()
@@ -42,13 +58,10 @@ class Tests(commands.Cog):
             disnake.ui.Separator(),
             disnake.ui.TextDisplay("""Тут ты можешь запросить получение ролей, достижений и прочего!
 
-Например, тут ты можешь запросить **CatPass** - это ветка достижений на Кошкокрафте с различными игровыми заданиями, за которые ты можешь получить награду! От АРов до **рублей** :3
-Ты можешь найти эту вкладку под иконкой алмазов в обычных достижениях.
+Сервер закрыт, но архивные роли и медали остались. Например, тут можно запросить роль @С 2 сезона, @С 3 сезона и прочее.
 
 ## А получить награду то как?
-Всё просто - напиши пост сюда и приложи доказательство выполнения, и всё :3
-
-Или тут ты можешь запросить роль @С 2 сезона @С 3 сезона , медали и прочее!""")
+Всё просто - напиши пост сюда и приложи доказательство того, что она была получена на сервере, и всё :3""")
         ))
         
 

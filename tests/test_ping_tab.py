@@ -68,6 +68,17 @@ from bot.handlers.ping_tab import (
 )
 from bot.handlers.rcon import rcon_exec_many
 
+
+@pytest.fixture(autouse=True)
+def _server_open(monkeypatch):
+    """Старый RCON-путь проверяем с выключенным флагом закрытия.
+
+    Живой ответ `:(` проверяет отдельный тест ниже. Так парсеры, рендер и
+    ретраи остаются покрытыми на случай, если сервер когда-нибудь откроют.
+    """
+    monkeypatch.setattr("bot.handlers.ping_tab.SERVER_CLOSED", False)
+
+
 # ── реальный выхлоп сервера ──────────────────────────────────────────────
 
 # `list` режется сервером примерно на 200 символах — из 30 ников доезжает 14.
@@ -856,6 +867,21 @@ class _FakeContext:
 
     async def __aexit__(self, *exc):
         return False
+
+
+async def test_ping_replies_only_sad_face_when_server_is_closed(monkeypatch):
+    from bot.handlers.ping_tab import PingTab
+
+    async def explode(*args, **kwargs):
+        raise AssertionError("сервер закрыт — в RCON ходить нельзя")
+
+    monkeypatch.setattr("bot.handlers.ping_tab.SERVER_CLOSED", True)
+    monkeypatch.setattr("bot.handlers.ping_tab.rcon_exec_many", explode)
+
+    ctx = _FakeContext()
+    await PingTab.pingPlayers.callback(PingTab(None), ctx)
+
+    assert ctx.replies == [{"content": ":("}]
 
 
 @pytest.mark.parametrize("failure", [

@@ -99,7 +99,7 @@ class TicketEngine(commands.Cog):
                 disnake.ui.TextDisplay(f"### Решение:\n{comment}\n-# Закрыл: <@{inter.author.id}>")
             )
         else:
-            description = "Огромное спасибо за репорт бага! Ты помогаешь делать сервер лучше 💖"
+            description = "Огромное спасибо за репорт бага! Ты помогаешь делать бота и вики лучше 💖"
             if comment:
                 description += f"\n**Комментарий:**\n{comment}"
             # Выжимка — только багам. Тред админ-тикета содержит внутреннее
@@ -294,7 +294,7 @@ class TicketEngine(commands.Cog):
                     await thread.add_tags(tag_added)
                     idea_embed = create_embed(
                         title="💫 Идея добавлена!",
-                        description="Предложенная тобой идея была реализована на сервере!\n**Спасибо**💖",
+                        description="Предложенная тобой идея была реализована!\n**Спасибо**💖",
                         color=disnake.Colour.yellow()
                     )
                     if comment:

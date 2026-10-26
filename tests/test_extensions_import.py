@@ -16,6 +16,13 @@ import pytest
 
 import bot.bot  # noqa: F401 — bot.bot первым, против циклического импорта
 
+# Коги, выключенные сознательно. Код и тесты остаются, но в main.py они
+# закомментированы: сервер закрыт, live-функции не должны загружаться.
+DISABLED_EXTENSIONS = {
+    "handlers.rcon",
+    "handlers.get_a_job",
+}
+
 
 def _extension_names() -> list[str]:
     src = pathlib.Path(__file__).resolve().parents[1] / "main.py"
@@ -48,8 +55,11 @@ def _cog_modules() -> list[str]:
 def test_cog_module_registered_in_main(module):
     """Ког, которого нет в extensions, молча мёртв: слушатели не подписаны,
     кнопки не отвечают вообще. Так `handlers.get_a_job` пролежал нерабочим
-    с момента написания — CI этого не видел."""
-    assert module in _extension_names(), (
+    с момента написания — CI этого не видел.
+
+    Исключение — осознанно выключенные live-коги: они перечислены в
+    `DISABLED_EXTENSIONS`, чтобы случайное забывание не пряталось за ним."""
+    assert module in _extension_names() or module in DISABLED_EXTENSIONS, (
         f"ког bot/{module.replace('.', '/')}.py не в списке extensions в main.py — "
         "он не загрузится, а его кнопки и команды будут молчать"
     )

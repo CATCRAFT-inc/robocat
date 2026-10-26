@@ -1,6 +1,6 @@
 # Robocat
 
-Discord bot of the CATCRAFT: Reborn Minecraft community — news, an AI assistant, 24/7 radio, tickets and moderation in one place.
+Discord bot of the CATCRAFT: Reborn Minecraft community — news, an AI archivist, 24/7 radio, tickets and moderation in one place. The Minecraft server closed on 25.10.2026 and its future is unknown; the wiki remains as its archive.
 
 English · [Русский](README.ru.md) · [中文](README.zh.md)
 
@@ -19,7 +19,7 @@ English · [Русский](README.ru.md) · [中文](README.zh.md)
 **AI assistant**
 
 - Answers when mentioned in channels; private AI threads via `/aichat` with rolling conversation compression.
-- Searches the server wiki through embeddings, falls back to free web search (SearXNG or DuckDuckGo).
+- Searches the archive wiki through embeddings, falls back to free web search (SearXNG or DuckDuckGo).
 - Remembers facts about players, "watches" videos by sampling frames with ffmpeg, tracks token spend per source (`/aistats`).
 
 **CatCraft FM**
@@ -29,12 +29,12 @@ English · [Русский](README.ru.md) · [中文](README.zh.md)
 **Moderation & tickets**
 
 - Admin tickets and bug reports with rate limiting.
-- Punishments, a honeypot channel that auto-mutes spam bots, role selection, player lookup.
+- Punishments, a honeypot channel that auto-mutes spam bots, role selection, archive player lookup.
 
 **Integrations**
 
-- RCON commands to the Minecraft server.
 - VK (news reposts), SearXNG/DuckDuckGo (web search).
+- RCON and job vacancies are disabled with the server; the code is kept in case it returns.
 
 ## How it works
 

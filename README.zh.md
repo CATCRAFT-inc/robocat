@@ -1,6 +1,6 @@
 # Robocat（机器猫）
 
-CATCRAFT: Reborn（Кошкокрафт）Minecraft 社区的 Discord 机器人——新闻、AI 助手、24/7 电台、工单与管理，集于一身。
+CATCRAFT: Reborn（Кошкокрафт）Minecraft 社区的 Discord 机器人——新闻、AI 档案助手、24/7 电台、工单与管理，集于一身。Minecraft 服务器已于 2026-10-25 关闭，未来未知；Wiki 作为档案保留。
 
 [English](README.md) · [Русский](README.ru.md) · 中文
 
@@ -19,7 +19,7 @@ CATCRAFT: Reborn（Кошкокрафт）Minecraft 社区的 Discord 机器人�
 **AI 助手**
 
 - 在频道中被 @ 时回答问题；通过 `/aichat` 开启私密 AI 线程，并在后台压缩对话历史。
-- 通过向量嵌入搜索服务器 Wiki，必要时使用免费网页搜索（SearXNG 或 DuckDuckGo）。
+- 通过向量嵌入搜索 Wiki 档案，必要时使用免费网页搜索（SearXNG 或 DuckDuckGo）。
 - 记住玩家相关的事实，通过 ffmpeg 抽帧“观看”视频，并按来源统计 token 消耗（`/aistats`）。
 
 **CatCraft FM**
@@ -29,12 +29,12 @@ CATCRAFT: Reborn（Кошкокрафт）Minecraft 社区的 Discord 机器人�
 **管理与工单**
 
 - 管理员工单和带频率限制的 Bug 报告。
-- 处罚管理、自动禁言垃圾机器人的蜜罐频道、身份组选择、玩家查询。
+- 处罚管理、自动禁言垃圾机器人的蜜罐频道、身份组选择、按赛季档案查询玩家。
 
 **集成**
 
-- 向 Minecraft 服务器发送 RCON 命令。
 - VK（新闻转发）、SearXNG/DuckDuckGo（网页搜索）。
+- RCON 与职位招聘已随服务器关闭而停用；代码保留，以备将来恢复。
 
 ## 工作原理
 

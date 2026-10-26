@@ -11,6 +11,7 @@ from disnake.ext import commands
 
 from bot import metrics as telemetry
 from bot.discord_config import Channels, Roles, Users, has_config_roles
+from bot.server_status import SERVER_CLOSED
 from bot.storage import Buttons, ColorStorage, FAQStorage
 from bot.utils import AnsweringModal, create_container, create_embed
 from bot.flag_system.flag_system import flags
@@ -258,7 +259,8 @@ class BugHandler(commands.Cog):
                         }
                         _save_bug_index(index)
 
-            if 'getsockopt' in bug_description or 'гетсокопт' in bug_description:
+            # Сервер закрыт: старый авто-ответ про вход выключен.
+            if not SERVER_CLOSED and ('getsockopt' in bug_description or 'гетсокопт' in bug_description):
                 try:
                     await bug_thread.send(components=create_container(
                         "## Авто-ответ по частой проблеме: `getsockopt`",

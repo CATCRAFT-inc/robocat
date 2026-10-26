@@ -81,7 +81,7 @@ class PlayerInfoFinder(commands.Cog):
         b[8] = (b[8] & 0x3f) | 0x80  # variant
         return str(uuid.UUID(bytes=bytes(b)))
 
-    @commands.slash_command(name='get_player_data', description='Найти всю возможную информацию по нику/пользователю ДС')
+    @commands.slash_command(name='get_player_data', description='Найти информацию по нику в архивах сезонов')
     @has_config_roles("admin", "st_admin")
     async def getAllPlayersData(self, inter: disnake.ApplicationCommandInteraction, nickname: str):
         await inter.response.defer()

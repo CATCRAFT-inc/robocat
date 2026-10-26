@@ -48,6 +48,7 @@ _FAKE_ENV = {
     "DS": "x",
     "VK_USER_TOKEN": "",
     "VK_GROUP_ID": "",
+    # Legacy: RCON выключен, но старые тесты ping/rcon ещё импортируют код.
     "RCON_HOST": "",
     "RCON_PASSWORD": "",
 }

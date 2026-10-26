@@ -1,9 +1,54 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from bot.commands.faq import FAQ
+from bot.discord_config import Guilds
+
+
+@pytest.fixture(autouse=True)
+def _server_open(monkeypatch):
+    """Старые live-команды проверяем с выключенным флагом закрытия.
+
+    Сам флаг и ответ `:(` проверяет отдельный тест ниже; здесь важно сохранить
+    покрытие кода, который останется на случай возвращения сервера.
+    """
+    monkeypatch.setattr("bot.commands.faq.SERVER_CLOSED", False)
+
+
+@pytest.mark.parametrize("command", [
+    FAQ.getSockOptFAQ,
+    FAQ.ip_faq,
+    FAQ.whenWipe_faq,
+    FAQ.donate,
+    FAQ.map_faq,
+])
+async def test_closed_live_commands_reply_only_sad_face(monkeypatch, command):
+    monkeypatch.setattr("bot.commands.faq.SERVER_CLOSED", True)
+    cog = FAQ(SimpleNamespace())
+    ctx = SimpleNamespace(reply=AsyncMock())
+
+    await command.callback(cog, ctx)
+
+    ctx.reply.assert_awaited_once_with(":(")
+
+
+async def test_auto_reply_to_wipe_question_is_only_sad_face(monkeypatch):
+    monkeypatch.setattr("bot.commands.faq.SERVER_CLOSED", True)
+    bot = MagicMock()
+    bot.user = object()
+    message = MagicMock()
+    message.guild.id = Guilds.main
+    message.author = MagicMock()
+    message.author.bot = False
+    message.mentions = []
+    message.content = "а когда вайп будет"
+    message.reply = AsyncMock()
+
+    await FAQ(bot).findFAQInMessages(message)
+
+    message.reply.assert_awaited_once_with(":(")
 
 
 @pytest.mark.asyncio

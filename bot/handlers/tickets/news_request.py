@@ -332,7 +332,7 @@ class NewsRequestHandler(commands.Cog):
     async def _notifyAuthor(self, inter, author_id: int, note: str | None, *, published: bool):
         member = inter.guild.get_member(author_id) if inter.guild else None
         if member is None:
-            logger.info("Автор заявки %s не найден на сервере — ЛС о решении не отправлено", author_id)
+            logger.info("Автор заявки %s не найден в сообществе — ЛС о решении не отправлено", author_id)
             return
         if published:
             container = create_container(

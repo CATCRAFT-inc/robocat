@@ -501,7 +501,7 @@ class CatcraftFM(commands.Cog):
                 [
                     disnake.ui.TextDisplay("## 📻 CatCraft FM"),
                     disnake.ui.TextDisplay(
-                        "Музыка сервера играет круглосуточно. "
+                        "Музыка Кошкокрафта играет круглосуточно. "
                         "Кнопки «Предыдущий» и «Следующий» работают голосованием."
                     ),
                     disnake.ui.Separator(),

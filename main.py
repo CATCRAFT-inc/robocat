@@ -57,12 +57,13 @@ def load_extension():
         "handlers.search_player",
         "handlers.catcraft_fm",
         "handlers.idiot_check",
-        "handlers.rcon",          # RCON команды
-        "handlers.ping_tab",      # !пинг — список игроков картинкой в стиле TAB
+        # Сервер закрыт: коги оставлены в репозитории, но не загружаются.
+        # "handlers.rcon",        # RCON команды
+        "handlers.ping_tab",      # !пинг — отвечает ":("
         "handlers.honeypot",      # Ловушка для ботов
         "handlers.metrics",       # агрегированные продуктовые события + /metrics
         "handlers.private_voice",  # «Создать приват» — join-to-create голосовые
-        "handlers.get_a_job",     # кнопка «Посмотреть доступные вакансии»
+        # "handlers.get_a_job",   # вакансии: сервер закрыт, ког не загружается
         "handlers.digest",        # /digest — выжимка новостей
         "handlers.news_editor",   # /news — редактор новостей
         "handlers.vk_repost",     # ручной гейт перепоста новостей в ВК

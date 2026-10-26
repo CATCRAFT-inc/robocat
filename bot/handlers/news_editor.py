@@ -75,7 +75,7 @@ def _news_channels() -> dict[str, int]:
 def _ping_roles() -> dict[str, int]:
     return {
         "@everyone": _EVERYONE_ID,
-        "Обновления сервера": Roles.server_updates,
+        "Обновления проекта": Roles.server_updates,
         "Ивенты": Roles.events,
         "РП": Roles.rp,
         "Тех. работы": Roles.maintanence,

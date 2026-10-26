@@ -4,6 +4,7 @@ import disnake
 from disnake.ext import commands
 
 from bot.discord_config import Channels, Guilds, Roles
+from bot.server_status import CLOSED_REPLY, SERVER_CLOSED
 from bot.storage import FAQStorage
 
 logger = logging.getLogger("robocat.faq")
@@ -13,6 +14,17 @@ class FAQ(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def _closed(self, ctx) -> bool:
+        """Live-команда выключена, пока сервер закрыт.
+
+        Тела старых команд оставлены ниже: если сервер когда-нибудь откроют,
+        достаточно выключить `SERVER_CLOSED`, а не восстанавливать код.
+        """
+        if not SERVER_CLOSED:
+            return False
+        await ctx.reply(CLOSED_REPLY)
+        return True
 
     async def send_faq(self, ctx, embed):
         if ctx.message.reference:
@@ -36,8 +48,10 @@ class FAQ(commands.Cog):
         else:
             await ctx.channel.send(components=embed)
 
-    @commands.command(name='немогузайти', aliases=['проблемысовходом', 'cantjoin'], description='Частые причины проблем со входом')
+    @commands.command(name='немогузайти', aliases=['проблемысовходом', 'cantjoin'], description='Сервер закрыт')
     async def getSockOptFAQ(self, ctx: commands.Context):
+        if await self._closed(ctx):
+            return
         embed = disnake.ui.Container(
                     disnake.ui.TextDisplay("## `getsockopt`"),
                     disnake.ui.Separator(),
@@ -53,8 +67,10 @@ class FAQ(commands.Cog):
     #     )
     #     await self.send_faq(ctx,embed)
 
-    @commands.command(name='айпи', aliases=["ip", "айип", "апйи", "аип", "fqgb"], description='Показать IP сервера')
+    @commands.command(name='айпи', aliases=["ip", "айип", "апйи", "аип", "fqgb"], description='Сервер закрыт')
     async def ip_faq(self, ctx: commands.Context):
+        if await self._closed(ctx):
+            return
         embed = disnake.ui.Container(
             disnake.ui.TextDisplay("## Наши IP"),
             disnake.ui.Separator(),
@@ -70,8 +86,10 @@ class FAQ(commands.Cog):
         )
         await self.send_faq(ctx,embed)
 
-    @commands.command(name='когдавайп', description="Информация по вайпу", aliases=['вайп', 'wipe', 'whenwipe', 'вапй', 'ваип', 'вйап', 'dfqg'])
+    @commands.command(name='когдавайп', description="Сервер закрыт", aliases=['вайп', 'wipe', 'whenwipe', 'вапй', 'ваип', 'вйап', 'dfqg'])
     async def whenWipe_faq(self, ctx: commands.Context):
+        if await self._closed(ctx):
+            return
         embed = disnake.ui.Container(
             disnake.ui.TextDisplay("## Когда вайп?"),
             disnake.ui.Separator(),
@@ -85,8 +103,10 @@ class FAQ(commands.Cog):
             disnake.ui.TextDisplay("### Гайд для новых игроков - <https://wiki.catcraft.ru/info/guide>")
         ))
 
-    @commands.command(name='донатик', description='Донат нашего проекта!^~^', aliases=['донат', 'donate', "котик+", 'донт', 'доант', 'донатт', 'ljyfn'])
+    @commands.command(name='донатик', description='Сервер закрыт', aliases=['донат', 'donate', "котик+", 'донт', 'доант', 'донатт', 'ljyfn'])
     async def donate(self, ctx: commands.Context):
+        if await self._closed(ctx):
+            return
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay("### Донатик сервера - <https://donate.catcraft.ru>")
         ))
@@ -113,16 +133,16 @@ class FAQ(commands.Cog):
             disnake.ui.TextDisplay("Кратко:\nПиратка - TLegacy\nЛицензия - Modrinth или MultiMC")
         ))
 
-    @commands.command(name='история', description='История Кошкокрафта', aliases=['history'])
+    @commands.command(name='история', description='История Кошкокрафта: 8 сезонов', aliases=['history'])
     async def history(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
-            disnake.ui.TextDisplay("### История с самого зарождения Кошкокрафта до текущих дней - <https://wiki.catcraft.ru/history/1season/1season>")
+            disnake.ui.TextDisplay("### История Кошкокрафта: 8 сезонов с 2021 по 2026 - <https://wiki.catcraft.ru/history/>")
         ))
 
-    @commands.command(name='моды', description="Информация по модам для сервера", aliases=['mods', 'моди', 'мды', 'vjls'])
+    @commands.command(name='моды', description="Архив модов сервера", aliases=['mods', 'моди', 'мды', 'vjls'])
     async def mods_faq(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
-            disnake.ui.TextDisplay("### Все нужные моды для наиболее комфортной игры - <https://wiki.catcraft.ru/info/mods>")
+            disnake.ui.TextDisplay("### Архив модов 8 сезона - <https://wiki.catcraft.ru/info/mods>")
         ))
 
     # @commands.command(name='ник', description='Как поставить разноцветный ник', aliases=['nickname', 'nick', 'разноцветныйник'])
@@ -157,16 +177,18 @@ class FAQ(commands.Cog):
             )
             ))
 
-    @commands.command(name='карта', aliases=['map', 'онлайнкарта', 'rfhnf', 'карат', 'каорта', 'крата', 'кара'], description="Ссылка на онлайн-карту")
+    @commands.command(name='карта', aliases=['map', 'онлайнкарта', 'rfhnf', 'карат', 'каорта', 'крата', 'кара'], description="Сервер закрыт")
     async def map_faq(self, ctx: commands.Context):
+        if await self._closed(ctx):
+            return
         await self.send_faq(ctx,embed=disnake.ui.Container(
             disnake.ui.TextDisplay('### Онлайн-карта сервера\n<https://map.catcraft.ru>')
         ))
 
-    @commands.command(name='вики', aliases=['wiki', 'dbrb', 'вик', 'вико', 'викм', 'впки'], description="Ссылка на Вики")
+    @commands.command(name='вики', aliases=['wiki', 'dbrb', 'вик', 'вико', 'викм', 'впки'], description="Ссылка на Вики-архив")
     async def wiki_faq(self, ctx: commands.Context):
         await self.send_faq(ctx,embed=disnake.ui.Container(
-            disnake.ui.TextDisplay('### Вики сервера - <https://wiki.catcraft.ru>')
+            disnake.ui.TextDisplay('### Вики-архив Кошкокрафта - <https://wiki.catcraft.ru>')
         ))
 
     @commands.command(name='тут', description="Проверить тут ли бот", aliases=["тут?", "here"])
@@ -257,14 +279,19 @@ class FAQ(commands.Cog):
         # Не отвечаем на ботов и на сообщения, где упомянут бот (иначе двойной ответ с ИИ)
         if message.author.bot or self.bot.user in message.mentions:
             return
+        text = message.content.lower()
+        # Сервер закрыт: старые автоответы про вайп и сборку выключены.
+        if SERVER_CLOSED and ('когда вайп' in text or 'где сборк' in text):
+            await message.reply(CLOSED_REPLY)
+            return
         if message.author != self.bot.user:
-            if 'когда вайп' in message.content.lower():
+            if 'когда вайп' in text:
                 await message.reply(components=disnake.ui.Container(
             disnake.ui.TextDisplay("## Когда вайп?"),
             disnake.ui.Separator(),
             disnake.ui.TextDisplay("Как и всегда, новый сезон запланирован на период после экзаменов, ЕГЭ, ОГЭ и т.п. - начало июля.")
         ))
-            elif 'где сборк' in message.content.lower():
+            elif 'где сборк' in text:
                 await message.reply(components=disnake.ui.Container(
             disnake.ui.TextDisplay("### Все нужные моды для наиболее комфортной игры - <https://wiki.catcraft.ru/info/mods>")
         ))

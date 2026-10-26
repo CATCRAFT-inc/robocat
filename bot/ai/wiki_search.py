@@ -47,7 +47,7 @@ class WikiSearcher:
 
     async def search(self, query: str, top_k: int = 5) -> list[dict]:
         query_vec = await embed(query)
-        # Парсинг 9.5 МБ json (первый вызов) + косинусы по всем чанкам — секунды
+        # Парсинг ~15 МБ json (первый вызов) + косинусы по всем чанкам — секунды
         # чистого CPU на однокоядерном VDS; в event loop это замораживало весь бот,
         # и интеракции по всему серверу опаздывали к 3-секундному дедлайну Discord.
         return await asyncio.to_thread(self._rank, query_vec, top_k)

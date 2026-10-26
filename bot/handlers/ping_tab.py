@@ -1,5 +1,8 @@
 """`!пинг` — список игроков онлайн картинкой в стиле внутриигрового TAB.
 
+LEGACY: сервер закрыт, команда отвечает только `:(` (см. `SERVER_CLOSED`).
+Старый RCON-путь оставлен ниже целиком, чтобы его можно было вернуть.
+
 Данные берутся одним RCON-соединением на три команды (см. `_collect`), картинка
 рисуется Pillow'ом в отдельном потоке. Головы игроков тянутся с minotar.net в
 нативном разрешении 8×8 и лежат в дисковом кэше — на повторный `!пинг` сеть не
@@ -23,6 +26,7 @@ from PIL import Image, ImageDraw, ImageFont
 from bot.assets import DATA_DIR, DEFAULT_FONT_PATH
 from bot.discord_config import Guilds
 from bot.handlers.rcon import rcon_exec_many
+from bot.server_status import CLOSED_REPLY, SERVER_CLOSED
 from bot.utils import create_container
 
 logger = logging.getLogger("robocat.ping_tab")
@@ -880,9 +884,14 @@ class PingTab(commands.Cog):
                 )
             return _snapshot
 
-    @commands.command(name="пинг", description="Кто сейчас на сервере", aliases=["ping", "gbyu", "зштп", "пигн", "пниг", "пин", "пинн"])
+    @commands.command(name="пинг", description="Сервер закрыт", aliases=["ping", "gbyu", "зштп", "пигн", "пниг", "пин", "пинн"])
     @commands.cooldown(SPAM_CALLS, SPAM_WINDOW, commands.BucketType.channel)
     async def pingPlayers(self, ctx: commands.Context, *, mode: str = ""):
+        # Сервер закрыт: старый RCON-код оставлен ниже, но выключен.
+        if SERVER_CLOSED:
+            await ctx.reply(CLOSED_REPLY)
+            return
+
         if not self.host or not self.password:
             await ctx.reply(components=create_container(
                 "## Пинг не настроен", "Нет `RCON_HOST` или `RCON_PASSWORD` в окружении бота."

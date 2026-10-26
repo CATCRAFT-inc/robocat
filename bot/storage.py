@@ -8,8 +8,8 @@ from bot.utils import create_button
 from .bot import commands
 
 class LinksStorage:
-    mapLink = 'https://map.catcraftmc.ru'
-    wikiLink = 'https://wiki.catcraftmc.ru'
+    mapLink = 'https://wiki.catcraft.ru/info/map'
+    wikiLink = 'https://wiki.catcraft.ru'
     youtubeLink = 'https://www.youtube.com/@catcraftminecraft'
     vkLink = 'https://vk.com/catcraftmc'
 
@@ -39,13 +39,13 @@ class Emotes:
 
 class Messages:
     join = [
-        "> Привет, %1! Добро пожаловать на **Кошкокрафт**!\n- Информация о сервере - <#%2>\n",
-        "> Котик %1 прибыл в Кошкокрафт!\n- Информация о сервере - <#%2>\n",
-        "> К нам пришёл %1!\n- Информация о сервере - <#%2>\n",
-        "> %1 присоединился к Кошкокрафту!\n- Информация о сервере - <#%2>\n",
-        "> Встречайте нового котика %1!\n- Информация о сервере - <#%2>\n",
-        "> %1 запрыгнул(а) на сервер!\n- Информация о сервере - <#%2>\n",
-        "> Урааа, у нас пополнение — %1!\n- Информация о сервере - <#%2>\n"
+        "> Привет, %1! Добро пожаловать на **Кошкокрафт**!\n- О сообществе - <#%2>\n",
+        "> Котик %1 прибыл в Кошкокрафт!\n- О сообществе - <#%2>\n",
+        "> К нам пришёл %1!\n- О сообществе - <#%2>\n",
+        "> %1 присоединился к Кошкокрафту!\n- О сообществе - <#%2>\n",
+        "> Встречайте нового котика %1!\n- О сообществе - <#%2>\n",
+        "> %1 запрыгнул(а) на сервер!\n- О сообществе - <#%2>\n",
+        "> Урааа, у нас пополнение — %1!\n- О сообществе - <#%2>\n"
     ]
     join_again = [
         f"> С возвращением, %1!",
@@ -70,6 +70,7 @@ class ButtonData:
 
 class Buttons:
     BUG_REPORT = ButtonData("bug_report", create_button(label="Сообщить о баге", custom_id="bug_report", style=disnake.ButtonStyle.danger))
+    # LEGACY: ког вакансий выключен; старые кнопки перехватывает bot/misc.py.
     GET_A_JOB = ButtonData("show_vacansies", create_button(label="Посмотреть доступные вакансии", custom_id="show_vacansies", style=disnake.ButtonStyle.green))
     NEWS_REQUEST = ButtonData("news_request", create_button(label="Отправить новость", custom_id="news_request", style=disnake.ButtonStyle.green))
 
@@ -111,7 +112,7 @@ class Embeds:
             disnake.ui.ActionRow(
                 disnake.ui.StringSelect(
                     options=[
-                        disnake.SelectOption(label="Обновления сервера", description="Уведомлять о новых геймплейных изменениях", value=str(Roles.server_updates)),
+                        disnake.SelectOption(label="Обновления проекта", description="Уведомлять о новостях бота и вики", value=str(Roles.server_updates)),
                         disnake.SelectOption(label="Газета", description="Уведомлять о РП постах от игроков", value=str(Roles.rp)),
                         disnake.SelectOption(label="Ивенты", description="Уведомлять об ивентах, розыгрышах, результатов и т.д.", value=str(Roles.events)),
                         disnake.SelectOption(label="Медия", description="Уведомлять о стримах и видео", value=str(Roles.media)),
@@ -127,7 +128,7 @@ class Embeds:
         disnake.ui.TextDisplay("## Шаблон и правила новой идеи"),
         disnake.ui.Separator(),
         disnake.ui.TextDisplay("### Шаблон"),
-        disnake.ui.TextDisplay("1. Твой ник\n2. Твоя идея\n3. (опционально) Почему ты считаешь что эта идея подходит серверу?"),
+        disnake.ui.TextDisplay("1. Твой ник\n2. Твоя идея\n3. (опционально) Почему ты считаешь что эта идея подходит проекту?"),
         disnake.ui.Separator(),
         disnake.ui.TextDisplay("### Правила публикации"),
         disnake.ui.TextDisplay("1. Идея не должна повторять точь в точь идею другого сервера\n  - Но идея может повторять игры, настолки (аля ДнД) и подобное\n2. Если идея уже была в разработке до твоей подачи, то, к сожалению, она будет отклонена\n3. Автором идеи будет считаться игрок, подавший её первой"),
@@ -138,7 +139,7 @@ class Embeds:
         return disnake.ui.Container(
             disnake.ui.TextDisplay("## :exclamation: Получить помощь"),
             disnake.ui.Separator(),
-            disnake.ui.TextDisplay(f"\n### <:admin:{Emojis.admin}> Связь с админами\nОтправить жалобу админам на игроков или связаться с админами по разным вопросам"),
+            disnake.ui.TextDisplay(f"\n### <:admin:{Emojis.admin}> Связь с админами\nОтправить жалобу на участников или связаться с админами по разным вопросам"),
             disnake.ui.Separator(),
             # TODO(ОПК): раскомментировать к старту сезона — Ордена Помощи Крестов
             # пока нет, пункт убран из меню 31.07.2026 по просьбе Андрея.
@@ -148,7 +149,7 @@ class Embeds:
             disnake.ui.ActionRow(
                 disnake.ui.StringSelect(
                     options=[
-                        disnake.SelectOption(label="Связь с админами", description="Жалоба на игроков или в целом", value="TICKET_ADMIN"),
+                        disnake.SelectOption(label="Связь с админами", description="Жалоба на участников или в целом", value="TICKET_ADMIN"),
                         # TODO(ОПК): раскомментировать вместе с блоком описания выше
                         # disnake.SelectOption(label="Жалоба к ОПК", description="Жалоба на нарушение законов", value="TICKET_POLICE"),
                         disnake.SelectOption(label="Баг-репорт", description="Заявить о баге", value="TICKET_BUGREPORT")
@@ -163,6 +164,8 @@ class Embeds:
 
 
 class FAQStorage:
+    # LEGACY: `!немогузайти` выключена вместе с сервером. Текст оставлен,
+    # чтобы команду можно было вернуть без восстановления по памяти.
     getsockopt = '''
 Попробуй зайти по другому IP или убедись, что ты написал(а) его правильно:
 ```ansi
